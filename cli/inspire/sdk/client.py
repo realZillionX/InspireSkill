@@ -144,7 +144,7 @@ class InspireClient:
         )
 
     def login(self, *, force: bool = False) -> AccountInfo:
-        """Validate a session now; Chromium requires explicit allow_browser=True."""
+        """Validate cached OAuth tokens; authorize first with ``inspire login``."""
         from inspire.platform.web import browser_api
         from inspire.platform.web.session.models import WebSession
         from .exceptions import AuthenticationError
@@ -213,8 +213,6 @@ class InspireClient:
             auth = data.setdefault("auth", {})
             if not auth.get("username") or auth.get("username") == "your_username":
                 auth["username"] = session.login_username or self._config.username
-            if not auth.get("password") and self._config.password:
-                auth["password"] = self._config.password
             api = data.setdefault("api", {})
             if force or not api.get("base_url") or api.get("base_url") == "https://api.example.com":
                 api["base_url"] = self.base_url

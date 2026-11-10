@@ -13,7 +13,6 @@ from inspire.accounts import (
     current_account,
     ensure_inspire_home,
     list_accounts,
-    normalize_environment,
     set_current_account,
     validate_name,
 )
@@ -61,7 +60,7 @@ def _bootstrap_first_account_if_needed(
     if effective_json or non_interactive:
         raise ValueError(
             "No active account configured. Run `inspire account add <name>` first; "
-            "non-interactive init cannot prompt for credentials."
+            "non-interactive init requires an account alias."
         )
 
     ensure_inspire_home()
@@ -82,23 +81,6 @@ def _bootstrap_first_account_if_needed(
             continue
         break
 
-    username = (
-        click.prompt(
-            "Platform login name (not display name)",
-            default=account_name,
-            show_default=True,
-        )
-        if cli_username is None
-        else cli_username
-    ).strip()
-    if not username:
-        raise ValueError("Username cannot be empty.")
-
-    password = click.prompt(
-        "Platform password",
-        hide_input=True,
-        confirmation_prompt="Confirm password",
-    )
     base_url = (
         click.prompt("Inspire base URL", default=DEFAULT_BASE_URL, show_default=True)
         if cli_base_url is None
@@ -107,8 +89,8 @@ def _bootstrap_first_account_if_needed(
     proxy = click.prompt("Proxy URL (leave empty for none)", default="", show_default=False)
 
     content = _render_account_config(
-        username=username,
-        password=password,
+        username=cli_username or "",
+        password="",
         base_url=base_url.strip(),
         proxy=(proxy or "").strip(),
     )
@@ -120,7 +102,8 @@ def _bootstrap_first_account_if_needed(
         raise ValueError(str(err)) from err
 
     click.echo(f"Active account: {account_name}")
-    normalize_environment(interactive=True, auto_install_playwright=True)
+    from inspire.cli.commands.login import run_login
+    run_login(account_name)
     return True
 
 

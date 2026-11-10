@@ -1,135 +1,48 @@
-"""Authentication helpers for web-session based APIs."""
+"""Explicit device login and serialized rotating-token refresh."""
 
 from __future__ import annotations
 
-from inspire.platform.web.flow import blocking_io
-
-import sys
-from contextlib import contextmanager
-from inspire.platform.web.flow import enter_context, exit_context
-
-from inspire.platform.web.flow import Program, workflow, call, http_call, perform_sync
-
-import contextlib
-from html.parser import HTMLParser
-import json
 import logging
-import re
+import sys
 import time
-from http.cookiejar import Cookie
-from typing import Any, Optional, cast
-from urllib.parse import urljoin
+from collections.abc import Callable
+from dataclasses import replace
+from typing import Optional
 
-from inspire.config import DEFAULT_BASE_URL, Config
+import requests
 
+from inspire.config import Config
+from inspire.platform.web.flow import (
+    Program,
+    blocking_io,
+    call,
+    enter_context,
+    exit_context,
+    workflow,
+)
+
+from . import models
 from .envelope import _v2_result
-from .login_guard import guarded_credential_submission
-from .models import AuthenticationError, DEFAULT_WORKSPACE_ID, WebSession
+from .identity import token_login_username
+from .models import AuthenticationError, WebSession
+from .oauth import DeviceAuthorization
+from .proxy import resolve_requests_proxy_config
+from .refresh_lock import exclusive_session_refresh
+from .requests import build_requests_session
 from .workspaces import ACCESSIBLE_WORKSPACES_PATH, parse_workspace_catalog
-from .browser_launch import (
-    chromium_launch_kwargs,
-    is_playwright_browser_runtime_error,
-    playwright_install_hint,
-)
-from .proxy import (
-    describe_effective_proxy_config,
-    describe_proxy_config as _describe_proxy_config,
-    redact_proxy_url,
-    resolve_playwright_proxy_config,
-)
 
 logger = logging.getLogger(__name__)
-
-_CAS_PROVIDER_LOGIN_RE = re.compile(r'"loginUrl"\s*:\s*"([^"]*broker[^"]*cas[^"]*login[^"]*)"')
-_CAS_RSA_KEY_RE = re.compile(
-    r"RSAUtils\.getKeyPair\(\s*['\"]([0-9a-fA-F]+)['\"]\s*,\s*['\"][^'\"]*['\"]\s*,"
-    r"\s*['\"]([0-9a-fA-F]+)['\"]"
-)
-
-
-class _CasLoginFailure(AuthenticationError):
-    """A CAS rejection on the requests path, after the password was submitted."""
-
-
-class _CasVerificationRequired(ValueError):
-    """This login form requires a code; no credentials have been submitted."""
-
-
-# Verification is client-specific: requests and Chromium can receive different
-# forms. Never submit a password to a form that still requires a code.
-_VERIFICATION_FIELD_NAMES = frozenset({"authcode", "captcha", "smscode", "vercode", "verifycode"})
-
-
-def _request_timeout(timeout: float) -> float:
-    """Keep HTTP authentication steps inside the caller's operation budget."""
-    from inspire.platform.web.runtime import active_transport
-
-    transport = active_transport.get()
-    if transport is not None and transport.deadline is not None:
-        return min(timeout, transport.remaining())
-    return timeout
-
-
-def _verification_required_message() -> str:
-    return (
-        "The platform's login page is asking for a verification code in this client. "
-        "No credentials were submitted on this attempt. "
-        "An existing browser login does not share its session with the CLI. "
-        "This does not establish that the password is wrong or the account is locked."
-    )
-
-
-def _required_verification_field(fields: dict[str, str]) -> str | None:
-    for name in fields:
-        if name.strip().lower() in _VERIFICATION_FIELD_NAMES:
-            return name
-    return None
-
-
-def _references_live_captcha_image(html: str, page_url: str) -> bool:
-    """Whether the page points at a captcha image this CAS actually serves.
-
-    The template ships a dead one — an ``<img>`` at another university's host,
-    left over and never cleaned up — so "mentions a captcha" is true of every
-    login page ever served. Same-origin is what separates the live endpoint
-    from the fossil.
-    """
-    from urllib.parse import urljoin, urlsplit
-
-    host = urlsplit(page_url).netloc
-    for match in re.finditer(r'src\s*=\s*["\']([^"\']*captcha[^"\']*)["\']', html, re.I):
-        candidate = urljoin(page_url, match.group(1))
-        if not host or urlsplit(candidate).netloc == host:
-            return True
-    return False
-
-
-def _asks_for_verification_code(html: str, page_url: str) -> bool:
-    """Whether CAS is asking this machine for a code, on two agreeing signals.
-
-    Getting this wrong in the false-positive direction means refusing to log in
-    at all, which is far worse than spending one submission finding out, so it
-    takes both: the field inside the *password* form (the page always carries a
-    code-login and a QR-login form beside it), and a captcha image this host
-    actually serves. Measured on the live platform — a clean page has neither,
-    a gated one has both.
-    """
-    try:
-        _, fields = _extract_login_form(html, page_url)
-    except Exception:
-        return False
-    if _required_verification_field(fields) is None:
-        return False
-    return _references_live_captcha_image(html, page_url)
+USER_DETAIL_PATH = "/api/v2/user?Action=GetUserDetail"
 
 
 @blocking_io
 def _load_runtime_config(account: Optional[str] = None) -> Config:
     """Use the same account and runtime settings for login and API requests."""
+    # Accounts imports browser runtime helpers while initializing this package.
+    from inspire.accounts import account_exists
+
     account_name = str(account or "").strip()
     if account_name:
-        from inspire.accounts import account_exists
-
         if not account_exists(account_name):
             raise ValueError(f"Account not found: {account_name}")
         config, _ = Config.from_files_and_env(require_credentials=False, account=account_name)
@@ -138,1452 +51,163 @@ def _load_runtime_config(account: Optional[str] = None) -> Config:
     return config
 
 
-def _session_matches_username(cached: WebSession, username: str) -> bool:
-    if not username:
-        return True
-    if not cached.login_username:
-        return False
-    return cached.login_username == username
 
+def login_required(account: str | None) -> AuthenticationError:
+    """Build an actionable error for an account requiring device authorization."""
+    from inspire.accounts import default_account
 
-def _has_real_workspace_id(session: WebSession) -> bool:
-    value = str(session.workspace_id or "").strip()
-    return bool(value) and value != DEFAULT_WORKSPACE_ID
+    suffix = f" --account {account}" if account and account != default_account() else ""
+    return AuthenticationError(f"Not logged in; run inspire login{suffix}.")
 
 
-def _is_browser_closed_error(exc: BaseException) -> bool:
-    text = str(exc)
-    return "Target page, context or browser has been closed" in text
-
-
-def _is_browser_launch_runtime_error(exc: BaseException) -> bool:
-    return is_playwright_browser_runtime_error(exc)
-
-
-def _raise_browser_launch_runtime_error(exc: BaseException) -> None:
-    raise RuntimeError(
-        "Playwright Chromium could not start for Inspire login. Prepare the "
-        "standard CLI runtime with:\n"
-        f"    {playwright_install_hint()}\n"
-        "Then retry `inspire init`."
-    ) from exc
-
-
-def _raise_browser_closed_error(exc: BaseException) -> None:
-    from inspire.config import ConfigError
-
-    raise ConfigError(
-        "Playwright Chromium closed during Inspire login. This is usually a "
-        "browser runtime problem in a containerized notebook, not an account "
-        "credential problem. InspireSkill launches Chromium with container-safe "
-        "sandbox and /dev/shm flags; if this still happens, reinstall the "
-        "Playwright browser runtime for the active package and retry."
-    ) from exc
-
-
-class _CasLoginErrorParser(HTMLParser):
-    """Extract text from the first explicit, visible CAS error container."""
-
-    _ERROR_CLASS = "form-error"
-    _BREAK_TAGS = frozenset({"br", "div", "li", "p"})
-    _IGNORED_TAGS = frozenset({"noscript", "script", "style", "template"})
-    _HIDDEN_CLASS_NAMES = frozenset({"d-none", "hidden", "invisible", "visually-hidden"})
-    _VOID_TAGS = frozenset(
-        {
-            "area",
-            "base",
-            "br",
-            "col",
-            "embed",
-            "hr",
-            "img",
-            "input",
-            "link",
-            "meta",
-            "param",
-            "source",
-            "track",
-            "wbr",
-        }
-    )
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.messages: list[str] = []
-        self._stack: list[dict[str, Any]] = []
-        self._active_container: dict[str, Any] | None = None
-        self._parts: list[str] = []
-
-    @staticmethod
-    def _attributes(attrs: list[tuple[str, str | None]]) -> dict[str, str]:
-        return {key.lower(): value or "" for key, value in attrs}
-
-    @classmethod
-    def _is_hidden(cls, attrs: dict[str, str]) -> bool:
-        if "hidden" in attrs or "inert" in attrs:
-            return True
-
-        classes = {item.lower() for item in attrs.get("class", "").split()}
-        if classes & cls._HIDDEN_CLASS_NAMES:
-            return True
-
-        if attrs.get("aria-hidden", "").strip().lower() == "true":
-            return True
-
-        for declaration in attrs.get("style", "").split(";"):
-            property_name, separator, raw_value = declaration.partition(":")
-            if not separator:
-                continue
-            value = re.sub(r"\s+", "", raw_value.lower()).replace("!important", "")
-            property_name = property_name.strip().lower()
-            if property_name == "display" and value == "none":
-                return True
-            if property_name == "visibility" and value in {"hidden", "collapse"}:
-                return True
-            if property_name == "content-visibility" and value == "hidden":
-                return True
-            if property_name == "opacity":
-                try:
-                    if float(value) == 0:
-                        return True
-                except ValueError:
-                    pass
-        return False
-
-    @classmethod
-    def _is_error_container(cls, tag: str, attrs: dict[str, str]) -> bool:
-        classes = attrs.get("class", "").split()
-        return tag == "div" and cls._ERROR_CLASS in classes
-
-    def _is_suppressed(self) -> bool:
-        return any(node["hidden"] or node["ignored"] for node in self._stack)
-
-    def _finish_container(self) -> None:
-        message = " ".join("".join(self._parts).split())
-        if message:
-            self.messages.append(message)
-        self._active_container = None
-        self._parts = []
-
-    def _start_tag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        lower_tag = tag.lower()
-        attrs_dict = self._attributes(attrs)
-        parent_hidden = any(node["hidden"] for node in self._stack)
-        parent_ignored = any(node["ignored"] for node in self._stack)
-        node = {
-            "tag": lower_tag,
-            "hidden": parent_hidden or self._is_hidden(attrs_dict),
-            "ignored": parent_ignored or lower_tag in self._IGNORED_TAGS,
-        }
-
-        if (
-            self._active_container is None
-            and not node["hidden"]
-            and not node["ignored"]
-            and self._is_error_container(lower_tag, attrs_dict)
-        ):
-            self._active_container = node
-            self._parts = []
-        elif (
-            self._active_container is not None
-            and not node["hidden"]
-            and not node["ignored"]
-            and lower_tag in self._BREAK_TAGS
-        ):
-            self._parts.append(" ")
-
-        if lower_tag not in self._VOID_TAGS:
-            self._stack.append(node)
-
-    def _end_tag(self, tag: str) -> None:
-        lower_tag = tag.lower()
-        match_index = next(
-            (
-                index
-                for index in range(len(self._stack) - 1, -1, -1)
-                if self._stack[index]["tag"] == lower_tag
-            ),
-            None,
-        )
-        if match_index is None:
-            return
-
-        for _ in range(len(self._stack) - match_index):
-            node = self._stack.pop()
-            if self._active_container is None:
-                continue
-            if node is self._active_container:
-                self._finish_container()
-                continue
-            if not node["hidden"] and not node["ignored"] and node["tag"] in self._BREAK_TAGS:
-                self._parts.append(" ")
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self._start_tag(tag, attrs)
-
-    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        lower_tag = tag.lower()
-        self._start_tag(tag, attrs)
-        if lower_tag not in self._VOID_TAGS:
-            self._end_tag(tag)
-
-    def handle_endtag(self, tag: str) -> None:
-        self._end_tag(tag)
-
-    def handle_data(self, data: str) -> None:
-        if self._active_container is not None and not self._is_suppressed():
-            self._parts.append(data)
-
-    def close(self) -> None:
-        super().close()
-        if self._active_container is not None:
-            self._finish_container()
-
-
-class _CasErrorSlotParser(HTMLParser):
-    """Read the per-form error slot CAS fills in when a login is refused.
-
-    The visible-container rule below cannot see this one. CAS serves all three
-    login tabs with ``style="display: none"`` and picks the live one in
-    JavaScript, so every ``form-error`` on the page looks hidden in the HTML we
-    receive — and dropping it is how the platform's actual reason ("account or
-    password is wrong", "the account is locked") never reached the user, who
-    got generic advice to check a password that was fine.
-
-    The slot is a better anchor than visibility in every way: it is per form
-    (``error_fm1`` is the password form, ``error_fm2`` the SMS tab), it is
-    absent from a page nobody has failed on, and it does not depend on anything
-    a script does later.
-    """
-
-    _BREAK_TAGS = frozenset({"br", "div", "li", "p"})
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.slots: dict[str, list[str]] = {}
-        self._depth = 0
-        self._slot = ""
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        name = str(dict(attrs).get("name") or "")
-        if self._slot:
-            self._depth += 1
-            if tag.lower() in self._BREAK_TAGS:
-                self.slots[self._slot].append(" ")
-        elif name.startswith("error_fm"):
-            self._slot = name
-            self._depth = 0
-            self.slots.setdefault(name, [])
-
-    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if self._slot and tag.lower() in self._BREAK_TAGS:
-            self.slots[self._slot].append(" ")
-
-    def handle_endtag(self, tag: str) -> None:
-        if not self._slot:
-            return
-        if self._depth == 0:
-            self._slot = ""
-        else:
-            self._depth -= 1
-
-    def handle_data(self, data: str) -> None:
-        if self._slot:
-            self.slots[self._slot].append(data)
-
-
-def _extract_form_error_slot(html: str) -> str:
-    """The password form's error text, or any other tab's if only that is set."""
-    parser = _CasErrorSlotParser()
-    try:
-        parser.feed(html)
-        parser.close()
-    except Exception:
-        pass
-    ordered = sorted(parser.slots, key=lambda name: (name != "error_fm1", name))
-    for name in ordered:
-        message = " ".join("".join(parser.slots[name]).split())
-        if message:
-            return message
-    return ""
-
-
-def _extract_login_failure_hint(html: str, *, limit: int = 180) -> str:
-    """Return what the platform said about this login, as precisely as possible."""
-    if not html or limit <= 0:
-        return ""
-
-    slot = _extract_form_error_slot(html)
-    if slot:
-        return slot[:limit]
-
-    parser = _CasLoginErrorParser()
-    try:
-        parser.feed(html)
-        parser.close()
-    except Exception:
-        return parser.messages[0][:limit] if parser.messages else ""
-    return parser.messages[0][:limit] if parser.messages else ""
-
-
-def _page_content(page: Any) -> str:
-    """The page's HTML, or ``""`` when the page is already closed."""
-    try:
-        return str(perform_sync(call(page.content)) or "")
-    except Exception:
-        return ""
-
-
-def _login_not_complete_message(
-    *,
-    status: int | None = None,
-    current_url: str | None = None,
-    page_hint: str | None = None,
-    proxy_source: str | None = None,
-    base_proxy_route: str | None = None,
-    submitted: bool = True,
-    asking_for_code: bool = False,
-) -> str:
-    lines = ["Login did not complete."]
-    if asking_for_code and not page_hint:
-        pass
-    elif page_hint:
-        lines.append(f"Platform reported: {page_hint}")
-    else:
-        lines.extend(
-            [
-                "Check that the password is correct and `auth.username` is the platform login "
-                "name (phone number, student number, or email), not the display name.",
-                "If those are correct, verify that the configured proxy can reach both the "
-                "public internet and *.sii.edu.cn, and whether the platform login page is "
-                "asking for CAPTCHA, MFA, or another manual verification step.",
-            ]
-        )
-    lines.append(
-        "Run `inspire account check --details` to confirm the active account, base URL, and "
-        "proxy settings. Re-run with `inspire --debug init` if you need a debug report."
-    )
-    if asking_for_code:
-        lines.append(
-            "The page CAS answered with is asking for a verification code, so this "
-            "response alone does not establish that the password is wrong or the "
-            "account is locked. Verification can differ between clients; an existing "
-            "browser login does not share its session with the CLI."
-        )
-    if submitted:
-        lines.append(
-            "The password reached CAS on this attempt, so nothing will submit it again on "
-            "its own — repeating a rejected login is what locks the account out. Correct "
-            "the credentials and retry once."
-        )
-    if proxy_source and "system_env" in proxy_source:
-        lines.append(
-            "Shell HTTP_PROXY/HTTPS_PROXY/ALL_PROXY is configured for this login (including "
-            "lowercase variants). The reported route applies to the base URL; CAS/Keycloak "
-            "redirects may match NO_PROXY differently. If SII should be reached directly, "
-            "check NO_PROXY or retry with the shell proxy variables unset."
-        )
-    details: list[str] = []
-    if status is not None:
-        details.append(f"last auth check status={status}")
-    if current_url:
-        details.append(f"current_url={current_url}")
-    if proxy_source:
-        proxy_detail = f"proxy_source={proxy_source}"
-        if base_proxy_route:
-            proxy_detail = f"{proxy_detail}, base_route={base_proxy_route}"
-        details.append(proxy_detail)
-    if details:
-        lines.append("Details: " + "; ".join(details))
-    return "\n".join(lines)
-
-
-USER_DETAIL_PATH = "/api/v2/user?Action=GetUserDetail"
-
-
-def _cas_rsa_chunk_size(modulus_hex: str) -> int:
-    modulus = modulus_hex.lstrip("0") or "0"
-    digit_count = (len(modulus) + 3) // 4
-    return 2 * (digit_count - 1)
-
-
-def _cas_page_encrypt_password(password: str, exponent_hex: str, modulus_hex: str) -> str:
-    """Match the CAS page's RSAUtils.encryptedString implementation."""
-    exponent = int(exponent_hex, 16)
-    modulus = int(modulus_hex, 16)
-    chunk_size = _cas_rsa_chunk_size(modulus_hex)
-
-    values = [ord(ch) for ch in password]
-    while len(values) % chunk_size != 0:
-        values.append(0)
-
-    encrypted: list[str] = []
-    for offset in range(0, len(values), chunk_size):
-        block = 0
-        for byte_offset, value in enumerate(values[offset : offset + chunk_size]):
-            block += value << (8 * byte_offset)
-        text = f"{pow(block, exponent, modulus):x}"
-        if len(text) % 4:
-            text = text.zfill(len(text) + (4 - len(text) % 4))
-        encrypted.append(text)
-    return " ".join(encrypted)
-
-
-class _LoginFormParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.forms: list[dict[str, Any]] = []
-        self.script_sources: list[str] = []
-        self._current: dict[str, Any] | None = None
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        attrs_dict = {key: value or "" for key, value in attrs}
-        lower_tag = tag.lower()
-        if lower_tag == "form":
-            self._current = {"attrs": attrs_dict, "inputs": []}
-            self.forms.append(self._current)
-            return
-        if lower_tag == "input" and self._current is not None:
-            self._current["inputs"].append(attrs_dict)
-        elif lower_tag == "script" and attrs_dict.get("src"):
-            self.script_sources.append(attrs_dict["src"])
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag.lower() == "form":
-            self._current = None
-
-
-def _extract_login_form(html: str, page_url: str) -> tuple[str, dict[str, str]]:
-    parser = _LoginFormParser()
-    parser.feed(html)
-
-    selected: dict[str, Any] | None = None
-    for form in parser.forms:
-        attrs = form.get("attrs") or {}
-        inputs = form.get("inputs") or []
-        names = {str(item.get("name") or "") for item in inputs}
-        if attrs.get("id") == "fm1" or {"username", "password"}.issubset(names):
-            selected = form
-            break
-    if selected is None:
-        raise ValueError("CAS login form not found.")
-
-    attrs = selected.get("attrs") or {}
-    action = urljoin(page_url, str(attrs.get("action") or ""))
-    fields: dict[str, str] = {}
-    for item in selected.get("inputs") or []:
-        name = str(item.get("name") or "")
-        if not name:
-            continue
-        fields[name] = str(item.get("value") or "")
-    return action, fields
-
-
-def _extract_script_sources(html: str) -> list[str]:
-    parser = _LoginFormParser()
-    parser.feed(html)
-    return parser.script_sources
-
-
-def _extract_cas_rsa_key(text: str) -> tuple[str, str] | None:
-    match = _CAS_RSA_KEY_RE.search(text)
-    if not match:
-        return None
-    return match.group(1), match.group(2)
-
-
-@workflow
-def _resolve_cas_rsa_key(http: Any, html: str, page_url: str) -> Program[tuple[str, str]]:
-    from urllib.parse import urlparse
-
-    key = _extract_cas_rsa_key(html)
-    if key:
-        return key
-
-    page_host = urlparse(page_url).netloc
-    for source in _extract_script_sources(html):
-        script_url = urljoin(page_url, source)
-        if urlparse(script_url).netloc != page_host:
-            continue
-        try:
-            response = (yield http_call(http.get, script_url, timeout=_request_timeout(15)))
-            response.raise_for_status()
-        except Exception:
-            continue
-        key = _extract_cas_rsa_key(response.text)
-        if key:
-            return key
-
-    raise ValueError("CAS RSA key not found.")
-
-
-def _decode_keycloak_login_url(html: str, page_url: str) -> str | None:
-    match = _CAS_PROVIDER_LOGIN_RE.search(html)
-    if not match:
-        return None
-    raw = match.group(1)
-    try:
-        decoded = json.loads(f'"{raw}"')
-    except json.JSONDecodeError:
-        decoded = raw.replace("\\/", "/")
-    return urljoin(page_url, decoded)
-
-
-def _cookie_to_storage_entry(cookie: Cookie) -> dict[str, Any]:
-    rest = {str(k).lower(): v for k, v in getattr(cookie, "_rest", {}).items()}
-    same_site = str(rest.get("samesite") or "Lax")
-    if same_site.lower() not in {"strict", "lax", "none"}:
-        same_site = "Lax"
-    return {
-        "name": cookie.name,
-        "value": cookie.value,
-        "domain": cookie.domain,
-        "path": cookie.path or "/",
-        "expires": float(cookie.expires) if cookie.expires else -1,
-        "httpOnly": "httponly" in rest,
-        "secure": bool(cookie.secure),
-        "sameSite": same_site.capitalize(),
-    }
-
-
-_SSO_RENEWAL_COOKIE_NAMES = frozenset(
-    {
-        "AUTH_SESSION_ID",
-        "AUTH_SESSION_ID_LEGACY",
-        "CASTGC",
-        "KEYCLOAK_IDENTITY",
-        "KEYCLOAK_IDENTITY_LEGACY",
-        "KEYCLOAK_SESSION",
-        "KEYCLOAK_SESSION_LEGACY",
-    }
-)
-
-
-def _has_sso_renewal_state(session: WebSession, *, now: float | None = None) -> bool:
-    """Whether *session* carries cookies that can renew Qizhi without a password.
-
-    The short-lived ``inspire-session`` cookie is the thing the API has just
-    refused.  CAS and Keycloak cookies live on their own hosts and commonly
-    outlive it; following the normal login redirect with those cookies can
-    mint a new Qizhi session without submitting credentials at all.
-    """
-    current_time = time.time() if now is None else now
-    cookies = session.storage_state.get("cookies") if session.storage_state else None
-    for cookie in cookies or []:
-        if not isinstance(cookie, dict):
-            continue
-        name = str(cookie.get("name") or "").upper()
-        value = str(cookie.get("value") or "")
-        if name not in _SSO_RENEWAL_COOKIE_NAMES or not value:
-            continue
-        expires = cookie.get("expires")
-        if (
-            isinstance(expires, (int, float))
-            and not isinstance(expires, bool)
-            and expires > 0
-            and expires <= current_time
-        ):
-            continue
-        return True
-    return False
-
-
-def _seed_sso_renewal_cookies(http: Any, session: WebSession) -> None:
-    """Copy cached cookies except the platform cookie that was just refused."""
-    cookies = session.storage_state.get("cookies") if session.storage_state else None
-    for cookie in cookies or []:
-        if not isinstance(cookie, dict):
-            continue
-        name = str(cookie.get("name") or "")
-        value = str(cookie.get("value") or "")
-        if not name or name.casefold() == "inspire-session":
-            continue
-        kwargs: dict[str, Any] = {
-            "path": str(cookie.get("path") or "/"),
-            "secure": bool(cookie.get("secure", False)),
-        }
-        domain = str(cookie.get("domain") or "").strip()
-        if domain:
-            kwargs["domain"] = domain
-        expires = cookie.get("expires")
-        if isinstance(expires, (int, float)) and not isinstance(expires, bool) and expires > 0:
-            kwargs["expires"] = int(expires)
-        http.cookies.set(name, value, **kwargs)
-
-
-@workflow
-def renew_web_session_without_credentials(session: WebSession) -> Program[WebSession | None]:
-    """Try to renew a refused Qizhi session through existing SSO cookies.
-
-    ``None`` means there is no safely reusable SSO state: the auth cookies are
-    absent/expired, the cached user cannot be identified, or the SSO redirect
-    reaches a password form. The caller may then enter the existing single
-    credential-submission path. Transport failures and unexpected platform
-    replies propagate; they are not evidence that submitting a password would
-    help.
-    """
-    if not _has_sso_renewal_state(session):
-        logger.debug("Cached SSO renewal state unavailable; trying next authentication strategy")
-        return None
-
-    previous_detail = session.user_detail if isinstance(session.user_detail, dict) else {}
-    previous_user_id = str(
-        previous_detail.get("id") or previous_detail.get("user_id") or ""
-    ).strip()
-    if not previous_user_id:
-        logger.debug("Cached SSO state has no platform user identity to verify.")
-        return None
-
-    import requests
-    import urllib3
-
-    from .proxy import resolve_requests_proxy_config
-
-    account = session.account
-    base_url = str(session.base_url or DEFAULT_BASE_URL).rstrip("/")
-    username = str(session.login_username or "").strip()
-
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-    proxies, proxy_source = resolve_requests_proxy_config(account=account)
-    logger.debug(
-        "SSO session renewal using proxy_source=%s proxies=%s",
-        proxy_source,
-        _describe_proxy_config(proxies),
-    )
+def _http(account: str | None) -> requests.Session:
     http = requests.Session()
-    if proxy_source == "system_env":
-        http.trust_env = True
-    else:
-        http.trust_env = False
+    proxies, source = resolve_requests_proxy_config(account=account)
+    if source in {"explicit_env", "toml"} and proxies:
         http.proxies.update(proxies)
-    http.verify = False
-    http.headers.update(
-        {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) InspireSkill",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        }
-    )
-    _seed_sso_renewal_cookies(http, session)
-
-    try:
-        login_resp = (yield http_call(http.get, f"{base_url}/login", timeout=_request_timeout(30), allow_redirects=True))
-        login_resp.raise_for_status()
-        cas_login_url = _decode_keycloak_login_url(login_resp.text, login_resp.url)
-        if cas_login_url:
-            login_resp = (yield http_call(http.get, cas_login_url, timeout=_request_timeout(30), allow_redirects=True))
-            login_resp.raise_for_status()
-
-        # Reaching the password form is the decisive "SSO is gone" answer.
-        # Parsing it is safe; filling or submitting it is deliberately left to
-        # the guarded credential path below the caller.
-        try:
-            _extract_login_form(login_resp.text, login_resp.url)
-        except ValueError:
-            pass
-        else:
-            logger.debug("Cached SSO state reached the CAS password form.")
-            return None
-
-        api_headers = {"Accept": "application/json", "Referer": f"{base_url}/login"}
-        user_detail_resp = (yield http_call(http.post,
-            f"{base_url}{USER_DETAIL_PATH}",
-            headers=api_headers,
-            json={},
-            timeout=_request_timeout(15),
-            allow_redirects=False,
-        ))
-        if user_detail_resp.status_code == 401 or 300 <= user_detail_resp.status_code < 400:
-            logger.debug("Cached SSO state is no longer authenticated.")
-            return None
-        if user_detail_resp.status_code >= 400:
-            raise ValueError(
-                "SSO session renewal failed before any credentials were submitted: "
-                f"API returned {user_detail_resp.status_code}."
-            )
-        try:
-            detail = _v2_result(user_detail_resp.json())
-        except Exception as exc:
-            raise ValueError(
-                "SSO session renewal returned an invalid user response before any "
-                "credentials were submitted."
-            ) from exc
-        if not isinstance(detail, dict) or not detail:
-            raise ValueError(
-                "SSO session renewal returned no user identity before any credentials "
-                "were submitted."
-            )
-        renewed_user_id = str(detail.get("id") or detail.get("user_id") or "").strip()
-        if not renewed_user_id:
-            raise ValueError(
-                "SSO session renewal returned no stable user identity before any "
-                "credentials were submitted."
-            )
-        if renewed_user_id != previous_user_id:
-            raise ValueError(
-                "SSO session renewal resolved a different platform user; no credentials "
-                "were submitted and the cached account session was not replaced."
-            )
-
-        workspace_id = session.workspace_id or DEFAULT_WORKSPACE_ID
-        all_workspace_ids = session.all_workspace_ids
-        all_workspace_names = session.all_workspace_names
-        all_workspace_fair_scheduling = session.all_workspace_fair_scheduling
-        try:
-            workspaces_resp = (yield http_call(http.post,
-                f"{base_url}{ACCESSIBLE_WORKSPACES_PATH}",
-                headers=api_headers,
-                json={},
-                timeout=_request_timeout(15),
-                allow_redirects=False,
-            ))
-            if workspaces_resp.status_code != 200:
-                raise ValueError(f"Workspace discovery returned HTTP {workspaces_resp.status_code}.")
-            all_workspace_ids, all_workspace_names, all_workspace_fair_scheduling = (
-                parse_workspace_catalog(workspaces_resp.json())
-            )
-            workspace_id = all_workspace_ids[0] if all_workspace_ids else DEFAULT_WORKSPACE_ID
-        except Exception:
-            logger.warning(
-                "Workspace discovery failed during login; "
-                "retry with `inspire account context`."
-            )
-            logger.debug("Workspace discovery failed", exc_info=True)
-
-        # Optional workspace discovery must not hide an exhausted operation budget.
-        _request_timeout(15)
-        storage_cookies = [_cookie_to_storage_entry(cookie) for cookie in http.cookies]
-        cookie_dict = {cookie.name: cookie.value for cookie in http.cookies}
-        if not cookie_dict.get("inspire-session"):
-            raise ValueError(
-                "SSO session renewal returned no platform session cookie before any "
-                "credentials were submitted."
-            )
-        previous_origins = session.storage_state.get("origins") if session.storage_state else None
-        storage_state = {
-            "cookies": storage_cookies,
-            "origins": list(previous_origins) if isinstance(previous_origins, list) else [],
-        }
-        renewed = WebSession(
-            storage_state=storage_state,
-            cookies=cookie_dict,
-            workspace_id=workspace_id,
-            login_username=username or session.login_username,
-            base_url=base_url,
-            user_detail=detail,
-            all_workspace_ids=all_workspace_ids,
-            all_workspace_names=all_workspace_names,
-            all_workspace_fair_scheduling=all_workspace_fair_scheduling,
-            account=account,
-            created_at=time.time(),
-        )
-        _persist(renewed, account=account)
-        return renewed
-    finally:
-        # HTTP cleanup must not replace the session renewal result.
-        with contextlib.suppress(Exception):
-            http.close()
-
-
-@workflow
-def _login_with_cas_requests(
-    username: str,
-    password: str,
-    *,
-    base_url: str,
-    account: Optional[str] = None,
-) -> Program[WebSession]:
-    import requests
-    import urllib3
-
-    from .proxy import resolve_requests_proxy_config
-
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-    proxies, proxy_source = resolve_requests_proxy_config(account=account)
-    logger.debug(
-        "CAS requests login using proxy_source=%s proxies=%s",
-        proxy_source,
-        _describe_proxy_config(proxies),
-    )
-    http = requests.Session()
-    if proxy_source == "system_env":
-        # Let Requests apply standard HTTP(S)_PROXY and NO_PROXY semantics.
-        http.trust_env = True
-    else:
-        # Explicit Inspire/TOML proxy settings are authoritative. The none
-        # branch also stays isolated from unrelated variables such as ALL_PROXY.
         http.trust_env = False
-        http.proxies.update(proxies)
-    http.verify = False
-    http.headers.update(
-        {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) InspireSkill",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        }
-    )
-
-    login_resp = (yield http_call(http.get,
-        f"{base_url.rstrip('/')}/login", timeout=_request_timeout(30), allow_redirects=True
-    ))
-    login_resp.raise_for_status()
-    cas_login_url = _decode_keycloak_login_url(login_resp.text, login_resp.url)
-    if cas_login_url:
-        login_resp = (yield http_call(http.get, cas_login_url, timeout=_request_timeout(30), allow_redirects=True))
-        login_resp.raise_for_status()
-
-    action, fields = _extract_login_form(login_resp.text, login_resp.url)
-    verification_field = _required_verification_field(fields)
-    if verification_field and not _references_live_captcha_image(login_resp.text, login_resp.url):
-        # Same two-signal rule as `_asks_for_verification_code`, for the same
-        # reason: refusing to log in at all is the expensive mistake, so a
-        # field with no live captcha image behind it (a dormant template
-        # leftover would look exactly like this) is submitted as the form
-        # carries it rather than declared a gate. A real gate that slips
-        # through here is still caught after the submission, where the page
-        # that answered is re-read.
-        logger.debug(
-            "Login form field %r looks like a verification field, but the page "
-            "serves no captcha image; proceeding.",
-            verification_field,
-        )
-        verification_field = None
-    if verification_field:
-        http.close()
-        raise _CasVerificationRequired(_verification_required_message())
-    exponent_hex, modulus_hex = (yield call(_resolve_cas_rsa_key, http, login_resp.text, login_resp.url))
-    fields["username"] = username
-    fields["password"] = _cas_page_encrypt_password(password, exponent_hex, modulus_hex)
-    fields.setdefault("encrypted", "true")
-    fields.setdefault("_eventId", "submit")
-    fields.setdefault("loginType", "1")
-
-    # Everything above this line can still fall back to the browser: the
-    # password has not left the process yet. Everything below it cannot,
-    # whatever the failure looks like — a 5xx, a dropped connection, a response
-    # that never arrives. CAS may well have counted the submission, and the
-    # browser path would answer by making a second one.
-    try:
-        auth_resp = (yield http_call(http.post,
-            action,
-            data=fields,
-            headers={"Referer": login_resp.url},
-            timeout=_request_timeout(30),
-            allow_redirects=True,
-        ))
-    except Exception as exc:
-        raise _CasLoginFailure(_login_not_complete_message(proxy_source=proxy_source)) from exc
-    if auth_resp.status_code >= 400:
-        raise _CasLoginFailure(
-            _login_not_complete_message(
-                status=auth_resp.status_code,
-                current_url=str(getattr(auth_resp, "url", "") or ""),
-                page_hint=_extract_login_failure_hint(getattr(auth_resp, "text", "") or ""),
-                proxy_source=proxy_source,
-            )
-        )
-
-    api_headers = {"Accept": "application/json", "Referer": f"{base_url.rstrip('/')}/login"}
-    user_detail: dict | None = None
-    try:
-        user_detail_resp = (yield http_call(http.post,
-            f"{base_url.rstrip('/')}{USER_DETAIL_PATH}",
-            headers=api_headers,
-            json={},
-            timeout=_request_timeout(15),
-        ))
-    except Exception as exc:
-        raise _CasLoginFailure(
-            _login_not_complete_message(
-                current_url=str(getattr(auth_resp, "url", "") or ""),
-                proxy_source=proxy_source,
-            )
-        ) from exc
-    if user_detail_resp.status_code != 200:
-        # CAS can add the field *in response to* this submission, which is the
-        # same rejection wearing a different cause: the account is fine and the
-        # password is fine, and "check your password" sends the user off to
-        # change something that was never wrong.
-        asking_for_code = _asks_for_verification_code(
-            getattr(auth_resp, "text", "") or "",
-            str(getattr(auth_resp, "url", "") or ""),
-        )
-        failure = _CasLoginFailure(
-            _login_not_complete_message(
-                status=user_detail_resp.status_code,
-                current_url=str(getattr(auth_resp, "url", "") or ""),
-                page_hint=_extract_login_failure_hint(getattr(auth_resp, "text", "") or ""),
-                proxy_source=proxy_source,
-                asking_for_code=asking_for_code,
-            )
-        )
-        if asking_for_code:
-            # The page quotes "账号或密码错误" even when the empty code field
-            # is what sank the submission, so the cooldown must not read that
-            # quote as "the credentials themselves are wrong" and hold them
-            # for hours: the gate clears on its own.
-            failure.credential_rejection = False
-        raise failure
-    try:
-        detail = _v2_result(user_detail_resp.json())
-    except Exception:
-        logger.debug(
-            "user detail unavailable; resource cache scope will lack subject_id",
-            exc_info=True,
-        )
-        detail = {}
-    if detail:
-        user_detail = detail
-
-    all_workspace_ids: list[str] | None = None
-    all_workspace_names: dict[str, str] | None = None
-    all_workspace_fair_scheduling: dict[str, bool] | None = None
-    try:
-        workspaces_resp = (yield http_call(http.post,
-            f"{base_url.rstrip('/')}{ACCESSIBLE_WORKSPACES_PATH}",
-            headers=api_headers,
-            json={},
-            timeout=_request_timeout(15),
-        ))
-        if workspaces_resp.status_code != 200:
-            raise ValueError(f"Workspace discovery returned HTTP {workspaces_resp.status_code}.")
-        all_workspace_ids, all_workspace_names, all_workspace_fair_scheduling = (
-            parse_workspace_catalog(workspaces_resp.json())
-        )
-    except Exception:
-        logger.warning(
-            "Workspace discovery failed during login; "
-            "retry with `inspire account context`."
-        )
-        logger.debug("Workspace discovery failed", exc_info=True)
-
-    _request_timeout(15)
-    storage_state = {
-        "cookies": [_cookie_to_storage_entry(cookie) for cookie in http.cookies],
-        "origins": [],
-    }
-    cookie_dict = {cookie.name: cookie.value for cookie in http.cookies}
-    workspace_id = all_workspace_ids[0] if all_workspace_ids else DEFAULT_WORKSPACE_ID
-    session = WebSession(
-        storage_state=storage_state,
-        cookies=cookie_dict,
-        workspace_id=workspace_id,
-        login_username=username,
-        base_url=base_url,
-        user_detail=user_detail,
-        all_workspace_ids=all_workspace_ids,
-        all_workspace_names=all_workspace_names,
-        all_workspace_fair_scheduling=all_workspace_fair_scheduling,
-        created_at=time.time(),
-    )
-    _persist(session, account=account)
-    return session
+    return http
 
 
 @blocking_io
-def _persist(session: WebSession, *, account: Optional[str]) -> None:
-    """Cache an authenticated session, keeping it usable if the write fails.
-
-    A cache that cannot be written is a local problem. Turning it into a failed
-    login would throw away credentials the platform just accepted and send the
-    caller back to the login flow for them again.
-    """
+def refresh_cached(account: str | None, observed: float | None = None) -> WebSession:
+    """Caller holds the refresh lock; always reread the rotating token."""
+    cached = WebSession.load(allow_expired=True, account=account)
+    if cached is None:
+        raise login_required(account)
+    if cached.is_valid() and (observed is None or cached.created_at > observed):
+        return cached
+    if cached.refresh_expires_at <= time.time():
+        raise login_required(account)
     try:
-        session.save(account=account)
-    except Exception:
-        logger.warning(
-            "Logged in, but the session cache could not be written; "
-            "this session is in-memory only.",
-            exc_info=True,
-        )
-
-
-def get_credentials(account: Optional[str] = None) -> tuple[str, str]:
-    """Get web credentials from layered config (project/global/env/default)."""
-    config = _load_runtime_config(account)
-    username = (config.username or "").strip()
-    password = config.password or ""
-
-    if not username or not password:
-        raise ValueError(
-            "Missing web authentication credentials. Run 'inspire account add <name>' "
-            "to create an account, or set INSPIRE_PASSWORD when the account's "
-            "config.toml lacks [auth].password."
-        )
-
-    return username, password
-
-
-@workflow
-def login_without_browser(
-    username: str,
-    password: str,
-    *,
-    base_url: str,
-    account: Optional[str] = None,
-) -> Program[WebSession]:
-    """Submit credentials through CAS requests only, sharing its persistence and guard."""
-    try:
-        _context = guarded_credential_submission(username, password, account=account)
-        yield call(enter_context, _context)
-        try:
-            return (yield call(_login_with_cas_requests,
-                username, password, base_url=base_url, account=account
-            ))
-        finally:
-            yield call(exit_context, _context, *sys.exc_info())
-    except _CasVerificationRequired as error:
-        # No credentials were submitted: convert outside the guard so this
-        # human challenge does not record a rejected password.
-        raise AuthenticationError(str(error)) from error
-
-
-def login_with_playwright(
-    username: str,
-    password: str,
-    base_url: str = DEFAULT_BASE_URL,
-    headless: bool = True,
-    account: Optional[str] = None,
-) -> WebSession:
-    """Login to Inspire web UI using Playwright and capture session storage state.
-
-    The login flow: qz/login -> CAS (Keycloak broker) -> Keycloak -> qz.
-
-    Both login entry points guard credential submission here rather than
-    at the callers: a wrapper that
-    bounds its own retries still adds one submission to whatever the wrapper
-    below it already spent. See :mod:`.login_guard`.
-    """
-    from inspire.platform.web.browser_api.core import _in_asyncio_loop, _run_in_thread
-
-    if _in_asyncio_loop():
-        return _run_in_thread(
-            login_with_playwright,
-            username,
-            password,
-            base_url=base_url,
-            headless=headless,
-            account=account,
-        )
-
-    return _login_with_playwright_steps(
-        username, password, base_url=base_url, headless=headless, account=account,
-    )
-
-
-@workflow
-def _login_with_playwright_steps(
-    username: str, password: str, base_url: str = DEFAULT_BASE_URL,
-    headless: bool = True, account: Optional[str] = None,
-) -> Program[WebSession]:
-    _context = guarded_credential_submission(username, password, account=account)
-    yield call(enter_context, _context)
-    try:
-        return (yield call(
-            _submit_credentials, username, password, base_url=base_url,
-            headless=headless, account=account,
-        ))
-    finally:
-        yield call(exit_context, _context, *sys.exc_info())
-
-
-login_with_playwright.__workflow__ = _login_with_playwright_steps.__workflow__  # type: ignore[attr-defined]
-
-
-@workflow
-def _submit_credentials(
-    username: str,
-    password: str,
-    *,
-    base_url: str,
-    headless: bool,
-    account: Optional[str],
-) -> Program[WebSession]:
-    """Authenticate once: CAS over requests, and only then a real browser."""
-    try:
-        return (yield call(_login_with_cas_requests,
-            username,
-            password,
-            base_url=base_url,
-            account=account,
-        ))
+        with _http(account) as http:
+            tokens = DeviceAuthorization(
+                cached.base_url or _load_runtime_config(account).base_url, http
+            ).refresh(cached.refresh_token)
     except AuthenticationError:
-        # The password was submitted. Retrying it in a browser is a second
-        # submission, not a fallback.
-        raise
-    except _CasVerificationRequired:
-        # No password was submitted. CAS can challenge the requests client
-        # while offering Chromium a normal password form; inspect that form
-        # independently before allowing the single credential submission.
-        logger.debug("CAS requests requires verification; inspecting the browser login form.")
-    except Exception:
-        logger.debug("CAS requests login failed; falling back to Playwright.", exc_info=True)
-
-    return (yield call(
-        _login_with_browser, username, password, base_url=base_url,
-        headless=headless, account=account,
-    ))
-
-
-def _login_with_browser(
-    username: str, password: str, *, base_url: str, headless: bool, account: Optional[str],
-) -> WebSession:
-    resolved_proxy, playwright_proxy_source = resolve_playwright_proxy_config(account=account)
-    playwright_proxy = cast(Any, resolved_proxy)
-    effective_proxy = describe_effective_proxy_config(account=account, base_url=base_url)
-    playwright_diagnostics = effective_proxy.get("playwright")
-    playwright_proxy_route = (
-        str(playwright_diagnostics.get("route"))
-        if isinstance(playwright_diagnostics, dict)
-        else None
+        raise login_required(account) from None
+    refreshed = replace(
+        cached,
+        access_token=tokens.access_token,
+        refresh_token=tokens.refresh_token,
+        access_expires_at=tokens.access_expires_at,
+        refresh_expires_at=tokens.refresh_expires_at,
+        created_at=time.time(),
+        login_username=cached.login_username or token_login_username(tokens.access_token),
     )
-    logger.debug(
-        "Playwright login using proxy_source=%s server=%s bypass_configured=%s",
-        playwright_proxy_source,
-        redact_proxy_url(resolved_proxy.get("server")) if resolved_proxy else "",
-        bool(resolved_proxy and resolved_proxy.get("bypass")),
-    )
-    with _playwright_runtime() as p:
-        try:
-            browser = perform_sync(call(p.chromium.launch,
-                **chromium_launch_kwargs(headless=headless, proxy=playwright_proxy)
-            ))
-        except Exception as exc:
-            if _is_browser_launch_runtime_error(exc):
-                _raise_browser_launch_runtime_error(exc)
-            raise
-        context = perform_sync(call(browser.new_context, proxy=playwright_proxy, ignore_https_errors=True))
-        page = perform_sync(call(context.new_page))
-
-        # Navigate to login page; use domcontentloaded since CAS may have
-        # long-polling resources that prevent networkidle from completing.
-        try:
-            perform_sync(call(page.goto, f"{base_url}/login", wait_until="domcontentloaded", timeout=60000))
-        except Exception as exc:
-            if _is_browser_closed_error(exc):
-                _raise_browser_closed_error(exc)
-            raise
-        # Give some time for any redirects to settle
-        perform_sync(call(page.wait_for_timeout, 2000))
-
-        login_pairs = [
-            ("input#username", "input#passwordShow"),
-            ("input[name='username']", "input[name='password']"),
-            ("input[placeholder='Username/alias']", "input[placeholder='Password']"),
-        ]
-
-        def _fill_login_form() -> Optional[object]:
-            if _asks_for_verification_code(_page_content(page), page.url):
-                perform_sync(call(browser.close))
-                raise _CasVerificationRequired(_verification_required_message())
-            for user_sel, pass_sel in login_pairs:
-                try:
-                    perform_sync(call(page.wait_for_selector, user_sel, timeout=5000, state="visible"))
-                    perform_sync(call(page.wait_for_selector, pass_sel, timeout=5000, state="visible"))
-                    user_locator = page.locator(user_sel).first
-                    pass_locator = page.locator(pass_sel).first
-                    perform_sync(call(user_locator.fill, username))
-                    perform_sync(call(pass_locator.fill, password))
-                    return pass_locator
-                except Exception:
-                    logger.debug(
-                        "Login form selector fill failed; trying next strategy",
-                        exc_info=True,
-                    )
-                    continue
-            return None
-
-        def _submit_login_form(pass_locator) -> None:  # noqa: ANN001
-            try:
-                perform_sync(call(pass_locator.press, "Enter", timeout=3000))
-                return
-            except Exception:
-                logger.debug(
-                    "Login form submission via Enter failed; trying next strategy",
-                    exc_info=True,
-                )
-                pass
-            try:
-                perform_sync(call(pass_locator.evaluate, "el => el.form && el.form.submit()"))
-                return
-            except Exception:
-                logger.debug(
-                    "Login form submission via form.submit() failed; trying next strategy",
-                    exc_info=True,
-                )
-                pass
-            try:
-                perform_sync(call(pass_locator.evaluate,
-                    """
-                    el => {
-                      const btn = el.form?.querySelector('#passbutton,button[type="submit"],input[type="submit"]');
-                      if (btn) { btn.click(); return true; }
-                      return false;
-                    }
-                    """
-                ))
-            except Exception:
-                logger.debug(
-                    "Login form submission via button click failed; trying next strategy",
-                    exc_info=True,
-                )
-                pass
-
-        pass_locator = _fill_login_form()
-        if not pass_locator:
-            try:
-                perform_sync(call(page.get_by_text("Account login", exact=True).click, timeout=3000, force=True))
-                perform_sync(call(page.wait_for_timeout, 500))
-            except Exception:
-                logger.debug(
-                    "Account login tab selection failed; trying next strategy",
-                    exc_info=True,
-                )
-                pass
-            pass_locator = _fill_login_form()
-
-        credentials_submitted = pass_locator is not None
-        if pass_locator:
-            _submit_login_form(pass_locator)
-
-        def _login_failure_parts(status: int | None = None) -> tuple[str, bool]:
-            try:
-                current_url = page.url
-            except Exception:
-                current_url = ""
-            html = _page_content(page)
-            # The browser sees the same post-submission page the requests path
-            # re-reads: CAS may have added the code field in response to this
-            # very submission, and that page quotes "账号或密码错误" for an
-            # account whose password is fine.
-            asking_for_code = bool(html) and _asks_for_verification_code(html, current_url)
-            message = _login_not_complete_message(
-                status=status,
-                current_url=current_url,
-                page_hint=_extract_login_failure_hint(html),
-                proxy_source=playwright_proxy_source,
-                base_proxy_route=playwright_proxy_route,
-                submitted=credentials_submitted,
-                asking_for_code=asking_for_code,
-            )
-            return message, asking_for_code
-
-        def _login_failure_message(status: int | None = None) -> str:
-            return _login_failure_parts(status)[0]
-
-        def _authentication_error(status: int | None = None) -> AuthenticationError:
-            message, asking_for_code = _login_failure_parts(status)
-            error = AuthenticationError(message)
-            if asking_for_code:
-                error.credential_rejection = False
-            return error
-
-        def _wait_for_api_auth() -> None:
-            deadline = time.time() + 30
-            last_status: int | None = None
-            headers = {
-                "Accept": "application/json",
-                "Referer": f"{base_url}/login",
-            }
-            while time.time() < deadline:
-                try:
-                    resp = perform_sync(call(context.request.post,
-                        f"{base_url}{USER_DETAIL_PATH}",
-                        headers=headers,
-                        data={},
-                        timeout=10000,
-                    ))
-                    last_status = resp.status
-                    if resp.status == 200:
-                        return
-                except Exception:
-                    logger.debug(
-                        "Login API authentication probe failed; trying next strategy",
-                        exc_info=True,
-                    )
-                    pass
-                perform_sync(call(page.wait_for_timeout, 500))
-            if credentials_submitted:
-                raise _authentication_error(last_status)
-            # The form was never found, so nothing was submitted; this is a
-            # page problem, and the caller may still try another way in.
-            raise ValueError(_login_failure_message(last_status))
-
-        try:
-            _wait_for_api_auth()
-        except AuthenticationError:
-            raise
-        except Exception as exc:
-            if credentials_submitted:
-                # Auth state is unknown and the credentials are already gone.
-                raise _authentication_error() from exc
-            raise
-        # Once authenticated cookies are available, stop the page quickly and
-        # use request APIs for discovery.  Some minimal GPU notebook images can
-        # start Chromium but crash while rendering the full Qizhi SPA because
-        # fontconfig is incomplete; rendering the SPA is unnecessary for CLI
-        # session capture.
-        # Session capture can continue even if the page is already closed.
-        with contextlib.suppress(Exception):
-            perform_sync(call(page.close))
-
-        user_detail: dict | None = None
-        request_headers = {
-            "Accept": "application/json",
-            "Referer": f"{base_url}/login",
-        }
-        try:
-            user_detail_resp = perform_sync(call(context.request.post,
-                f"{base_url}{USER_DETAIL_PATH}",
-                headers=request_headers,
-                data={},
-                timeout=10000,
-            ))
-            if user_detail_resp.status == 200:
-                detail = _v2_result(perform_sync(call(user_detail_resp.json)))
-                if detail:
-                    user_detail = detail
-        except Exception:
-            logger.debug(
-                "user detail unavailable; resource cache scope will lack subject_id",
-                exc_info=True,
-            )
-            user_detail = None
-
-        all_workspace_ids: list[str] | None = None
-        all_workspace_names: dict[str, str] | None = None
-        all_workspace_fair_scheduling: dict[str, bool] | None = None
-        try:
-            workspaces_resp = perform_sync(call(context.request.post,
-                f"{base_url}{ACCESSIBLE_WORKSPACES_PATH}",
-                headers=request_headers,
-                data={},
-                timeout=15000,
-            ))
-            if workspaces_resp.status != 200:
-                raise ValueError(f"Workspace discovery returned HTTP {workspaces_resp.status}.")
-            all_workspace_ids, all_workspace_names, all_workspace_fair_scheduling = (
-                parse_workspace_catalog(perform_sync(call(workspaces_resp.json)))
-            )
-        except Exception:
-            logger.warning(
-                "Workspace discovery failed during login; "
-                "retry with `inspire account context`."
-            )
-            logger.debug("Workspace discovery failed", exc_info=True)
-
-        workspace_id = all_workspace_ids[0] if all_workspace_ids else DEFAULT_WORKSPACE_ID
-
-        # Capture storage state (cookies + localStorage)
-        storage_state = perform_sync(call(context.storage_state))
-
-        # Keep a simple cookie name->value mapping for websocket clients.
-        cookies = perform_sync(call(context.cookies))
-        cookie_dict = {c["name"]: c["value"] for c in cookies}
-
-        perform_sync(call(browser.close))
-
-        session = WebSession(
-            storage_state=cast(dict[str, Any], storage_state),
-            cookies=cookie_dict,
-            workspace_id=workspace_id,
-            login_username=username,
-            base_url=base_url,
-            user_detail=user_detail,
-            all_workspace_ids=all_workspace_ids,
-            all_workspace_names=all_workspace_names,
-            all_workspace_fair_scheduling=all_workspace_fair_scheduling,
-            account=account,
-            created_at=time.time(),
-        )
-        # Past this point the platform has already accepted the password, so a
-        # failure here is not an authentication failure and must not be
-        # recorded as one — logging in again would succeed.
-        _persist(session, account=account)
-
-        return session
+    refreshed.save(account=account)
+    return refreshed
 
 
 @workflow
 def get_web_session(
-    force_refresh: bool = False,
-    require_workspace: bool = False,
-    account: Optional[str] = None,
+    force_refresh: bool = False, require_workspace: bool = False, account: Optional[str] = None
 ) -> Program[WebSession]:
-    """Get a valid web session, logging in if necessary.
-
-    Args:
-        force_refresh: Force a new login even if cached session exists.
-        require_workspace: Force re-login if workspace_id is missing.
-
-    Returns:
-        A valid WebSession with storage_state and optionally workspace_id.
-    """
-    # Resolve credentials early so we can avoid reusing a cache from another user.
-    credentials_error: Optional[ValueError] = None
-    try:
-        username, password = get_credentials(account)
-    except ValueError as e:
-        credentials_error = e
+    """Load or refresh cached tokens without starting device authorization."""
+    account = models._resolve_account_for_storage(account)
+    cached = yield call(WebSession.load, allow_expired=True, account=account)
+    if cached is None:
+        raise login_required(account)
+    if force_refresh or not cached.is_valid():
+        context = exclusive_session_refresh(account)
+        yield call(enter_context, context)
         try:
-            username = (_load_runtime_config(account).username or "").strip()
-        except Exception:
-            username = ""
-        password = ""
-
-    if not force_refresh:
-        cached = WebSession.load(account=account)
-        if cached and cached.storage_state.get("cookies"):
-            if require_workspace and not _has_real_workspace_id(cached):
-                pass
-            elif username and not _session_matches_username(cached, username):
-                # Credentials are available and don't match the cached login user.
-                # Force fresh login so the active account follows current config.
-                pass
-            else:
-                return cached
-
-    # If we can't refresh (missing credentials), try the cached session anyway.
-    if credentials_error is not None:
-        cached = WebSession.load(allow_expired=True, account=account)
-        if cached and cached.storage_state.get("cookies"):
-            if require_workspace and not _has_real_workspace_id(cached):
-                raise credentials_error
-            return cached
-        raise credentials_error
-
-    # Use cached session if available and has cookies, even if beyond TTL.
-    # The session cookies may still be valid server-side; let API calls determine validity.
-    # Skip this when force_refresh is set — the caller explicitly wants a fresh login.
-    if not force_refresh:
-        cached = WebSession.load(allow_expired=True, account=account)
-        if cached and cached.storage_state.get("cookies"):
-            if (
-                not require_workspace or _has_real_workspace_id(cached)
-            ) and _session_matches_username(cached, username):
-                # Use cached session; server will reject if truly invalid.
-                return cached
-
-    # Session is missing or has no cookies, perform fresh login
-    base_url = _load_runtime_config(account).base_url
-    from inspire.platform.web.runtime import active_transport
-
-    owner = active_transport.get()
-    if owner is not None and not owner.allow_browser:
-        return (yield call(login_without_browser, username, password, base_url=base_url, account=account))
-    return (yield call(login_with_playwright, username, password, base_url=base_url, account=account))
+            observed = cached.created_at if force_refresh else None
+            cached = yield call(refresh_cached, account, observed)
+        finally:
+            yield call(exit_context, context, *sys.exc_info())
+    if require_workspace and not _has_workspace(cached):
+        cached = yield call(_ensure_workspace_catalog, cached, account)
+    return cached
 
 
-@contextmanager
-def _playwright_runtime():
-    context = perform_sync(call(_playwright_context))
-    runtime = perform_sync(call(enter_context, context))
+def _has_workspace(session: WebSession) -> bool:
+    value = str(session.workspace_id or "").strip()
+    return bool(value) and value != models.DEFAULT_WORKSPACE_ID
+
+
+@blocking_io
+def _ensure_workspace_catalog(session: WebSession, account: str | None) -> WebSession:
+    """Discover the workspace catalog a session was saved without, and keep it."""
+    base_url = session.base_url or _load_runtime_config(account).base_url
+    _discover_identity(session, base_url)
+    if _has_workspace(session):
+        with exclusive_session_refresh(account):
+            session.save(account=account)
+    return session
+
+
+@workflow
+def refresh_session(session: WebSession) -> Program[WebSession]:
+    """Refresh a refused generation under the account lock."""
+    context = exclusive_session_refresh(session.account)
+    yield call(enter_context, context)
     try:
-        yield runtime
+        return (yield call(refresh_cached, session.account, session.created_at))
     finally:
-        perform_sync(call(exit_context, context, *sys.exc_info()))
+        yield call(exit_context, context, *sys.exc_info())
 
 
-def _playwright_context():
-    from playwright.sync_api import sync_playwright
+def _discover_identity(session: WebSession, base_url: str) -> None:
+    """Fill user detail and the workspace catalog; failures leave the tokens usable."""
+    try:
+        with build_requests_session(session, base_url) as http:
+            try:
+                detail = http.post(
+                    base_url.rstrip("/") + USER_DETAIL_PATH,
+                    json={},
+                    timeout=30,
+                    allow_redirects=False,
+                )
+                detail.raise_for_status()
+                session.user_detail = _v2_result(detail.json())
+                extra_info = session.user_detail.get("extra_info")
+                if not session.login_username and isinstance(extra_info, dict):
+                    login_name = extra_info.get("login_name")
+                    if isinstance(login_name, str) and login_name.strip():
+                        session.login_username = login_name.strip()
+            except Exception:
+                logger.warning("User detail discovery failed; tokens remain usable.")
+            try:
+                workspaces = http.post(
+                    base_url.rstrip("/") + ACCESSIBLE_WORKSPACES_PATH,
+                    json={},
+                    timeout=30,
+                    allow_redirects=False,
+                )
+                workspaces.raise_for_status()
+                (
+                    session.all_workspace_ids,
+                    session.all_workspace_names,
+                    session.all_workspace_fair_scheduling,
+                ) = parse_workspace_catalog(workspaces.json())
+                session.workspace_id = next(iter(session.all_workspace_ids or []), None)
+            except Exception:
+                logger.warning("Workspace discovery failed; tokens remain usable.")
+    except Exception:
+        logger.warning("Session discovery could not start; tokens remain usable.")
 
-    return sync_playwright()
+
+@blocking_io
+def device_login(account: str, notify: Callable[[str, str, float], None]) -> WebSession:
+    """Authorize without holding the refresh lock, then enrich saved tokens."""
+    config = _load_runtime_config(account)
+    with _http(account) as http:
+        tokens = DeviceAuthorization(config.base_url, http).login(notify)
+    session = WebSession(
+        access_token=tokens.access_token,
+        refresh_token=tokens.refresh_token,
+        access_expires_at=tokens.access_expires_at,
+        refresh_expires_at=tokens.refresh_expires_at,
+        created_at=time.time(),
+        account=account,
+        base_url=config.base_url,
+        login_username=token_login_username(tokens.access_token),
+    )
+    with exclusive_session_refresh(account):
+        session.created_at = time.time()
+        session.save(account=account)
+    _discover_identity(session, config.base_url)
+    with exclusive_session_refresh(account):
+        session.save(account=account)
+    return session

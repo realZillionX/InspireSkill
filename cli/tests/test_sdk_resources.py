@@ -125,7 +125,7 @@ def test_account_check_configuration_and_authentication_failures(client, catalog
         api, "get_current_user", lambda **kw: pytest.fail("invalid config dispatched")
     )
     check = client.account_info.check()
-    assert not check.ok and len(check.issues) == 2 and check.user is None
+    assert not check.ok and len(check.issues) == 1 and check.user is None
     monkeypatch.setattr(
         Config, "from_files_and_env", classmethod(lambda cls, **kw: (client._config, {}))
     )

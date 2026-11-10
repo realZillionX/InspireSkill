@@ -900,7 +900,7 @@ def test_workspace_discovery_controls_cache_pruning(
 
     workspace_id = "ws-11111111-1111-1111-1111-111111111111"
     session = WebSession(
-        storage_state={}, created_at=1, base_url="https://inspire.example",
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999, created_at=1, base_url="https://inspire.example",
         user_detail={"id": "user-one"},
     )
     index = ResourceIndex(tmp_path / "index.sqlite3")
@@ -1070,7 +1070,7 @@ def test_cache_status_and_clear_never_expose_workspace_handle(
     create_account("alpha", "[inspire]\n")
     set_current_account("alpha")
     WebSession(
-        storage_state={"cookies": [], "origins": []},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
         created_at=time.time(),
         base_url="https://inspire.example",
         login_username="alice",
@@ -1248,7 +1248,7 @@ def test_cache_status_says_so_when_nothing_at_all_is_cached(
     create_account("alpha", "[inspire]\n")
     set_current_account("alpha")
     WebSession(
-        storage_state={"cookies": [], "origins": []},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
         created_at=time.time(),
         base_url="https://inspire.example",
         login_username="alice",
@@ -1276,7 +1276,7 @@ def test_cache_clear_takes_one_kind_at_a_time(tmp_path, monkeypatch) -> None:
     create_account("alpha", "[inspire]\n")
     set_current_account("alpha")
     WebSession(
-        storage_state={"cookies": [], "origins": []},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
         created_at=time.time(),
         base_url="https://inspire.example",
         login_username="alice",

@@ -61,14 +61,7 @@ def _apply_password_fallback(
     sources: dict[str, str],
     env_password: str | None,
 ) -> None:
-    """Apply the environment fallback for the password.
-
-    The account-layer file is the primary source of ``password``; this
-    stage only handles the env-var overrides that CI / scripts rely on.
-    """
-    if not config_dict.get("password") and env_password:
-        config_dict["password"] = env_password
-        sources["password"] = _env_source_for("INSPIRE_PASSWORD")
+    config_dict["password"] = ""
 
 
 def _validate_required_config(
@@ -76,12 +69,7 @@ def _validate_required_config(
     config_dict: dict[str, Any],
     require_credentials: bool,
 ) -> None:
-    if require_credentials:
-        if not config_dict["username"] or not config_dict["password"]:
-            raise ConfigError(
-                "Missing platform credentials for the active account. Run "
-                "`inspire account add <name>` to (re)configure them."
-            )
+    config_dict["password"] = ""
 
 
 __all__ = [

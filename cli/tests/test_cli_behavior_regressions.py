@@ -41,7 +41,7 @@ def test_r1_handshake_failure_keeps_cli_timeout_and_hint(monkeypatch, capsys, st
         ctx,
         notebook_id="nb-test",
         command="echo ok",
-        session=WebSession(storage_state={}, cookies={}, created_at=1),
+        session=WebSession(access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,  created_at=1),
         remote_cwd=None,
         env_exports="",
         timeout_s=60,
@@ -123,7 +123,7 @@ def test_r2_public_status_scrubs_urls_and_ids(kind, operation, status):
 def test_r3_tensorboard_application_http_contract(monkeypatch, path, status):
     from inspire.platform.web.session import requests as preparation
 
-    session = WebSession(storage_state={}, base_url="https://example.invalid", created_at=1)
+    session = WebSession(access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999, base_url="https://example.invalid", created_at=1)
     owner = Transport(None, session.base_url, username="", cli_compat=True)
     owner.adopt_session(session)
     monkeypatch.setattr(

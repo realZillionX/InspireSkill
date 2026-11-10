@@ -245,7 +245,7 @@ def test_workspace_required_hint_points_to_live_context() -> None:
 @pytest.mark.parametrize("scope", ["all", "special"])
 def test_workspace_scope_recovers_empty_session_catalog(monkeypatch, scope):
     session = WebSession(
-        storage_state={}, created_at=1, workspace_id=DEFAULT_WORKSPACE_ID,
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999, created_at=1, workspace_id=DEFAULT_WORKSPACE_ID,
         base_url="https://account.example", all_workspace_ids=[], all_workspace_names={},
     )
     calls = []
@@ -280,7 +280,7 @@ def test_empty_session_discovery_failure_preserves_index(monkeypatch, tmp_path, 
     index.upsert(resource_scope, [ResourceIdentity(WS_SPECIAL, "special")], ttl_seconds=0)
     monkeypatch.setattr(ResourceIndex, "for_account", classmethod(lambda cls, account=None: index))
     session = WebSession(
-        storage_state={}, created_at=1, workspace_id=DEFAULT_WORKSPACE_ID,
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999, created_at=1, workspace_id=DEFAULT_WORKSPACE_ID,
         base_url="https://account.example", user_detail={"id": "user-one"},
         all_workspace_ids=[], all_workspace_names={},
     )
@@ -297,7 +297,7 @@ def test_empty_session_discovery_failure_preserves_index(monkeypatch, tmp_path, 
 
 
 def test_all_workspaces_reports_successful_empty_catalog(monkeypatch):
-    session = WebSession(storage_state={}, created_at=1, workspace_id=DEFAULT_WORKSPACE_ID)
+    session = WebSession(access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999, created_at=1, workspace_id=DEFAULT_WORKSPACE_ID)
     monkeypatch.setattr(workspace_api, "_request_json", lambda *a, **kw: {"Result": {"items": []}})
 
     with pytest.raises(ConfigError, match="No visible workspaces"):

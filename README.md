@@ -71,7 +71,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ## 账号与初始化
 
-账号配置按本地别名（`<name>`）保存在 `~/.inspire/accounts/<name>/config.toml`，与具体代码仓库无关。`account add` 会引导填写平台登录名（手机号、学号或邮箱）、密码、平台地址及代理；未在配置文件中保存密码时，也可通过环境变量 `INSPIRE_PASSWORD` 传入。
+账号配置按本地别名（`<name>`）保存在 `~/.inspire/accounts/<name>/config.toml`。`account add` 创建账号后启动官方 OAuth 设备授权：打开终端给出的链接并确认授权；可用 `--no-login` 暂缓。之后使用 `inspire login --account <name>` 登录，`inspire logout` 仅清除本地 token。密码和 `INSPIRE_PASSWORD` 不再使用；已有用户需要为每个账号运行一次 `inspire login`。
 
 ```bash
 inspire account add <name>

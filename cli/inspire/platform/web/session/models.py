@@ -15,11 +15,12 @@ import json
 import math
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
 from inspire.accounts.cache_lock import exclusive_cache_lock
+from .identity import token_login_username
 
 SESSION_TTL = 3600  # 1 hour
 
@@ -29,29 +30,7 @@ class SessionExpiredError(Exception):
 
 
 class AuthenticationError(ValueError):
-    """A login attempt that reached CAS with credentials and did not authenticate.
-
-    The distinction this carries is not "the login failed" but "the password
-    was put on the wire". CAS locks an account after a handful of rejected
-    submissions, so nothing above this may answer one by trying another
-    transport, another wrapper, or the same credentials again.
-
-    It subclasses ``ValueError`` because that is what this layer has always
-    raised for a failed login, so every existing ``except ValueError`` boundary
-    keeps reporting it the way it always did.
-
-    ``credential_rejection`` is the raiser's own classification of the failure,
-    for the cooldown that has to choose between "wait it out" and "never send
-    these again on a timer". It exists because the message text cannot carry
-    that distinction: a CAPTCHA-gated rejection quotes the platform's
-    "账号或密码错误" *and* explains that the machine is what is being
-    challenged, and a keyword scan over that text reads the quote, not the
-    explanation. ``None`` means the raiser does not know, and the reader may
-    fall back to scanning the platform's words.
-    """
-
-    credential_rejection: Optional[bool] = None
-    retry_at: Optional[float] = None
+    """Authentication requires an explicit device login."""
 
 
 # Statuses that say the platform did not answer, not that the answer is no.
@@ -167,64 +146,6 @@ def _is_bool_mapping(value: object) -> bool:
     )
 
 
-def _is_valid_storage_cookie(value: object) -> bool:
-    if not isinstance(value, dict):
-        return False
-    if not isinstance(value.get("name"), str) or not value["name"]:
-        return False
-    if not isinstance(value.get("value"), str):
-        return False
-
-    for field in ("domain", "path"):
-        if field in value and not isinstance(value[field], str):
-            return False
-    if "expires" in value and value["expires"] is not None and not _is_finite_number(
-        value["expires"]
-    ):
-        return False
-    for field in ("httpOnly", "secure"):
-        if field in value and not isinstance(value[field], bool):
-            return False
-    if "sameSite" in value and value["sameSite"] not in {"Strict", "Lax", "None"}:
-        return False
-    return True
-
-
-def _is_valid_storage_origin(value: object) -> bool:
-    if not isinstance(value, dict):
-        return False
-    origin = value.get("origin")
-    if not isinstance(origin, str) or not origin:
-        return False
-    local_storage = value.get("localStorage", [])
-    if not isinstance(local_storage, list):
-        return False
-    return all(
-        isinstance(item, dict)
-        and isinstance(item.get("name"), str)
-        and isinstance(item.get("value"), str)
-        for item in local_storage
-    )
-
-
-def _is_valid_storage_state(value: object) -> bool:
-    if not isinstance(value, dict):
-        return False
-    if "cookies" in value:
-        cookies = value["cookies"]
-        if not isinstance(cookies, list) or not all(
-            _is_valid_storage_cookie(cookie) for cookie in cookies
-        ):
-            return False
-    if "origins" in value:
-        origins = value["origins"]
-        if not isinstance(origins, list) or not all(
-            _is_valid_storage_origin(origin) for origin in origins
-        ):
-            return False
-    return True
-
-
 def _is_valid_session_cache_payload(data: object) -> bool:
     """Return whether a decoded cache has the shape required by its consumers."""
     if not isinstance(data, dict):
@@ -232,14 +153,17 @@ def _is_valid_session_cache_payload(data: object) -> bool:
     if not _is_finite_number(data.get("created_at")):
         return False
 
-    storage_state = data.get("storage_state")
-    if not _is_valid_storage_state(storage_state):
+    if not all(
+        isinstance(data.get(key), str) and data[key] for key in ("access_token", "refresh_token")
+    ):
         return False
-    if "cookies" in data:
+    if not all(
+        _is_finite_number(data.get(key)) for key in ("access_expires_at", "refresh_expires_at")
+    ):
         return False
 
-    for field in ("workspace_id", "login_username", "base_url", "account"):
-        if data.get(field) is not None and not isinstance(data[field], str):
+    for key in ("workspace_id", "login_username", "base_url", "account"):
+        if data.get(key) is not None and not isinstance(data[key], str):
             return False
     if data.get("user_detail") is not None and not isinstance(data["user_detail"], dict):
         return False
@@ -252,14 +176,12 @@ def _is_valid_session_cache_payload(data: object) -> bool:
 
 @dataclass
 class WebSession:
-    """Captured web session for web-ui APIs.
+    """Account-bound OAuth tokens and discovered platform metadata."""
 
-    We store Playwright `storage_state` because the web-ui APIs behind `/api/v2/*`
-    are protected by Keycloak/CAS SSO and can require more than just a couple
-    of cookies.
-    """
-
-    storage_state: dict[str, Any]
+    access_token: str = field(repr=False)
+    refresh_token: str = field(repr=False)
+    access_expires_at: float
+    refresh_expires_at: float
     created_at: float
     workspace_id: Optional[str] = None
     login_username: Optional[str] = None
@@ -270,16 +192,16 @@ class WebSession:
     all_workspace_fair_scheduling: Optional[dict[str, bool]] = None
     account: Optional[str] = None
 
-    # Kept in memory for websocket clients; storage_state is the cache format.
-    cookies: Optional[dict[str, str]] = None
-
     def is_valid(self) -> bool:
         """Check if session is still valid (not expired)."""
-        return (time.time() - self.created_at) < SESSION_TTL
+        return bool(self.access_token) and self.access_expires_at > time.time() + 60
 
     def to_dict(self) -> dict:
         return {
-            "storage_state": self.storage_state,
+            "access_token": self.access_token,
+            "refresh_token": self.refresh_token,
+            "access_expires_at": self.access_expires_at,
+            "refresh_expires_at": self.refresh_expires_at,
             "workspace_id": self.workspace_id,
             "login_username": self.login_username,
             "base_url": self.base_url,
@@ -293,23 +215,11 @@ class WebSession:
 
     @classmethod
     def from_dict(cls, data: dict) -> "WebSession":
-        storage_state = data.get("storage_state")
-        if isinstance(storage_state, dict):
-            storage_state = dict(storage_state)
-            storage_state.setdefault("cookies", [])
-            storage_state.setdefault("origins", [])
-        else:
-            raise ValueError("Invalid session storage state.")
-        storage_cookies = storage_state["cookies"]
-        cookies = {
-            cookie["name"]: cookie["value"]
-            for cookie in storage_cookies
-            if isinstance(cookie, dict)
-            and isinstance(cookie.get("name"), str)
-            and isinstance(cookie.get("value"), str)
-        }
         return cls(
-            storage_state=storage_state,
+            access_token=data["access_token"],
+            refresh_token=data["refresh_token"],
+            access_expires_at=data["access_expires_at"],
+            refresh_expires_at=data["refresh_expires_at"],
             workspace_id=data.get("workspace_id"),
             login_username=data.get("login_username"),
             base_url=data.get("base_url"),
@@ -319,7 +229,6 @@ class WebSession:
             all_workspace_fair_scheduling=data.get("all_workspace_fair_scheduling"),
             account=data.get("account"),
             created_at=data["created_at"],
-            cookies=cookies,
         )
 
     @blocking_io
@@ -335,7 +244,9 @@ class WebSession:
             return
         self.account = resolved_account
         with exclusive_cache_lock(cache_file):
-            cached = WebSession.load(allow_expired=True, account=resolved_account)
+            cached = WebSession.load(
+                allow_expired=True, account=resolved_account, _repair_identity=False
+            )
             if cached is not None and cached.created_at > self.created_at:
                 return
             atomic_write_text(cache_file, json.dumps(self.to_dict(), ensure_ascii=False), private=True)
@@ -346,6 +257,8 @@ class WebSession:
         cls,
         allow_expired: bool = False,
         account: Optional[str] = None,
+        *,
+        _repair_identity: bool = True,
     ) -> Optional["WebSession"]:
         """Load the account's cached session, or ``None``.
 
@@ -365,6 +278,10 @@ class WebSession:
             return None
         session = cls.from_dict(data)
         session.account = _resolve_account_for_storage(account)
+        if _repair_identity and not session.login_username:
+            session.login_username = token_login_username(session.access_token)
+            if session.login_username:
+                session.save(account=account)
         if allow_expired or session.is_valid():
             return session
         return None

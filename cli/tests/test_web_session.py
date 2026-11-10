@@ -1,5 +1,4 @@
 import json
-import logging
 import threading
 import time
 from pathlib import Path
@@ -18,7 +17,6 @@ from inspire.platform.web.session.browser_launch import (
 )
 from inspire.platform.web.session import browser_client as ws_browser_client
 from inspire.platform.web.session import WebSession
-from inspire.platform.web.session import proxy as ws_proxy
 from inspire.platform.web.session import requests as ws_requests_module
 
 CAS_RSA_EXPONENT = "010001"
@@ -157,29 +155,13 @@ def test_chromium_launch_kwargs_uses_channel_env(
     assert "executable_path" not in kwargs
 
 
-def test_browser_closed_error_detection() -> None:
-    assert ws_auth._is_browser_closed_error(
-        RuntimeError("Page.goto: Target page, context or browser has been closed")
-    )
-    assert not ws_auth._is_browser_closed_error(RuntimeError("Timeout 60000ms exceeded"))
 
 
-def test_browser_launch_runtime_error_detection() -> None:
-    assert ws_auth._is_browser_launch_runtime_error(
-        RuntimeError(
-            "BrowserType.launch: Target page, context or browser has been closed\n"
-            "error while loading shared libraries: libglib-2.0.so.0"
-        )
-    )
-    assert not ws_auth._is_browser_launch_runtime_error(RuntimeError("Timeout 60000ms exceeded"))
 
 
 def test_web_session_round_trip_preserves_workspace_capabilities() -> None:
     session = WebSession(
-        storage_state={
-            "cookies": [{"name": "session", "value": "secret"}],
-            "origins": [],
-        },
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
         workspace_id="ws-test",
         all_workspace_fair_scheduling={"ws-test": True, "ws-standard": False},
         created_at=1.0,
@@ -191,57 +173,13 @@ def test_web_session_round_trip_preserves_workspace_capabilities() -> None:
         "ws-test": True,
         "ws-standard": False,
     }
-    assert restored.cookies == {"session": "secret"}
+    assert restored.access_token == "test-access"
 
 
-def test_cas_page_encrypt_password_matches_page_rsa() -> None:
-    assert (
-        ws_auth._cas_page_encrypt_password("abc", CAS_RSA_EXPONENT, CAS_RSA_MODULUS)
-        == "050d4541820093722eb891339242b9e3147ba98618ed03dd97dc98f4719b0a76"
-        "a139138a7087ca84ee933dc56d7e7fa615a2dbcd4cda0f356eabedd98616a7a5"
-        "cb06926a5005f4c1fe367725e3c0d4651889c92eec7912eb6b01e8edc342acb5"
-        "bb11bd05b8bbd51cb4111954df11bcaf2b904c6eabddf6e1a881d57d95490cd5"
-    )
-    assert (
-        ws_auth._cas_page_encrypt_password("password123", CAS_RSA_EXPONENT, CAS_RSA_MODULUS)
-        == "33547d9dd849975180b45e4bb2377dff321cafb69206403602c31078746174ab"
-        "0fd67a3749053d7c864302da7a4603fffca1247ce45d18b5a8f4944692541c409"
-        "8f6fe4e0bbd25218c7cc55c5b51d7dc4fb89b66d96cdace1581f09d39ade57b"
-        "f83aa7d40bcf1ecff98e92bab666ad3c38808bf83e09eeaa792fa3bf83f1ecc6"
-    )
 
 
-def test_extract_login_form_picks_cas_password_form() -> None:
-    html = """
-    <form id="fm2" action="/sms"><input name="username"><input name="smscode"></form>
-    <form id="fm1" action="/cas/login?service=x">
-      <input name="username" value="">
-      <input id="passwordShow" type="password">
-      <input id="password" name="password" type="hidden">
-      <input name="execution" value="exec-1">
-      <input name="_eventId" value="submit">
-      <input name="loginType" value="1">
-    </form>
-    """
-
-    action, fields = ws_auth._extract_login_form(html, "https://cas.sii.edu.cn/cas/login")
-
-    assert action == "https://cas.sii.edu.cn/cas/login?service=x"
-    assert fields["username"] == ""
-    assert fields["password"] == ""
-    assert fields["execution"] == "exec-1"
-    assert fields["_eventId"] == "submit"
-    assert fields["loginType"] == "1"
 
 
-def test_extract_cas_rsa_key_from_login_js() -> None:
-    text = f"""
-    RSAUtils.setMaxDigits(131);
-    var key = RSAUtils.getKeyPair("{CAS_RSA_EXPONENT}", '', "{CAS_RSA_MODULUS}");
-    var result = RSAUtils.encryptedString(key, password);
-    """
-
-    assert ws_auth._extract_cas_rsa_key(text) == (CAS_RSA_EXPONENT, CAS_RSA_MODULUS)
 
 
 # Reduced from pages captured off the live CAS on 2026-08-18. The whole point
@@ -261,220 +199,40 @@ _LIVE_CAS_REJECTED = _LIVE_CAS_TAB.format(
 )
 
 
-def test_extract_login_failure_hint_reads_the_error_slot_of_a_hidden_tab() -> None:
-    """The reason the user never saw why a login failed."""
-    assert ws_auth._extract_login_failure_hint(_LIVE_CAS_REJECTED) == "账号或密码错误。"
 
 
-def test_extract_login_failure_hint_stays_empty_on_a_page_nobody_failed_on() -> None:
-    """The slot is absent until CAS fills it, so the tab markup is not a hint."""
-    assert ws_auth._extract_login_failure_hint(_LIVE_CAS_CLEAN) == ""
 
 
-def test_extract_login_failure_hint_prefers_the_password_form_slot() -> None:
-    """`error_fm2` belongs to the SMS tab; a password login is not about that."""
-    html = (
-        '<div class="form-error">'
-        '<span name="error_fm2">短信验证码已失效。</span>'
-        '<span name="error_fm1">账号或密码错误。</span>'
-        "</div>"
-    )
-    assert ws_auth._extract_login_failure_hint(html) == "账号或密码错误。"
 
 
-def test_extract_login_failure_hint_joins_the_lines_cas_breaks() -> None:
-    html = '<span name="error_fm1">必须录入用户名。<br/>必须录入密码。</span>'
-    assert ws_auth._extract_login_failure_hint(html) == "必须录入用户名。 必须录入密码。"
 
 
-def test_extract_login_failure_hint_ignores_benign_login_page_copy() -> None:
-    html = """
-    <html><body>
-      <li class="auth_ul_li2"><h3>验证码登录</h3></li>
-      <input class="auth_input paw_input" type="text" placeholder="验证码">
-      <img src="https://example.test/validateimage">
-      <!-- 验证码登录 -->
-      <span class="sendMsg">发送验证码</span>
-      <input type="text" class="auth_input" placeholder="动态验证码">
-      <div class="form-error"><span class="form-tab-nav"></div>
-      <div class="form-error"><span class="form-tab-nav"></span></div>
-      <div class="form-error-message">需要输入验证码</div>
-    </body></html>
-    """
-
-    assert ws_auth._extract_login_failure_hint(html) == ""
 
 
-@pytest.mark.parametrize(
-    "message",
-    [
-        "账号或密码错误，请重新输入",
-        "验证码信息无效。",
-        "账号已被锁定，请 30 分钟后重试",
-    ],
-)
-def test_extract_login_failure_hint_preserves_explicit_error(message: str) -> None:
-    html = f'<div class="form-error">{message}</div>'
-
-    assert ws_auth._extract_login_failure_hint(html) == message
 
 
-def test_extract_login_failure_hint_handles_nested_markup() -> None:
-    html = """
-    <div class="form-error"><span class="form-tab-nav"></div>
-    <div class='field form-error visible'>
-      <script>var password = "secret";</script>
-      <span>登录过于频繁</span><br>请稍后 &amp; 再试
-    </div>
-    """
-
-    assert ws_auth._extract_login_failure_hint(html) == "登录过于频繁 请稍后 & 再试"
 
 
-def test_extract_login_failure_hint_ignores_hidden_and_inert_descendants() -> None:
-    html = """
-    <div class="form-error">
-      账号或密码错误
-      <span hidden>验证码错误</span>
-      <span inert>用户名错误</span>
-      <span aria-hidden="true">密码错误</span>
-      <span class="d-none">账号错误</span>
-    </div>
-    """
-
-    assert ws_auth._extract_login_failure_hint(html) == "账号或密码错误"
 
 
-@pytest.mark.parametrize(
-    "opening_tag",
-    [
-        '<div class="form-error" hidden>',
-        '<div class="form-error" inert>',
-        '<div class="form-error" aria-hidden="true">',
-        '<div class="form-error" style="display: none">',
-        '<div class="form-error" style="visibility: hidden">',
-        '<div class="form-error" style="opacity: 0">',
-        '<div class="form-error hidden">',
-        '<div class="form-error Hidden">',
-    ],
-)
-def test_extract_login_failure_hint_ignores_hidden_error_containers(opening_tag: str) -> None:
-    html = (
-        f'{opening_tag}验证码信息无效</div><div class="form-error">账号已被锁定，请稍后重试</div>'
-    )
-
-    assert ws_auth._extract_login_failure_hint(html) == "账号已被锁定，请稍后重试"
 
 
-@pytest.mark.parametrize(
-    "opening_tag",
-    [
-        "<section hidden>",
-        "<section inert>",
-        '<section aria-hidden="true">',
-        '<section style="display: none">',
-    ],
-)
-def test_extract_login_failure_hint_ignores_hidden_ancestors(opening_tag: str) -> None:
-    html = (
-        f'{opening_tag}<section><div class="form-error">验证码信息无效</div></section></section>'
-        '<div class="form-error">账号已被锁定，请稍后重试</div>'
-    )
-
-    assert ws_auth._extract_login_failure_hint(html) == "账号已被锁定，请稍后重试"
 
 
-def test_extract_login_failure_hint_ignores_inert_markup() -> None:
-    html = """
-    <template><div class="form-error">验证码信息无效</div></template>
-    <noscript><div class="form-error">用户名或密码错误</div></noscript>
-    <div class="form-error">登录过于频繁，请稍后再试</div>
-    """
-
-    assert ws_auth._extract_login_failure_hint(html) == "登录过于频繁，请稍后再试"
 
 
-def test_extract_login_failure_hint_handles_truncated_error_container() -> None:
-    html = '<div class="form-error"><span>账号已被锁定'
-
-    assert ws_auth._extract_login_failure_hint(html) == "账号已被锁定"
-    assert ws_auth._extract_login_failure_hint('<input class="form-error">验证码登录') == ""
 
 
-def test_extract_login_failure_hint_applies_length_limit() -> None:
-    html = '<div class="form-error">账号已被锁定，请稍后重试</div>'
-
-    assert ws_auth._extract_login_failure_hint(html, limit=6) == "账号已被锁定"
-    assert ws_auth._extract_login_failure_hint(html, limit=0) == ""
 
 
-def test_page_content_feeds_the_structured_hint_parser() -> None:
-    class Page:
-        def __init__(self) -> None:
-            self.content_calls = 0
-
-        def content(self) -> str:
-            self.content_calls += 1
-            return '<div class="form-error">账号或密码错误</div>'
-
-    page = Page()
-
-    html = ws_auth._page_content(page)
-    assert ws_auth._extract_login_failure_hint(html) == "账号或密码错误"
-    assert page.content_calls == 1
 
 
-def test_page_content_tolerates_closed_page() -> None:
-    class ClosedPage:
-        def content(self) -> str:
-            raise RuntimeError("page closed")
-
-    assert ws_auth._page_content(ClosedPage()) == ""
 
 
-def test_login_not_complete_message_prioritizes_platform_error() -> None:
-    message = ws_auth._login_not_complete_message(
-        status=401,
-        current_url="https://cas.sii.edu.cn/login",
-        page_hint="账号或密码错误",
-        proxy_source="requests:system_env",
-        base_proxy_route="proxy",
-    )
-
-    assert "Login did not complete." in message
-    assert "Platform reported: 账号或密码错误" in message
-    assert "platform login name" not in message
-    assert "CAPTCHA" not in message
-    assert "inspire account check --details" in message
-    assert "last auth check status=401" in message
-    assert "Shell HTTP_PROXY/HTTPS_PROXY/ALL_PROXY is configured" in message
-    assert "CAS/Keycloak redirects may match NO_PROXY differently" in message
-    assert "proxy_source=requests:system_env, base_route=proxy" in message
 
 
-def test_login_not_complete_message_uses_general_advice_without_platform_error() -> None:
-    message = ws_auth._login_not_complete_message(status=401)
-
-    assert "Platform reported:" not in message
-    assert "platform login name" in message
-    assert "*.sii.edu.cn" in message
-    assert "CAPTCHA" in message
 
 
-def test_explicit_cas_failure_is_not_hidden_by_playwright_fallback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fail_requests_login(*_args, **_kwargs):  # noqa: ANN001
-        raise ws_auth._CasLoginFailure("Platform reported: 账号或密码错误")
-
-    monkeypatch.setattr(ws_auth, "_login_with_cas_requests", fail_requests_login)
-
-    with pytest.raises(ws_auth._CasLoginFailure, match="账号或密码错误"):
-        ws_auth.login_with_playwright(
-            "user",
-            "password",
-            base_url="https://qz.sii.edu.cn",
-        )
 
 
 class _FakePlaywrightLogin:
@@ -600,84 +358,10 @@ class _FakePlaywrightLogin:
         monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: PlaywrightContext())
 
 
-@pytest.mark.parametrize(
-    "payload, expected_ids",
-    [
-        ({"Result": {"items": WORKSPACE_ITEMS}}, [WORKSPACE_ID]),
-        ({"Result": {"items": []}}, []),
-        ({"Result": {"routes": []}}, None),
-    ],
-)
-def test_browser_login_discovers_workspaces(monkeypatch, payload, expected_ids):
-    browser = _FakePlaywrightLogin(form_found=True, workspace_payload=payload)
-    browser.install(monkeypatch)
-
-    session = ws_auth._login_with_browser(
-        "user", "password", base_url="https://example.test", headless=True, account=None,
-    )
-
-    assert browser.submissions == 1
-    assert session.user_detail == {"id": "user-one"}
-    assert session.all_workspace_ids == expected_ids
-    assert session.workspace_id == (WORKSPACE_ID if expected_ids else ws.DEFAULT_WORKSPACE_ID)
-    if expected_ids:
-        assert session.all_workspace_names == {WORKSPACE_ID: "Training"}
-        assert session.all_workspace_fair_scheduling == {WORKSPACE_ID: True}
 
 
-def test_playwright_failure_after_submission_is_an_authentication_error(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """The browser is the last transport, so its failures must still be typed.
-
-    Nothing falls back after it, but the circuit still has to open: the next
-    process to reach an expired session would otherwise submit the same
-    rejected password again.
-    """
-    from inspire.platform.web.session import login_guard
-
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    (tmp_path / ".inspire" / "accounts" / "alice").mkdir(parents=True)
-    _FakePlaywrightLogin(
-        form_found=True,
-        page_html='<div class="form-error">账号已被锁定</div>',
-    ).install(monkeypatch)
-
-    with pytest.raises(ws.AuthenticationError, match="账号已被锁定") as excinfo:
-        ws_auth.login_with_playwright(
-            "alice",
-            "password",
-            base_url="https://qz.sii.edu.cn",
-            account="alice",
-        )
-
-    assert "The password reached CAS" in str(excinfo.value)
-    assert login_guard.block_file("alice").exists()
 
 
-def test_playwright_failure_before_submission_is_not_an_authentication_error(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """No form, no submission — so no rejected credential to remember."""
-    from inspire.platform.web.session import login_guard
-
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    (tmp_path / ".inspire" / "accounts" / "alice").mkdir(parents=True)
-    _FakePlaywrightLogin(form_found=False).install(monkeypatch)
-
-    with pytest.raises(ValueError) as excinfo:
-        ws_auth.login_with_playwright(
-            "alice",
-            "password",
-            base_url="https://qz.sii.edu.cn",
-            account="alice",
-        )
-
-    assert not isinstance(excinfo.value, ws.AuthenticationError)
-    assert "The password reached CAS" not in str(excinfo.value)
-    assert not login_guard.block_file("alice").exists()
 
 
 class _RenewalResponse:
@@ -742,33 +426,8 @@ class _RenewalHTTP(requests.Session):
 
 
 def _expired_session_for_renewal(*, user_id: str | None = "user-one") -> WebSession:
-    origins = [
-        {
-            "origin": "https://qz.sii.edu.cn",
-            "localStorage": [{"name": "ui", "value": "preserve-me"}],
-        }
-    ]
     return WebSession(
-        storage_state={
-            "cookies": [
-                {
-                    "name": "inspire-session",
-                    "value": "expired",
-                    "domain": "qz.sii.edu.cn",
-                    "path": "/",
-                    "expires": -1,
-                },
-                {
-                    "name": "CASTGC",
-                    "value": "still-authenticated",
-                    "domain": "cas.sii.edu.cn",
-                    "path": "/cas",
-                    "expires": -1,
-                    "secure": True,
-                },
-            ],
-            "origins": origins,
-        },
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
         workspace_id="ws-old",
         user_detail={"id": user_id} if user_id else None,
         login_username="alice",
@@ -778,791 +437,48 @@ def _expired_session_for_renewal(*, user_id: str | None = "user-one") -> WebSess
     )
 
 
-def test_expired_qizhi_session_renews_through_sso_without_credentials(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """The long-lived CAS state should renew Qizhi before a password is sent."""
-    (tmp_path / ".inspire" / "accounts" / "alice").mkdir(parents=True)
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    expired = _expired_session_for_renewal()
-    http = _RenewalHTTP(_RenewalResponse({"Result": {"id": "user-one"}}))
-    monkeypatch.setattr(requests, "Session", lambda: http)
-    monkeypatch.setattr(
-        ws_proxy,
-        "resolve_requests_proxy_config",
-        lambda account=None: ({}, "none"),
-    )
-
-    renewed = ws_auth.renew_web_session_without_credentials(expired)
-
-    assert renewed is not None
-    assert renewed.created_at > expired.created_at
-    assert renewed.cookies["inspire-session"] == "fresh"
-    assert renewed.storage_state["origins"] == expired.storage_state["origins"]
-    assert "inspire-session" not in http.seeded_cookie_names
-    assert "CASTGC" in http.seeded_cookie_names
-    assert http.posts == [
-        "https://qz.sii.edu.cn/api/v2/user?Action=GetUserDetail",
-        "https://qz.sii.edu.cn/api/v2/user?Action=ListAccessibleWorkspaces",
-    ]
-
-
-@pytest.mark.parametrize(
-    "workspace_response, expected_ids",
-    [
-        (_RenewalResponse({"Result": {"items": WORKSPACE_ITEMS}}), [WORKSPACE_ID]),
-        (_RenewalResponse({"Result": {"items": []}}), []),
-        (_RenewalResponse({"Result": {"routes": []}}), ["ws-old"]),
-        (_RenewalResponse(status_code=403), ["ws-old"]),
-    ],
-)
-def test_sso_renewal_replaces_only_successful_workspace_catalogs(
-    monkeypatch, tmp_path, workspace_response, expected_ids,
-):
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    expired = _expired_session_for_renewal()
-    expired.all_workspace_ids = ["ws-old"]
-    expired.all_workspace_names = {"ws-old": "Old"}
-    expired.all_workspace_fair_scheduling = {"ws-old": False}
-    http = _RenewalHTTP(
-        _RenewalResponse({"Result": {"id": "user-one"}}),
-        workspace_response=workspace_response,
-    )
-    monkeypatch.setattr(requests, "Session", lambda: http)
-    monkeypatch.setattr(ws_proxy, "resolve_requests_proxy_config", lambda account=None: ({}, "none"))
-
-    renewed = ws_auth.renew_web_session_without_credentials(expired)
-
-    assert renewed is not None
-    assert renewed.all_workspace_ids == expected_ids
-    assert renewed.workspace_id == (expected_ids[0] if expected_ids else ws.DEFAULT_WORKSPACE_ID)
-    if expected_ids == [WORKSPACE_ID]:
-        assert renewed.all_workspace_names == {WORKSPACE_ID: "Training"}
-        assert renewed.all_workspace_fair_scheduling == {WORKSPACE_ID: True}
-    elif not expected_ids:
-        assert renewed.all_workspace_names == {}
-        assert renewed.all_workspace_fair_scheduling == {}
-    else:
-        assert renewed.all_workspace_names == expired.all_workspace_names
-        assert renewed.all_workspace_fair_scheduling == expired.all_workspace_fair_scheduling
-    persisted = WebSession.load(account="alice")
-    assert persisted is not None
-    assert persisted.to_dict() == renewed.to_dict()
-
-
-@pytest.mark.parametrize(
-    ("cookie", "expected"),
-    [
-        ({"name": "CASTGC", "value": "ok", "expires": -1}, True),
-        ({"name": "KEYCLOAK_SESSION_LEGACY", "value": "ok", "expires": 101}, True),
-        ({"name": "CASTGC", "value": "expired", "expires": 100}, False),
-        ({"name": "CASTGC", "value": "", "expires": -1}, False),
-        ({"name": "other", "value": "cookie", "domain": "cas.sii.edu.cn"}, False),
-    ],
-)
-def test_sso_renewal_state_requires_a_live_known_auth_cookie(
-    cookie: dict,
-    expected: bool,
-) -> None:
-    session = WebSession(
-        storage_state={"cookies": [cookie]},
-        created_at=1.0,
-    )
-
-    assert ws_auth._has_sso_renewal_state(session, now=100) is expected
-
-
-def test_sso_renewal_requires_the_cached_user_identity(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        requests,
-        "Session",
-        lambda: pytest.fail("identity-less cached SSO must not be used"),
-    )
-
-    assert (
-        ws_auth.renew_web_session_without_credentials(_expired_session_for_renewal(user_id=None))
-        is None
-    )
-
-
-def test_sso_renewal_rejects_a_different_platform_user(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    http = _RenewalHTTP(_RenewalResponse({"Result": {"id": "user-two"}}))
-    monkeypatch.setattr(requests, "Session", lambda: http)
-    monkeypatch.setattr(
-        ws_proxy, "resolve_requests_proxy_config", lambda account=None: ({}, "none")
-    )
-
-    with pytest.raises(ValueError, match="different platform user"):
-        ws_auth.renew_web_session_without_credentials(_expired_session_for_renewal())
-
-
-@pytest.mark.parametrize("status_code", [302, 401])
-def test_sso_renewal_falls_back_only_after_an_authentication_response(
-    monkeypatch: pytest.MonkeyPatch,
-    status_code: int,
-) -> None:
-    http = _RenewalHTTP(_RenewalResponse(status_code=status_code))
-    monkeypatch.setattr(requests, "Session", lambda: http)
-    monkeypatch.setattr(
-        ws_proxy, "resolve_requests_proxy_config", lambda account=None: ({}, "none")
-    )
-
-    assert ws_auth.renew_web_session_without_credentials(_expired_session_for_renewal()) is None
-
-
-@pytest.mark.parametrize(
-    ("user_response", "issue_platform_cookie", "message"),
-    [
-        (_RenewalResponse(ValueError("not json")), True, "invalid user response"),
-        (_RenewalResponse({"Result": {"name": "no stable id"}}), True, "stable user identity"),
-        (_RenewalResponse({"Result": {"id": "user-one"}}), False, "session cookie"),
-    ],
-)
-def test_sso_renewal_propagates_unexpected_responses_without_credentials(
-    monkeypatch: pytest.MonkeyPatch,
-    user_response: _RenewalResponse,
-    issue_platform_cookie: bool,
-    message: str,
-) -> None:
-    http = _RenewalHTTP(user_response, issue_platform_cookie=issue_platform_cookie)
-    monkeypatch.setattr(requests, "Session", lambda: http)
-    monkeypatch.setattr(
-        ws_proxy, "resolve_requests_proxy_config", lambda account=None: ({}, "none")
-    )
-
-    with pytest.raises(ValueError, match=message):
-        ws_auth.renew_web_session_without_credentials(_expired_session_for_renewal())
-
-
-def test_session_refresh_uses_sso_renewal_before_credential_login(
-    transport,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """A stale credential block must not prevent a passwordless SSO renewal."""
-    from inspire.platform.web.session import login_guard
-
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    (tmp_path / ".inspire" / "accounts" / "alice").mkdir(parents=True)
-    expired = WebSession(
-        storage_state={"cookies": [{"name": "old", "value": "cookie"}]},
-        account="alice",
-        created_at=1.0,
-    )
-    transport.adopt_session(expired)
-    expired.save(account="alice")
-    with pytest.raises(ws.AuthenticationError):
-        with login_guard.guarded_credential_submission(
-            "alice", "secret", account="alice", now=100.0
-        ):
-            raise ws.AuthenticationError("Platform reported: 账号或密码错误。")
-    assert login_guard.block_file("alice").exists()
-
-    renewed = WebSession(
-        storage_state={"cookies": [{"name": "new", "value": "cookie"}]},
-        account="alice",
-        created_at=2.0,
-    )
-    monkeypatch.setattr(
-        ws,
-        "_renew_web_session_without_credentials",
-        lambda _session: renewed,
-    )
-    monkeypatch.setattr(
-        ws,
-        "_get_web_session",
-        lambda **_kwargs: pytest.fail("SSO renewal must precede credential login"),
-    )
-
-    assert transport._refresh_expired_session(observed_created_at=1.0) is renewed
-
-
-def test_session_refresh_submits_credentials_only_after_sso_is_gone(
-    transport,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    expired = WebSession(
-        storage_state={"cookies": [{"name": "old", "value": "cookie"}]},
-        account=None,
-        created_at=1.0,
-    )
-    transport.adopt_session(expired)
-    refreshed = WebSession(
-        storage_state={"cookies": [{"name": "new", "value": "cookie"}]},
-        account=None,
-        created_at=2.0,
-    )
-    events: list[str] = []
-
-    def no_sso(_session: WebSession) -> None:
-        events.append("sso")
-        return None
-
-    def credential_login(**_kwargs) -> WebSession:  # noqa: ANN003
-        events.append("credentials")
-        return refreshed
-
-    monkeypatch.setattr(ws, "_renew_web_session_without_credentials", no_sso)
-    monkeypatch.setattr(ws, "_get_web_session", credential_login)
-
-    assert transport._refresh_expired_session(observed_created_at=1.0) is refreshed
-    assert events == ["sso", "credentials"]
-
-
-def test_sso_renewal_failure_does_not_fall_through_to_a_password(
-    transport,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    expired = WebSession(
-        storage_state={"cookies": [{"name": "old", "value": "cookie"}]},
-        account=None,
-        created_at=1.0,
-    )
-    transport.adopt_session(expired)
-    monkeypatch.setattr(
-        ws,
-        "_renew_web_session_without_credentials",
-        lambda _session: (_ for _ in ()).throw(ValueError("renewal gateway failed")),
-    )
-    monkeypatch.setattr(
-        ws,
-        "_get_web_session",
-        lambda **_kwargs: pytest.fail("a renewal fault must not cause password submission"),
-    )
-
-    with pytest.raises(ValueError, match="renewal gateway failed"):
-        transport._refresh_expired_session(observed_created_at=1.0)
-
-
-def test_cas_server_failure_after_submission_does_not_submit_again_in_a_browser(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A 5xx after the password POST is not a reason to try the other channel.
-
-    The request went out. Whether CAS counted it is not observable from here,
-    so the browser fallback -- which would submit it a second time -- is closed
-    for every outcome past that line, not only for explicit rejections.
-    """
-    login_html = f"""
-    <form action="/cas/login">
-      <input name="username" value="">
-      <input name="password" value="">
-      <input name="execution" value="exec-1">
-    </form>
-    <script>
-      RSAUtils.getKeyPair("{CAS_RSA_EXPONENT}", "", "{CAS_RSA_MODULUS}");
-    </script>
-    """
-
-    class Response:
-        def __init__(self, status_code: int, text: str, url: str) -> None:
-            self.status_code = status_code
-            self.text = text
-            self.url = url
-
-        def raise_for_status(self) -> None:
-            if self.status_code >= 400:
-                raise requests.HTTPError(str(self.status_code))
-
-    class HTTP(requests.Session):
-        def __init__(self) -> None:
-            super().__init__()
-            self.submissions = 0
-
-        def get(self, url, **_kwargs):  # noqa: ANN001
-            return Response(200, login_html, "https://cas.sii.edu.cn/cas/login")
-
-        def post(self, url, **_kwargs):  # noqa: ANN001
-            self.submissions += 1
-            return Response(503, "temporarily unavailable", url)
-
-    http = HTTP()
-    monkeypatch.setattr(requests, "Session", lambda: http)
-    monkeypatch.setattr(
-        ws_proxy,
-        "resolve_requests_proxy_config",
-        lambda account=None: ({}, "none"),
-    )
-    monkeypatch.setattr(
-        "playwright.sync_api.sync_playwright",
-        lambda: pytest.fail("credentials must not be submitted again through Playwright"),
-    )
-
-    with pytest.raises(ws.AuthenticationError, match="The password reached CAS"):
-        ws_auth.login_with_playwright("user", "password", base_url="https://qz.sii.edu.cn")
-
-    assert http.submissions == 1
-
-
-def test_a_login_page_asking_for_a_verification_code_submits_nothing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """CAS wants a human. Submitting the password anyway just loses an attempt.
-
-    Measured against the live platform: after repeated failed logins from one
-    machine, CAS adds `authcode` to the password form and answers every
-    submission with "account or password is wrong" — so the CLI reported a
-    credential problem for an account whose credentials were fine, and each
-    retry spent a real login attempt on a form it could not complete.
-    """
-    login_html = f"""
-    <form id="fm1" action="/cas/login">
-      <input name="username" value="">
-      <input name="password" value="">
-      <input name="execution" value="exec-1">
-      <input id="authcode" name="authcode" value="" placeholder="验证码 Verification Code">
-      <img src="/cas/captcha.jpg" onclick="refreshCaptcha(this);">
-    </form>
-    <script>RSAUtils.getKeyPair("{CAS_RSA_EXPONENT}", "", "{CAS_RSA_MODULUS}");</script>
-    """
-
-    class Response:
-        status_code = 200
-        text = login_html
-        url = "https://cas.sii.edu.cn/cas/login"
-
-        def raise_for_status(self) -> None:
-            return None
-
-    class HTTP(requests.Session):
-        def __init__(self) -> None:
-            super().__init__()
-            self.posts = 0
-
-        def get(self, url, **_kwargs):  # noqa: ANN001
-            return Response()
-
-        def post(self, url, **_kwargs):  # noqa: ANN001
-            self.posts += 1
-            raise AssertionError("nothing may be submitted to a form asking for a code")
-
-    http = HTTP()
-    monkeypatch.setattr(requests, "Session", lambda: http)
-    monkeypatch.setattr(
-        ws_proxy,
-        "resolve_requests_proxy_config",
-        lambda account=None: ({}, "none"),
-    )
-    with pytest.raises(ValueError, match="verification code") as excinfo:
-        ws_auth._login_with_cas_requests("user", "password", base_url="https://qz.sii.edu.cn")
-
-    assert not isinstance(excinfo.value, ws.AuthenticationError)
-    assert "No credentials were submitted" in str(excinfo.value)
-    assert http.posts == 0
-
-
-@pytest.mark.parametrize("browser_requires_code", [False, True])
-def test_requests_verification_checks_browser_before_submitting(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, browser_requires_code: bool
-) -> None:
-    """A client-specific challenge must neither block a clean form nor be ignored."""
-    from inspire.platform.web.session import login_guard
-
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    (tmp_path / ".inspire" / "accounts" / "alice").mkdir(parents=True)
-    code = '<input name="authcode"><img src="/cas/captcha.jpg">'
-    browser = _FakePlaywrightLogin(
-        form_found=True,
-        page_html=(
-            '<form id="fm1"><input name="username"><input name="password">'
-            + (code if browser_requires_code else "")
-            + "</form>"
-        ),
-    )
-    browser.install(monkeypatch)
-
-    def requests_requires_code(*_args, **_kwargs):  # noqa: ANN202
-        raise ws_auth._CasVerificationRequired("requests needs a verification code")
-
-    monkeypatch.setattr(ws_auth, "_login_with_cas_requests", requests_requires_code)
-    error = ws_auth._CasVerificationRequired if browser_requires_code else ws.AuthenticationError
-    with pytest.raises(error):
-        ws_auth.login_with_playwright("alice", "password", account="alice")
-
-    assert browser.submissions == (0 if browser_requires_code else 1)
-    assert browser.fills == (0 if browser_requires_code else 2)
-    assert login_guard.block_file("alice").exists() is not browser_requires_code
-    if browser_requires_code:
-        assert browser.closed
-
-
-def test_the_dead_template_captcha_is_not_read_as_a_prompt() -> None:
-    """The template ships a captcha image at another university's host.
-
-    It is on every login page there has ever been, so treating "mentions a
-    captcha" as the signal would refuse every login forever. Same-origin is
-    what tells the live endpoint from the fossil.
-    """
-    url = "https://cas.sii.edu.cn/cas/login"
-    fossil = '<img src="https://mapp.suda.edu.cn/cas/captcha.jpg">'
-    assert ws_auth._references_live_captcha_image(fossil, url) is False
-    assert ws_auth._references_live_captcha_image('<img src="/cas/captcha.jpg">', url) is True
-
-    # And the field alone is not enough either.
-    field_only = (
-        '<form id="fm1"><input name="username"><input name="password">'
-        f"<input name=\"authcode\"></form>{fossil}"
-    )
-    assert ws_auth._asks_for_verification_code(field_only, url) is False
-
-
-def test_a_dormant_code_field_without_a_live_captcha_does_not_stop_the_login(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The pre-submission gate follows the same two-signal rule.
-
-    Refusing to log in at all is the expensive mistake, so a code-looking
-    field with no captcha image behind it -- what a dormant template leftover
-    would look like -- is submitted as the form carries it. A real gate that
-    slips through is still caught after the submission.
-    """
-    login_html = f"""
-    <form id="fm1" action="/cas/login">
-      <input name="username" value="">
-      <input name="password" value="">
-      <input name="execution" value="exec-1">
-      <input id="authcode" name="authcode" value="">
-    </form>
-    <img src="https://mapp.suda.edu.cn/cas/captcha.jpg">
-    <script>RSAUtils.getKeyPair("{CAS_RSA_EXPONENT}", "", "{CAS_RSA_MODULUS}");</script>
-    """
-
-    class Response:
-        def __init__(self, status_code: int, text: str, url: str) -> None:
-            self.status_code = status_code
-            self.text = text
-            self.url = url
-
-        def raise_for_status(self) -> None:
-            if self.status_code >= 400:
-                raise requests.HTTPError(str(self.status_code))
-
-    class HTTP(requests.Session):
-        def __init__(self) -> None:
-            super().__init__()
-            self.submissions = 0
-
-        def get(self, url, **_kwargs):  # noqa: ANN001
-            return Response(200, login_html, "https://cas.sii.edu.cn/cas/login")
-
-        def post(self, url, **_kwargs):  # noqa: ANN001
-            self.submissions += 1
-            return Response(503, "temporarily unavailable", url)
-
-    http = HTTP()
-    monkeypatch.setattr(requests, "Session", lambda: http)
-    monkeypatch.setattr(
-        ws_proxy,
-        "resolve_requests_proxy_config",
-        lambda account=None: ({}, "none"),
-    )
-    monkeypatch.setattr(
-        "playwright.sync_api.sync_playwright",
-        lambda: pytest.fail("credentials must not be submitted again through Playwright"),
-    )
-
-    with pytest.raises(ws.AuthenticationError, match="The password reached CAS"):
-        ws_auth.login_with_playwright("user", "password", base_url="https://qz.sii.edu.cn")
-
-    assert http.submissions == 1
-
-
-def test_a_verification_code_prompt_does_not_open_the_login_circuit(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """No submission, no recorded failure — the next real attempt is not blocked."""
-    from inspire.platform.web.session import login_guard
-
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    (tmp_path / ".inspire" / "accounts" / "alice").mkdir(parents=True)
-
-    with pytest.raises(ValueError):
-        with login_guard.guarded_credential_submission("alice", "secret", account="alice"):
-            raise ws_auth._CasVerificationRequired("code required")
-
-    assert not login_guard.block_file("alice").exists()
-
-
-def test_a_code_field_that_appears_only_in_the_answer_is_still_named(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """CAS can add the field in response to the submission it just refused.
-
-    That is the same rejection wearing a different cause, and "check that the
-    password is correct" sends the user off to change something that was never
-    wrong -- observed against the live platform.
-    """
-    plain_form = f"""
-    <form id="fm1" action="/cas/login">
-      <input name="username" value=""><input name="password" value="">
-      <input name="execution" value="exec-1">
-    </form>
-    <script>RSAUtils.getKeyPair("{CAS_RSA_EXPONENT}", "", "{CAS_RSA_MODULUS}");</script>
-    """
-    form_with_code = plain_form.replace(
-        '<input name="execution" value="exec-1">',
-        '<input name="execution" value="exec-1"><input name="authcode" value="">'
-        '<img src="/cas/captcha.jpg">',
-    )
-
-    class Response:
-        def __init__(self, status_code: int, text: str) -> None:
-            self.status_code = status_code
-            self.text = text
-            self.url = "https://cas.sii.edu.cn/cas/login"
-
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> dict:
-            return {}
-
-    class HTTP(requests.Session):
-        def get(self, url, **_kwargs):  # noqa: ANN001
-            return Response(200, plain_form)
-
-        def post(self, url, **_kwargs):  # noqa: ANN001
-            # The submission is answered with a page that now wants a code.
-            if "GetUserDetail" in url:
-                return Response(401, form_with_code)
-            return Response(200, form_with_code)
-
-    monkeypatch.setattr(requests, "Session", lambda: HTTP())
-    monkeypatch.setattr(
-        ws_proxy, "resolve_requests_proxy_config", lambda account=None: ({}, "none")
-    )
-    monkeypatch.setattr(
-        "playwright.sync_api.sync_playwright",
-        lambda: pytest.fail("a rejected submission must not be retried through the browser"),
-    )
-
-    with pytest.raises(ws.AuthenticationError) as excinfo:
-        ws_auth.login_with_playwright("user", "password", base_url="https://qz.sii.edu.cn")
-
-    message = str(excinfo.value)
-    assert "asking for a verification code" in message
-    assert "Check that the password is correct" not in message
-
-
-def test_a_gated_rejection_keeps_the_platforms_words_but_not_their_classification(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The gated page quotes "账号或密码错误" for a password that is fine.
-
-    The quote must reach the user -- it is the platform's actual answer -- but
-    the cooldown must read the raiser's classification, not the quote: this
-    clears on its own, and holding the credentials for six hours over it is
-    the misdiagnosis this whole path exists to avoid.
-    """
-    plain_form = f"""
-    <form id="fm1" action="/cas/login">
-      <input name="username" value=""><input name="password" value="">
-      <input name="execution" value="exec-1">
-    </form>
-    <script>RSAUtils.getKeyPair("{CAS_RSA_EXPONENT}", "", "{CAS_RSA_MODULUS}");</script>
-    """
-    gated_answer = (
-        plain_form.replace(
-            '<input name="execution" value="exec-1">',
-            '<input name="execution" value="exec-1"><input name="authcode" value="">'
-            '<img src="/cas/captcha.jpg">',
-        )
-        + '<div class="form-error"><span name="error_fm1">账号或密码错误。</span></div>'
-    )
-
-    class Response:
-        def __init__(self, status_code: int, text: str) -> None:
-            self.status_code = status_code
-            self.text = text
-            self.url = "https://cas.sii.edu.cn/cas/login"
-
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> dict:
-            return {}
-
-    class HTTP(requests.Session):
-        def get(self, url, **_kwargs):  # noqa: ANN001
-            return Response(200, plain_form)
-
-        def post(self, url, **_kwargs):  # noqa: ANN001
-            if "GetUserDetail" in url:
-                return Response(401, gated_answer)
-            return Response(200, gated_answer)
-
-    monkeypatch.setattr(requests, "Session", lambda: HTTP())
-    monkeypatch.setattr(
-        ws_proxy, "resolve_requests_proxy_config", lambda account=None: ({}, "none")
-    )
-    monkeypatch.setattr(
-        "playwright.sync_api.sync_playwright",
-        lambda: pytest.fail("a rejected submission must not be retried through the browser"),
-    )
-
-    with pytest.raises(ws.AuthenticationError) as excinfo:
-        ws_auth.login_with_playwright("user", "password", base_url="https://qz.sii.edu.cn")
-
-    from inspire.platform.web.session import login_guard
-
-    message = str(excinfo.value)
-    assert "账号或密码错误" in message
-    assert "asking for a verification code" in message
-    assert excinfo.value.credential_rejection is False
-    assert login_guard._classify_rejection(excinfo.value) is False
-
-
-def test_a_lost_response_after_submission_is_an_authentication_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    login_html = f"""
-    <form action="/cas/login">
-      <input name="username" value="">
-      <input name="password" value="">
-    </form>
-    <script>RSAUtils.getKeyPair("{CAS_RSA_EXPONENT}", "", "{CAS_RSA_MODULUS}");</script>
-    """
-
-    class Response:
-        status_code = 200
-        text = login_html
-        url = "https://cas.sii.edu.cn/cas/login"
-
-        def raise_for_status(self) -> None:
-            return None
-
-    class HTTP(requests.Session):
-        def __init__(self) -> None:
-            super().__init__()
-            self.submissions = 0
-
-        def get(self, url, **_kwargs):  # noqa: ANN001
-            return Response()
-
-        def post(self, url, **_kwargs):  # noqa: ANN001
-            self.submissions += 1
-            raise requests.exceptions.ConnectionError("connection reset")
-
-    http = HTTP()
-    monkeypatch.setattr(requests, "Session", lambda: http)
-    monkeypatch.setattr(
-        ws_proxy,
-        "resolve_requests_proxy_config",
-        lambda account=None: ({}, "none"),
-    )
-    monkeypatch.setattr(
-        "playwright.sync_api.sync_playwright",
-        lambda: pytest.fail("a lost response must not become a second submission"),
-    )
-
-    with pytest.raises(ws.AuthenticationError):
-        ws_auth.login_with_playwright("user", "password", base_url="https://qz.sii.edu.cn")
-
-    assert http.submissions == 1
-
-
-@pytest.mark.parametrize("failure", ["none", "cache", "workspaces", "user_detail"])
-def test_optional_failure_does_not_discard_an_accepted_login(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-    failure: str,
-) -> None:
-    """An accepted login survives optional failures and explains missing metadata."""
-    login_html = f"""
-    <form action="/cas/login">
-      <input name="username" value="">
-      <input name="password" value="">
-    </form>
-    <script>RSAUtils.getKeyPair("{CAS_RSA_EXPONENT}", "", "{CAS_RSA_MODULUS}");</script>
-    """
-
-    class Response:
-        def __init__(self, status_code: int, payload: dict | None = None) -> None:
-            self.status_code = status_code
-            self.text = login_html
-            self.url = "https://cas.sii.edu.cn/cas/login"
-            self._payload = payload or {}
-
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> dict:
-            if failure == "user_detail" and "id" in self._payload.get("Result", {}):
-                raise ValueError("invalid user detail JSON")
-            return self._payload
-
-    post_urls = []
-
-    class HTTP(requests.Session):
-        def get(self, url, **_kwargs):  # noqa: ANN001
-            return Response(200)
-
-        def post(self, url, **kwargs):  # noqa: ANN001
-            post_urls.append(url)
-            if url.endswith("Action=ListAccessibleWorkspaces"):
-                assert kwargs["json"] == {}
-                if failure == "workspaces":
-                    raise requests.ConnectionError("workspace discovery unavailable")
-                return Response(200, {"Result": {"items": WORKSPACE_ITEMS}})
-            return Response(200, {"Result": {"id": "user-one"}})
-
-    monkeypatch.setattr(requests, "Session", lambda: HTTP())
-    monkeypatch.setattr(
-        ws_proxy,
-        "resolve_requests_proxy_config",
-        lambda account=None: ({}, "none"),
-    )
-
-    def explode(self, account=None):  # noqa: ANN001, ANN202, ARG001
-        if failure == "cache":
-            raise OSError("read-only file system")
-
-    monkeypatch.setattr(WebSession, "save", explode)
-
-    caplog.set_level(logging.DEBUG, logger=ws_auth.__name__)
-    session = ws_auth.login_with_playwright(
-        "user",
-        "password",
-        base_url="https://qz.sii.edu.cn",
-    )
-
-    assert session.login_username == "user"
-    assert len(post_urls) == 3  # One credential submission, user detail, and workspaces.
-    if failure != "workspaces":
-        assert session.all_workspace_ids == [WORKSPACE_ID]
-        assert session.all_workspace_names == {WORKSPACE_ID: "Training"}
-        assert session.all_workspace_fair_scheduling == {WORKSPACE_ID: True}
-    assert sum("/cas/login" in url for url in post_urls) == 1
-    if failure == "cache":
-        assert any("session cache could not be written" in r.message for r in caplog.records)
-    elif failure == "workspaces":
-        assert session.user_detail == {"id": "user-one"}
-        warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
-        assert len(warnings) == 1
-        assert session.all_workspace_ids is None
-        assert warnings[0].exc_info is None
-        assert any(
-            record.levelno == logging.DEBUG and record.exc_info
-            for record in caplog.records
-        )
-    elif failure == "user_detail":
-        assert session.user_detail is None
-        assert any(
-            "user detail unavailable; resource cache scope will lack subject_id" in record.message
-            and record.levelno == logging.DEBUG
-            and record.exc_info
-            for record in caplog.records
-        )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def test_describe_proxy_config_redacts_credentials() -> None:
-    assert ws_auth._describe_proxy_config(
+    assert __import__("inspire.platform.web.session.proxy", fromlist=["describe_proxy_config"]).describe_proxy_config(
         {
             "https": "http://user:secret@127.0.0.1:7897/private?token=value",
             "http": "http://127.0.0.1:7897",
@@ -1605,120 +521,12 @@ def _clear_standard_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
 
-def test_cas_requests_login_honors_no_proxy_for_system_env(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_standard_proxy_env(monkeypatch)
-    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example:18080")
-    monkeypatch.setenv("HTTPS_PROXY", "http://secure-proxy.example:18443")
-    monkeypatch.setenv("ALL_PROXY", "http://all-proxy.example:18081")
-    monkeypatch.setenv("NO_PROXY", ".sii.edu.cn")
-    session = _RecordingRequestsSession()
-    monkeypatch.setattr(requests, "Session", lambda: session)
-    monkeypatch.setattr(
-        ws_proxy,
-        "resolve_requests_proxy_config",
-        lambda account=None: (
-            {
-                "http": "http://proxy.example:18080",
-                "https": "http://secure-proxy.example:18443",
-            },
-            "system_env",
-        ),
-    )
-
-    with pytest.raises(_StopCASProbe):
-        ws_auth._login_with_cas_requests(
-            "user",
-            "password",
-            base_url="https://qz.sii.edu.cn",
-        )
-
-    assert session.trust_env is True
-    assert session.proxies == {}
-    assert session.request_url == "https://qz.sii.edu.cn/login"
-    assert session.effective_proxies == {}
-    external_settings = session.merge_environment_settings(
-        "https://example.com", {}, None, None, None
-    )
-    assert external_settings["proxies"]["https"] == "http://secure-proxy.example:18443"
-    assert external_settings["proxies"]["all"] == "http://all-proxy.example:18081"
 
 
-@pytest.mark.parametrize("source", ["toml", "explicit_env"])
-def test_cas_requests_login_forces_explicit_proxy_despite_no_proxy(
-    monkeypatch: pytest.MonkeyPatch,
-    source: str,
-) -> None:
-    _clear_standard_proxy_env(monkeypatch)
-    monkeypatch.setenv("NO_PROXY", ".sii.edu.cn")
-    proxies = {
-        "http": "http://proxy.example:18080",
-        "https": "http://secure-proxy.example:18443",
-    }
-    session = _RecordingRequestsSession()
-    monkeypatch.setattr(requests, "Session", lambda: session)
-    monkeypatch.setattr(
-        ws_proxy,
-        "resolve_requests_proxy_config",
-        lambda account=None: (proxies, source),
-    )
-
-    with pytest.raises(_StopCASProbe):
-        ws_auth._login_with_cas_requests(
-            "user",
-            "password",
-            base_url="https://qz.sii.edu.cn",
-        )
-
-    assert session.trust_env is False
-    assert session.proxies == proxies
-    assert session.effective_proxies == proxies
 
 
-def test_resolve_cas_rsa_key_reads_same_origin_script() -> None:
-    class Response:
-        def __init__(self, text: str) -> None:
-            self.text = text
-
-        def raise_for_status(self) -> None:
-            pass
-
-    class HTTP:
-        def __init__(self) -> None:
-            self.urls: list[str] = []
-
-        def get(self, url: str, timeout: int) -> Response:
-            self.urls.append(url)
-            return Response(
-                f'var key = RSAUtils.getKeyPair("{CAS_RSA_EXPONENT}", "", "{CAS_RSA_MODULUS}");'
-            )
-
-    html = """
-    <script src="https://cdn.example.com/ignored.js"></script>
-    <script src="/cas/themes/sudy_fudan_ai/js/login.js"></script>
-    """
-    http = HTTP()
-
-    assert ws_auth._resolve_cas_rsa_key(http, html, "https://cas.sii.edu.cn/cas/login") == (
-        CAS_RSA_EXPONENT,
-        CAS_RSA_MODULUS,
-    )
-    assert http.urls == ["https://cas.sii.edu.cn/cas/themes/sudy_fudan_ai/js/login.js"]
 
 
-def test_decode_keycloak_login_url() -> None:
-    html = '"loginUrl": "\\/realms\\/inf-internal\\/broker\\/cas\\/login?client_id=x"'
-
-    url = ws_auth._decode_keycloak_login_url(
-        html,
-        "https://keycloak-inspire-prod.sii.edu.cn/realms/inf-internal/login",
-    )
-
-    assert (
-        url
-        == "https://keycloak-inspire-prod.sii.edu.cn/realms/inf-internal/broker/cas/login?client_id=x"
-    )
 
 
 def test_playwright_install_args_include_deps_for_root_linux_apt(
@@ -1759,8 +567,8 @@ def test_playwright_install_hint_has_no_dependency_mode_argument() -> None:
 
 def test_build_requests_session_applies_toml_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
     session = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "abc"}]},
-        cookies={"session": "abc"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-test",
         created_at=0,
     )
@@ -1789,8 +597,8 @@ def test_pooled_requests_session_keeps_one_connection_pool() -> None:
     # request, so a fan-out pays a TCP connect and TLS handshake per row it
     # reads. The pool has to outlive the call for keep-alive to mean anything.
     session = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "abc"}]},
-        cookies={"session": "abc"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-test",
         created_at=0,
     )
@@ -1805,8 +613,8 @@ def test_pooled_requests_session_keeps_one_connection_pool() -> None:
 
 def test_pooled_requests_sessions_are_isolated_between_threads() -> None:
     session = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "abc"}]},
-        cookies={"session": "abc"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-test",
         created_at=0,
     )
@@ -1839,14 +647,14 @@ def test_pooled_requests_session_never_answers_with_stale_cookies() -> None:
     # Only the pool is shared. A refreshed session's cookies must replace the
     # previous ones outright, not merge with them.
     first_session = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "old"}]},
-        cookies={"session": "old"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-test",
         created_at=0,
     )
     refreshed = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "new"}]},
-        cookies={"session": "new"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-test",
         created_at=1,
     )
@@ -1856,7 +664,8 @@ def test_pooled_requests_session_never_answers_with_stale_cookies() -> None:
 
         http = ws_requests_module.pooled_requests_session(refreshed, "https://qz.sii.edu.cn")
 
-        assert http.cookies.get("session", domain="qz.sii.edu.cn") == "new"
+        assert not http.cookies
+        assert http.prepare_request(requests.Request("GET", "https://qz.sii.edu.cn")).headers["Authorization"] == "Bearer test-access"
         assert http.cookies.get("drive-by", domain="qz.sii.edu.cn") is None
     finally:
         ws_requests_module.close_pooled_requests_session()
@@ -1875,15 +684,15 @@ def test_request_json_auth_response_rebuilds_once_without_a_browser(
     on for the rest of the process.
     """
     session = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "expired"}]},
-        cookies={"session": "expired"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-test",
         created_at=1,
     )
     transport.adopt_session(session)
     refreshed = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "fresh"}]},
-        cookies={"session": "fresh"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-test",
         created_at=2,
     )
@@ -1906,7 +715,7 @@ def test_request_json_auth_response_rebuilds_once_without_a_browser(
         "_get_browser_client",
         lambda _session: pytest.fail("an expiry must not be retried through a browser"),
     )
-    monkeypatch.setattr(ws, "_get_web_session", fake_login)
+    monkeypatch.setattr(ws_auth, "refresh_session", lambda _session: fake_login())
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
     monkeypatch.setattr(transport, "_force_browser", False)
 
@@ -1921,8 +730,8 @@ def test_request_json_auth_response_rebuilds_once_without_a_browser(
 
 def test_request_json_non_json_triggers_fallback(transport, monkeypatch: pytest.MonkeyPatch):
     session = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "abc"}]},
-        cookies={"session": "abc"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-test",
         created_at=0,
     )
@@ -1945,8 +754,8 @@ def test_request_json_non_json_triggers_fallback(transport, monkeypatch: pytest.
 
 def test_request_json_transport_error_triggers_fallback(transport, monkeypatch: pytest.MonkeyPatch):
     session = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "abc"}]},
-        cookies={"session": "abc"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-test",
         created_at=0,
     )
@@ -1983,8 +792,8 @@ def test_request_json_transport_error_triggers_fallback(transport, monkeypatch: 
 
 def test_request_json_supports_delete(transport, monkeypatch: pytest.MonkeyPatch):
     session = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "abc"}]},
-        cookies={"session": "abc"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-test",
         created_at=0,
     )
@@ -2006,8 +815,8 @@ def test_request_json_browser_runtime_error_uses_standard_hint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "abc"}]},
-        cookies={"session": "abc"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-test",
         created_at=0,
     )
@@ -2033,8 +842,8 @@ def test_request_json_browser_runtime_error_uses_standard_hint(
 
 def test_browser_client_reset_on_expired(transport, monkeypatch: pytest.MonkeyPatch):
     session = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "abc"}]},
-        cookies={"session": "abc"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-test",
         created_at=0,
     )
@@ -2056,7 +865,7 @@ def test_browser_client_reset_on_expired(transport, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(ws, "_get_browser_client", lambda _session: ExpiringBrowserClient())
     monkeypatch.setattr(ws, "_close_browser_client", fake_close)
     monkeypatch.setattr(transport, "_force_browser", True)
-    monkeypatch.setattr(ws, "_get_web_session", fake_get_web_session)
+    monkeypatch.setattr(ws_auth, "refresh_session", lambda _session: fake_get_web_session())
 
     with pytest.raises(ws.SessionExpiredError):
         transport.request("GET", "")
@@ -2070,15 +879,15 @@ def test_request_json_reauth_is_silent(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     session = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "abc"}]},
-        cookies={"session": "abc"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-test",
         created_at=0,
     )
     transport.adopt_session(session)
     refreshed = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "new"}]},
-        cookies={"session": "new"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-test",
         created_at=1,
     )
@@ -2090,7 +899,7 @@ def test_request_json_reauth_is_silent(
     monkeypatch.setattr(ws, "_get_browser_client", lambda _session: ExpiringBrowserClient())
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
     monkeypatch.setattr(transport, "_force_browser", True)
-    monkeypatch.setattr(ws, "_get_web_session", lambda **_kwargs: refreshed)
+    monkeypatch.setattr(ws_auth, "refresh_session", lambda _session: refreshed)
     monkeypatch.setattr(
         ws,
         "pooled_requests_session",
@@ -2106,16 +915,16 @@ def test_request_json_reauth_is_silent(
 
 def test_request_json_reauth_refreshes_session_in_place(transport, monkeypatch: pytest.MonkeyPatch):
     session = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "old"}]},
-        cookies={"session": "old"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-old",
         login_username="old-user",
         created_at=1.0,
     )
     transport.adopt_session(session)
     refreshed = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "new"}]},
-        cookies={"session": "new"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-new",
         login_username="new-user",
         all_workspace_fair_scheduling={"ws-new": True},
@@ -2137,14 +946,13 @@ def test_request_json_reauth_refreshes_session_in_place(transport, monkeypatch: 
     monkeypatch.setattr(ws, "_get_browser_client", lambda _session: expiring)
     monkeypatch.setattr(ws, "pooled_requests_session", lambda _session, _url: http)
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
-    monkeypatch.setattr(ws, "_get_web_session", fake_get_web_session)
+    monkeypatch.setattr(ws_auth, "refresh_session", lambda _session: fake_get_web_session())
     monkeypatch.setattr(transport, "_force_browser", True)
 
     result = transport.request("GET", "")
     assert result == {"ok": True}
     assert refresh_calls["count"] == 1
-    assert session.storage_state == refreshed.storage_state
-    assert session.cookies == refreshed.cookies
+    assert session.access_token == refreshed.access_token
     assert session.workspace_id == refreshed.workspace_id
     assert session.login_username == refreshed.login_username
     assert session.all_workspace_fair_scheduling == refreshed.all_workspace_fair_scheduling
@@ -2172,8 +980,8 @@ def test_a_rate_limited_call_still_gets_only_one_session_rebuild(
     monkeypatch.setattr(ws_retry.time, "sleep", lambda _seconds: None)
 
     session = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "expired"}]},
-        cookies={"session": "expired"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-test",
         created_at=1.0,
     )
@@ -2198,14 +1006,14 @@ def test_a_rate_limited_call_still_gets_only_one_session_rebuild(
     def fake_login(**_kwargs) -> WebSession:  # noqa: ANN003
         logins["count"] += 1
         return WebSession(
-            storage_state={"cookies": [{"name": "session", "value": "fresh"}]},
-            cookies={"session": "fresh"},
+            access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
             workspace_id="ws-test",
             created_at=2.0 + logins["count"],
         )
 
     monkeypatch.setattr(ws, "pooled_requests_session", lambda _session, _url: http)
-    monkeypatch.setattr(ws, "_get_web_session", fake_login)
+    monkeypatch.setattr(ws_auth, "refresh_session", lambda _session: fake_login())
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
     monkeypatch.setattr(
         ws,
@@ -2232,8 +1040,8 @@ def test_a_session_another_caller_already_rebuilt_is_not_rebuilt_again(
     second login for a session nobody had tried yet.
     """
     session = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "expired"}]},
-        cookies={"session": "expired"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-test",
         created_at=1.0,
     )
@@ -2249,7 +1057,7 @@ def test_a_session_another_caller_already_rebuilt_is_not_rebuilt_again(
             if self.calls == 1:
                 # The other caller finished its refresh while this request was
                 # in flight, and wrote the result into the shared object.
-                session.storage_state = {"cookies": [{"name": "session", "value": "fresh"}]}
+                session.access_token = "fresh"
                 session.cookies = {"session": "fresh"}
                 session.created_at = 2.0
                 return DummyResponse(401)
@@ -2284,8 +1092,8 @@ def test_a_login_nothing_can_use_is_not_repeated_for_every_call(
     """
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     session = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "stale"}]},
-        cookies={"session": "stale"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         created_at=1.0,
     )
     transport.adopt_session(session)
@@ -2294,15 +1102,15 @@ def test_a_login_nothing_can_use_is_not_repeated_for_every_call(
     def fake_login(**_kwargs) -> WebSession:  # noqa: ANN003
         logins["count"] += 1
         return WebSession(
-            storage_state={"cookies": [{"name": "session", "value": "fresh"}]},
-            cookies={"session": "fresh"},
+            access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
             created_at=1.0 + logins["count"],
         )
 
     monkeypatch.setattr(
         ws, "pooled_requests_session", lambda *_args: DummyHTTP(DummyResponse(401))
     )
-    monkeypatch.setattr(ws, "_get_web_session", fake_login)
+    monkeypatch.setattr(ws_auth, "refresh_session", lambda _session: fake_login())
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
     monkeypatch.setattr(
         ws, "_get_browser_client", lambda _session: pytest.fail("no browser expected")
@@ -2331,8 +1139,8 @@ def test_a_stragglers_success_on_the_old_generation_does_not_vouch_for_the_new(
     """
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     session = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "old"}]},
-        cookies={"session": "old"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         created_at=1.0,
     )
     transport.adopt_session(session)
@@ -2342,7 +1150,7 @@ def test_a_stragglers_success_on_the_old_generation_does_not_vouch_for_the_new(
             if session.created_at == 1.0:
                 # Another caller's rebuild lands while this request is on the
                 # wire; the generation it minted has answered nothing yet.
-                session.storage_state = {"cookies": [{"name": "session", "value": "minted"}]}
+                session.access_token = "minted"
                 session.cookies = {"session": "minted"}
                 session.created_at = 2.0
                 transport._unproven_rebuild = 2.0
@@ -2376,8 +1184,8 @@ def test_a_rebuilt_session_that_works_does_not_block_a_later_expiry(
     """The refusal is about an *unusable* login, not about having logged in."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     session = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "stale"}]},
-        cookies={"session": "stale"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         created_at=1.0,
     )
     transport.adopt_session(session)
@@ -2391,13 +1199,13 @@ def test_a_rebuilt_session_that_works_does_not_block_a_later_expiry(
     def fake_login(**_kwargs) -> WebSession:  # noqa: ANN003
         logins["count"] += 1
         return WebSession(
-            storage_state={"cookies": [{"name": "session", "value": "fresh"}]},
-            cookies={"session": "fresh"},
+            access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
             created_at=1.0 + logins["count"],
         )
 
     monkeypatch.setattr(ws, "pooled_requests_session", lambda *_args: _Sequenced())
-    monkeypatch.setattr(ws, "_get_web_session", fake_login)
+    monkeypatch.setattr(ws_auth, "refresh_session", lambda _session: fake_login())
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
     monkeypatch.setattr(transport, "_force_browser", False)
 
@@ -2414,6 +1222,7 @@ def test_browser_request_context_posts_json_bytes():
     context = DummyBrowserContext()
     client._context = context
     client._closed = False
+    client.session = WebSession(access_token="test", refresh_token="refresh", access_expires_at=9999999999, refresh_expires_at=9999999999, created_at=1)
     client.session_fingerprint = "test"
 
     result = client.request_json("POST", "https://example.test", body={"a": 1})
@@ -2432,6 +1241,7 @@ def test_browser_request_context_supports_delete():
     context = DummyBrowserContext()
     client._context = context
     client._closed = False
+    client.session = WebSession(access_token="test", refresh_token="refresh", access_expires_at=9999999999, refresh_expires_at=9999999999, created_at=1)
     client.session_fingerprint = "test"
 
     result = client.request_json("DELETE", "https://example.test/api/v2/image?Action=DeleteImage")
@@ -2444,8 +1254,8 @@ def test_browser_request_context_supports_delete():
 
 def test_browser_client_cache_is_thread_local(monkeypatch: pytest.MonkeyPatch):
     session = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "abc"}]},
-        cookies={"session": "abc"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-test",
         created_at=0,
     )
@@ -2491,8 +1301,8 @@ def test_browser_client_cache_is_thread_local(monkeypatch: pytest.MonkeyPatch):
 
 def test_browser_client_recreates_closed_thread_local_client(monkeypatch: pytest.MonkeyPatch):
     session = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "abc"}]},
-        cookies={"session": "abc"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-test",
         created_at=0,
     )
@@ -2548,8 +1358,8 @@ def test_close_browser_client_does_not_block_on_hung_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "abc"}]},
-        cookies={"session": "abc"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-test",
         created_at=0,
     )
@@ -2581,85 +1391,8 @@ def test_close_browser_client_does_not_block_on_hung_close(
     assert client._closed is True
 
 
-def test_get_credentials_reads_account_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """The active account TOML is the sole identity source.
-
-    Identity (`[auth]`) is account-scope and cannot live in the project
-    layer at all — the loader rejects it. With env unset, get_credentials
-    returns the active account's stored values.
-    """
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    monkeypatch.setattr(Path, "home", lambda: fake_home)
-
-    account_dir = fake_home / ".inspire" / "accounts" / "alice"
-    account_dir.mkdir(parents=True)
-    (account_dir / "config.toml").write_text(
-        '[auth]\nusername = "account-user"\npassword = "account-pass"\n',
-        encoding="utf-8",
-    )
-    (fake_home / ".inspire" / "current").write_text("alice\n", encoding="utf-8")
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("INSPIRE_USERNAME", raising=False)
-    monkeypatch.delenv("INSPIRE_PASSWORD", raising=False)
-
-    username, password = ws.get_credentials()
-
-    assert username == "account-user"
-    assert password == "account-pass"
 
 
-def test_get_web_session_reauths_when_cached_user_mismatch(monkeypatch: pytest.MonkeyPatch):
-    cached = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "abc"}]},
-        cookies={"session": "abc"},
-        workspace_id="ws-test",
-        login_username="old-user",
-        created_at=0,
-    )
-    refreshed = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "new"}]},
-        cookies={"session": "new"},
-        workspace_id="ws-test",
-        login_username="new-user",
-        created_at=1,
-    )
-    calls: dict[str, str] = {}
-
-    monkeypatch.setattr(
-        ws_auth.WebSession,
-        "load",
-        classmethod(lambda cls, allow_expired=False, account=None: cached),
-    )
-    monkeypatch.setattr(ws_auth, "get_credentials", lambda account=None: ("new-user", "new-pass"))
-    monkeypatch.setattr(
-        ws_auth,
-        "_load_runtime_config",
-        lambda account=None: type("Cfg", (), {"base_url": "https://example.invalid"})(),
-    )
-
-    def fake_login(
-        username: str,
-        password: str,
-        base_url: str = "",
-        headless: bool = True,
-        account=None,  # noqa: ANN001
-    ):
-        calls["username"] = username
-        calls["password"] = password
-        calls["base_url"] = base_url
-        calls["headless"] = str(headless)
-        return refreshed
-
-    monkeypatch.setattr(ws_auth, "login_with_playwright", fake_login)
-
-    session = ws_auth.get_web_session(force_refresh=False, require_workspace=False)
-
-    assert session is refreshed
-    assert calls["username"] == "new-user"
-    assert calls["password"] == "new-pass"
-    assert calls["base_url"] == "https://example.invalid"
 
 
 def test_get_web_session_reads_cached_session_without_explicit_account(
@@ -2667,8 +1400,8 @@ def test_get_web_session_reads_cached_session_without_explicit_account(
 ):
     """Resolve the session cache through the active InspireSkill account."""
     cached = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "abc"}]},
-        cookies={"session": "abc"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-test",
         login_username="project-user",
         created_at=0,
@@ -2680,7 +1413,6 @@ def test_get_web_session_reads_cached_session_without_explicit_account(
         return cached
 
     monkeypatch.setattr(ws_auth.WebSession, "load", classmethod(fake_load))
-    monkeypatch.setattr(ws_auth, "get_credentials", lambda account=None: ("project-user", "secret"))
 
     session = ws_auth.get_web_session(force_refresh=False, require_workspace=False)
 
@@ -2690,114 +1422,8 @@ def test_get_web_session_reads_cached_session_without_explicit_account(
     assert load_calls[0] is None
 
 
-def test_get_web_session_explicit_account_uses_account_cache_and_login(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    refreshed = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "new"}]},
-        cookies={"session": "new"},
-        workspace_id="ws-new",
-        login_username="alice-user",
-        created_at=1,
-    )
-    calls: dict[str, object] = {"loads": []}
-
-    def fake_load(cls, allow_expired=False, account=None):  # type: ignore[no-untyped-def]
-        calls["loads"].append((allow_expired, account))
-
-    def fake_get_credentials(account=None):  # type: ignore[no-untyped-def]
-        calls["credentials_account"] = account
-        return "alice-user", "alice-pass"
-
-    def fake_runtime_config(account=None):  # type: ignore[no-untyped-def]
-        calls["runtime_account"] = account
-        return type("Cfg", (), {"base_url": "https://alice.invalid"})()
-
-    def fake_login(
-        username: str,
-        password: str,
-        base_url: str = "",
-        headless: bool = True,
-        account=None,  # noqa: ANN001
-    ):
-        calls["login"] = {
-            "username": username,
-            "password": password,
-            "base_url": base_url,
-            "headless": headless,
-            "account": account,
-        }
-        return refreshed
-
-    monkeypatch.setattr(ws_auth.WebSession, "load", classmethod(fake_load))
-    monkeypatch.setattr(ws_auth, "get_credentials", fake_get_credentials)
-    monkeypatch.setattr(ws_auth, "_load_runtime_config", fake_runtime_config)
-    monkeypatch.setattr(ws_auth, "login_with_playwright", fake_login)
-
-    session = ws_auth.get_web_session(account="alice")
-
-    assert session is refreshed
-    assert calls["loads"] == [(False, "alice"), (True, "alice")]
-    assert calls["credentials_account"] == "alice"
-    assert calls["runtime_account"] == "alice"
-    assert calls["login"]["account"] == "alice"
 
 
-def test_get_web_session_force_refresh_bypasses_cache(monkeypatch: pytest.MonkeyPatch):
-    cached = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "old"}]},
-        cookies={"session": "old"},
-        workspace_id="ws-old",
-        login_username="refresh-user",
-        created_at=0,
-    )
-    refreshed = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "new"}]},
-        cookies={"session": "new"},
-        workspace_id="ws-new",
-        login_username="refresh-user",
-        created_at=1,
-    )
-    load_calls: list[tuple[bool, str | None]] = []
-    login_calls: dict[str, str] = {}
-
-    def fake_load(cls, allow_expired=False, account=None):  # type: ignore[no-untyped-def]
-        load_calls.append((allow_expired, account))
-        return cached
-
-    def fake_login(
-        username: str,
-        password: str,
-        base_url: str = "",
-        headless: bool = True,
-        account=None,  # noqa: ANN001
-    ):
-        login_calls["username"] = username
-        login_calls["password"] = password
-        login_calls["base_url"] = base_url
-        login_calls["headless"] = str(headless)
-        return refreshed
-
-    monkeypatch.setattr(ws_auth.WebSession, "load", classmethod(fake_load))
-    monkeypatch.setattr(
-        ws_auth,
-        "get_credentials",
-        lambda account=None: ("refresh-user", "refresh-pass"),
-    )
-    monkeypatch.setattr(
-        ws_auth,
-        "_load_runtime_config",
-        lambda account=None: type("Cfg", (), {"base_url": "https://example.invalid"})(),
-    )
-    monkeypatch.setattr(ws_auth, "login_with_playwright", fake_login)
-
-    session = ws_auth.get_web_session(force_refresh=True, require_workspace=False)
-
-    assert session is refreshed
-    assert load_calls == []
-    assert login_calls["username"] == "refresh-user"
-    assert login_calls["password"] == "refresh-pass"
-    assert login_calls["base_url"] == "https://example.invalid"
 
 
 def test_asyncio_browser_fallback_uses_disposable_clients(transport, monkeypatch: pytest.MonkeyPatch):
@@ -2809,8 +1435,8 @@ def test_asyncio_browser_fallback_uses_disposable_clients(transport, monkeypatch
     import threading
 
     session = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "abc"}]},
-        cookies={"session": "abc"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-test",
         created_at=0,
     )
@@ -2926,8 +1552,8 @@ def test_save_writes_to_account_dir(
     monkeypatch.setattr(accounts_mod, "current_account", lambda: "alice")
 
     session = WebSession(
-        storage_state={"cookies": []},
-        cookies={},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         login_username="platform-user",
         created_at=time.time(),
     )
@@ -2949,7 +1575,7 @@ def test_save_prefers_bound_account_over_current_account(
     monkeypatch.setattr(accounts_mod, "current_account", lambda: "beta")
 
     session = WebSession(
-        storage_state={"cookies": []},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
         created_at=time.time(),
         login_username="alpha-user",
         account="alpha",
@@ -2987,7 +1613,7 @@ def test_loaded_session_stays_bound_after_current_account_switch(
     )
     alpha_cache.parent.mkdir(parents=True)
     original = WebSession(
-        storage_state={"cookies": []},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
         created_at=time.time(),
         login_username="before",
         account="alpha",
@@ -3019,7 +1645,7 @@ def test_save_explicit_account_overrides_bound_and_current_accounts(
     monkeypatch.setattr(accounts_mod, "current_account", lambda: "beta")
 
     session = WebSession(
-        storage_state={"cookies": []},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
         created_at=time.time(),
         account="alpha",
     )

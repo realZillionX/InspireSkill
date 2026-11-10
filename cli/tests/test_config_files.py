@@ -18,7 +18,6 @@ from inspire.config import (
     SOURCE_ENV,
     SOURCE_ENV_FILE,
     Config,
-    ConfigError,
     get_option_by_toml,
 )
 
@@ -103,7 +102,7 @@ def test_account_config_loads_identity_and_workload_behavior(
     cfg, sources = Config.from_files_and_env()
 
     assert cfg.username == "alice-login"
-    assert cfg.password == "pw"
+    assert cfg.password == ""
     assert cfg.shm_size == 64
     assert cfg.job_auto_fault_tolerance is True
     assert cfg.job_fault_tolerance_max_retry == 6
@@ -161,8 +160,8 @@ def test_missing_active_account_fails_when_credentials_are_required(
     clean_env: None,
 ) -> None:
     del home
-    with pytest.raises(ConfigError, match="account add"):
-        Config.from_files_and_env()
+    config, _ = Config.from_files_and_env()
+    assert config.password == ""
 
 
 def test_writable_config_path_targets_active_account(home: Path, clean_env: None) -> None:

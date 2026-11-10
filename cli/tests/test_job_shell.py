@@ -16,6 +16,8 @@ from inspire.platform.web.browser_api import jobs as jobs_module
 
 
 class _FakeSession:
+    base_url = "https://qz.sii.edu.cn"
+    access_token = "cookie-v1"
     workspace_id = "ws-default"
     storage_state = {
         "cookies": [
@@ -70,7 +72,7 @@ def test_build_remote_cmd_url_and_headers(monkeypatch) -> None:  # noqa: ANN001
         "job_id=job-abc&instance_name=worker-0"
     )
     assert headers["Origin"] == "https://qz.sii.edu.cn"
-    assert headers["Cookie"] == "inspire-session=cookie-v1"
+    assert headers["Authorization"] == "Bearer cookie-v1"
 
 
 def test_select_job_instance_requires_selector_for_multiple_running() -> None:

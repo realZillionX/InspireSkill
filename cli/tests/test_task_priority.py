@@ -19,7 +19,7 @@ STANDARD_WORKSPACE_ID = "ws-22222222-2222-2222-2222-222222222222"
 
 def _session(**kwargs: object) -> WebSession:
     return WebSession(
-        storage_state={"cookies": [], "origins": []},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
         created_at=0.0,
         workspace_id=FAIR_WORKSPACE_ID,
         **kwargs,

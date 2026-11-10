@@ -73,7 +73,7 @@ def test_protocol_errors_match(data):
 
 
 def session():
-    return WebSession(storage_state={"cookies": [{"name": "inspire-session", "value": "fake"}]},
+    return WebSession(access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
                       created_at=1, base_url="https://example.test")
 
 
@@ -239,6 +239,7 @@ def test_browser_clients_share_requests_and_classification(status, method):
 
     sync = object.__new__(_BrowserRequestClient)
     sync._closed = False
+    sync.session = session()
     sync._context = SimpleNamespace(request=SimpleNamespace(get=send, post=send, delete=send))
     asynchronous = AsyncBrowserRequestClient(session())
     asynchronous._context = SimpleNamespace(request=SimpleNamespace(get=async_send, post=async_send, delete=async_send))

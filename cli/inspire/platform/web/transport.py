@@ -207,11 +207,11 @@ class Transport:
     def _validate_session(self, session):
         if (
             session is None
-            or not session.storage_state.get("cookies")
+            or not session.access_token
             or (session.base_url or "").rstrip("/") != self.base_url
             or session.account not in (None, self.account)
         ):
-            raise AuthenticationError("No matching cached session; initialize this account first.")
+            raise AuthenticationError("No matching cached session; run inspire login.")
         return session
 
     @property

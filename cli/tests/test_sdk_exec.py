@@ -76,9 +76,7 @@ class FakeSocket:
 
 @pytest.fixture
 def sockets(client, monkeypatch):
-    client._transport._session.storage_state["cookies"] = [
-        {"name": "inspire-session", "value": "fake-session"}
-    ]
+    client._transport._session.access_token = "fake-session"
     created = []
     clock = [0.0]
 
@@ -121,7 +119,7 @@ def test_pty_capture_protocol_and_callback(client, sockets):
     assert result == ExecResult(3, "hello 世\r\n", "hello 世\r\n", "", True, "pty")
     socket = sockets[0]
     assert socket.sent == [jt.build_jupyter_exec_command("exit 3", marker="test-marker")]
-    assert socket.headers["Cookie"] == "inspire-session=fake-session"
+    assert socket.headers["Authorization"] == "Bearer fake-session"
     assert socket.headers["Origin"] == client.base_url
     assert "Sec-WebSocket-Protocol" not in socket.headers
     assert socket.pongs == [b"ping"]
@@ -186,7 +184,7 @@ def test_sdk_renews_once_before_sending(client, sockets, monkeypatch, always_fai
 
     def refresh():
         refreshes.append(1)
-        client._transport._session.storage_state["cookies"][0]["value"] = "renewed"
+        client._transport._session.access_token = "renewed"
 
     monkeypatch.setattr(client._transport, "_refresh", refresh)
     monkeypatch.setattr(
@@ -198,7 +196,7 @@ def test_sdk_renews_once_before_sending(client, sockets, monkeypatch, always_fai
     else:
         result = client.jobs.exec(job_ref(client), command="echo hi")
         assert result.returncode == 3 and result.instance == "worker-0"
-        assert sockets[1].headers["Cookie"] == "inspire-session=renewed"
+        assert sockets[1].headers["Authorization"] == "Bearer renewed"
     assert refreshes == [1]
     assert len(sockets) == 2 and all(s.closed for s in sockets)
     assert sockets[0].sent == []

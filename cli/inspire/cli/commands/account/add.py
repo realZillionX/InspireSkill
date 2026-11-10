@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import io
-from contextlib import redirect_stderr, redirect_stdout
 
 import click
 
@@ -29,6 +27,7 @@ from inspire.services.account.account_config import render_account_config as _re
 @click.option(
     "--username",
     metavar="LOGIN",
+    hidden=True,
     help=(
         "Platform login username, such as a phone number, student number, "
         "or email. Defaults to the account name."
@@ -37,7 +36,8 @@ from inspire.services.account.account_config import render_account_config as _re
 @click.option(
     "--password",
     metavar="PASSWORD",
-    help="Platform password. Asked interactively (with confirmation) if omitted.",
+    hidden=True,
+    help="Deprecated and ignored.",
 )
 @click.option(
     "--base-url",
@@ -58,8 +58,9 @@ from inspire.services.account.account_config import render_account_config as _re
 @click.option(
     "--non-interactive",
     is_flag=True,
-    help="Skip all prompts. Missing fields fall back to defaults; missing --password aborts.",
+    help="Skip all prompts. Missing fields use defaults; device authorization still waits.",
 )
+@click.option("--no-login", is_flag=True, help="Create the profile without logging in.")
 @pass_context
 def add(
     ctx: Context,
@@ -70,17 +71,11 @@ def add(
     proxy: str | None,
     make_active: bool | None,
     non_interactive: bool,
+    no_login: bool,
 ) -> None:
-    """Create a named account profile.
+    """Create an account and authorize it with the official device flow.
 
-    Missing login fields are prompted for unless ``--non-interactive`` is set.
-
-    \b
-    Examples:
-        inspire account add alice
-        inspire account add alice \\
-          --username user-abc123 --password "$INSPIRE_PW" \\
-          --use --non-interactive
+    Use --no-login to create only the local profile.
     """
     non_interactive = non_interactive or ctx.json_output
 
@@ -98,38 +93,8 @@ def add(
             EXIT_VALIDATION_ERROR,
         )
 
-    if username is None:
-        if non_interactive:
-            username = validated
-        else:
-            username = click.prompt(
-                "Platform login username (not display name)",
-                default=validated,
-                show_default=True,
-            )
-    resolved_username = username.strip()
-    if not resolved_username:
-        exit_with_error(
-            ctx,
-            "AccountError",
-            "Username cannot be empty.",
-            EXIT_VALIDATION_ERROR,
-        )
-
-    if password is None:
-        if non_interactive:
-            exit_with_error(
-                ctx,
-                "AccountError",
-                "--password is required in non-interactive mode.",
-                EXIT_VALIDATION_ERROR,
-            )
-        password = click.prompt(
-            "Platform password",
-            hide_input=True,
-            confirmation_prompt="Confirm password",
-        )
-
+    if username is not None or password is not None:
+        click.echo("Deprecated: --username and --password are ignored; use device login.", err=True)
     if base_url is None:
         if non_interactive:
             base_url = DEFAULT_BASE_URL
@@ -151,8 +116,8 @@ def add(
             )
 
     content = _render_config(
-        username=resolved_username,
-        password=password,
+        username="",
+        password="",
         base_url=base_url.strip(),
         proxy=(proxy or "").strip(),
     )
@@ -177,16 +142,10 @@ def add(
     if make_active:
         set_current_account(validated)
 
-    # Check the browser runtime required by web-side commands. This is
-    # best-effort so account creation still succeeds when Playwright setup is
-    # deferred.
-    from inspire.accounts import normalize_environment
+    if not no_login:
+        from inspire.cli.commands.login import run_login
 
-    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-        normalize_environment(
-            interactive=not non_interactive,
-            auto_install_playwright=not non_interactive,
-        )
+        run_login(validated)
 
     is_active = default_account() == validated
     suffix = " (active)" if is_active else ""

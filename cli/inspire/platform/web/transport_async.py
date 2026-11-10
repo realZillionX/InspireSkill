@@ -183,12 +183,6 @@ class AsyncDriver:
 
             return await _finish_io(partial(action.function, *action.args, **action.kwargs))
 
-        from inspire.platform.web.session.auth import _playwright_context
-        if action.function is _playwright_context:
-            from playwright.async_api import async_playwright
-
-            return async_playwright()
-
         adapters: dict[Any, Any] = {
             remote_exec.exec_over_pty_websocket: remote_exec.exec_over_pty_websocket_async,
             remote_exec.exec_in_notebook_jupyter: remote_exec.exec_in_notebook_jupyter_async,

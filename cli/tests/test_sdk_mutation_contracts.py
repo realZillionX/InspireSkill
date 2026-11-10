@@ -69,7 +69,7 @@ def test_cached_session_identity_must_match(client, monkeypatch, mismatch):
     cached = replace(client._transport.session, **mismatch)
     client._transport._session = None
     monkeypatch.setattr(WebSession, "load", lambda **kw: cached)
-    with pytest.raises(AuthenticationError, match="No matching cached session; initialize this account first"):
+    with pytest.raises(AuthenticationError, match="No matching cached session; run inspire login"):
         _ = client._transport.session
     assert client._transport._session is None
 

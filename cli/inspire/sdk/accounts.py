@@ -142,7 +142,7 @@ def ensure_credentials(
             raise ValidationError("Username cannot be empty.")
         data = Config._load_toml(path) if path.exists() else {}
         updates: dict[str, dict[str, str]] = {
-            "auth": {"username": username.strip(), "password": password},
+            "auth": {"username": username.strip()},
         }
         if base_url is not None:
             updates["api"] = {"base_url": base_url.strip()}

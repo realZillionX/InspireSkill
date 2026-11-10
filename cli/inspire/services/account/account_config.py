@@ -190,7 +190,6 @@ def render_account_config(*, username: str, password: str, base_url: str, proxy:
     lines = [
         "[auth]",
         f'username = "{_toml_escape_string(username)}"',
-        f'password = "{_toml_escape_string(password)}"',
         "",
         "[api]",
         f'base_url = "{_toml_escape_string(base_url)}"',

@@ -17,6 +17,7 @@ import click
 import click.exceptions as click_exceptions
 
 from inspire import __version__
+from inspire.cli.commands.login import login, logout
 from inspire.accounts import account_scope, current_account
 from inspire.cli.logging_setup import clear_debug_logging, configure_debug_logging
 from inspire.cli.context import (
@@ -258,6 +259,8 @@ main.add_command(update)
 main.add_command(ensure_playwright_runtime)
 main.add_command(refresh_skills)
 main.add_command(post_update)
+main.add_command(login)
+main.add_command(logout)
 install_account_options(main)
 
 

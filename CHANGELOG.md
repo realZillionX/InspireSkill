@@ -2,6 +2,11 @@
 
 各版本条目记录该版本发布时的用户可见变化；当前用法以 README 和 CLI Help 为准。
 
+## Unreleased
+
+- 登录改用官方 OAuth 设备授权，新增 `inspire login` 和仅清除本地令牌的 `inspire logout`；访问令牌自动刷新，密码配置不再使用，已有用户需为每个账号重新登录一次。
+- 账号创建后默认启动设备授权，可用 `account add --no-login` 暂缓登录。
+
 ## v7.1.16
 
 - 修复连接检查、SSH 命令和 SCP 传输未使用缓存的 `identity_file`，非默认文件名私钥认证失败的问题；未缓存私钥时保留 SSH agent 和默认密钥查找。

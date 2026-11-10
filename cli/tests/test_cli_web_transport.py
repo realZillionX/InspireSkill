@@ -24,14 +24,13 @@ def cli_session(monkeypatch, tmp_path):
     monkeypatch.setenv("INSPIRE_BASE_URL", "https://example.test")
     core.clear_browser_api_runtime_cache()
     session = ws.WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "old"}]},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
         created_at=1,
         base_url="https://example.test",
         account="chosen",
     )
     monkeypatch.setattr(ws, "_get_web_session", lambda **kwargs: session)
     monkeypatch.setattr(ws.WebSession, "load", lambda **kwargs: None)
-    monkeypatch.setattr(ws, "_renew_web_session_without_credentials", lambda _: None)
     commands = importlib.import_module("inspire.cli.commands.notebook.notebook_commands")
     monkeypatch.setattr(commands, "resolve_workspace_operation_scope", lambda **kwargs: "ws-test")
     monkeypatch.setattr(commands, "_resolve_notebook_id", lambda *args, **kwargs: ("nb-test", None))
@@ -180,13 +179,13 @@ def test_shared_transport_refresh_is_in_place_and_budgeted(monkeypatch, cli_sess
     def login(**kwargs):
         logins.append(kwargs)
         return ws.WebSession(
-            storage_state={"cookies": [{"name": "session", "value": "new"}]},
+            access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
             created_at=2,
             account="chosen",
-            cookies={"session": "new"},
+
         )
 
-    monkeypatch.setattr(ws, "_get_web_session", login)
+    monkeypatch.setattr("inspire.platform.web.session.auth.refresh_session", lambda session: login())
     monkeypatch.setattr(
         ws,
         "pooled_requests_session",
@@ -197,7 +196,7 @@ def test_shared_transport_refresh_is_in_place_and_budgeted(monkeypatch, cli_sess
             transport.request("GET", "/test")
     assert len(logins) == 1
     assert transport.session is cli_session
-    assert cli_session.cookies == {"session": "new"}
+    assert cli_session.access_token == "test-access"
     assert cli_session.created_at == 2
     transport.close()
 
@@ -239,7 +238,7 @@ def test_default_fallback_and_login_guards_are_account_local(monkeypatch, cli_se
     from inspire.platform.web.runtime import get_transport
 
     other = ws.WebSession(
-        storage_state=cli_session.storage_state,
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
         created_at=1,
         base_url=cli_session.base_url,
         account="another",
@@ -293,21 +292,21 @@ def test_threads_share_one_refresh_and_the_original_session(monkeypatch, cli_ses
     def login(**kwargs):
         logins.append(kwargs)
         return ws.WebSession(
-            storage_state={"cookies": [{"name": "session", "value": "new"}]},
-            cookies={"session": "new"},
+            access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
             created_at=2,
             account="chosen",
         )
 
     monkeypatch.setattr(ws, "pooled_requests_session", lambda *args: SimpleNamespace(get=get))
-    monkeypatch.setattr(ws, "_get_web_session", login)
+    monkeypatch.setattr("inspire.platform.web.session.auth.refresh_session", lambda session: login())
     transport = get_transport(cli_session)
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(lambda _: transport.request("GET", "/test"), range(8)))
     assert results == [{"Result": {}}] * 8
     assert len(logins) == 1
     assert transport.session is cli_session
-    assert cli_session.cookies == {"session": "new"}
+    assert cli_session.access_token == "test-access"
 
 
 def test_cli_worker_first_use_closes_in_click_context(monkeypatch, cli_session):
@@ -333,9 +332,9 @@ def test_cli_worker_first_use_closes_in_click_context(monkeypatch, cli_session):
 def test_missing_storage_is_not_misclassified_as_non_json(monkeypatch, cli_session):
     from inspire.platform.web.runtime import get_transport
 
-    cli_session.storage_state = {}
+    cli_session.access_token = ""
     monkeypatch.setattr(ws, "_get_browser_client", lambda _: pytest.fail("not a body failure"))
-    with pytest.raises(ValueError, match="missing storage state"):
+    with pytest.raises(ValueError, match="inspire login"):
         get_transport(cli_session).request("GET", "/test")
 
 

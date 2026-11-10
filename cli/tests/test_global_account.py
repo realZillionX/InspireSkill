@@ -32,7 +32,7 @@ def prepare_accounts():
             f'[remote_env]\nACCOUNT_ENV = "{account}"\n'
         ))
         web_session.WebSession(
-            storage_state={"cookies": [{"name": "test", "value": account}]},
+            access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
             created_at=time.time(), login_username=account, account=account,
             base_url=f"https://{account}.example",
         ).save(account=account)
@@ -209,11 +209,12 @@ def test_shell_username_cannot_replace_selected_account(monkeypatch, accounts, p
     from inspire.platform.web.session import auth
 
     monkeypatch.setenv("INSPIRE_USERNAME", "unrelated-shell-user")
-    monkeypatch.setattr(auth, "login_with_playwright", lambda *_a, **_k: pytest.fail("reuse session"))
+    monkeypatch.setattr(auth, "device_login", lambda *_a, **_k: pytest.fail("reuse session"))
 
     def inspect_runtime(**_kwargs):
         assert_account_runtime("bob")
-        assert auth.get_credentials("bob") == auth.get_credentials() == ("bob", "test")
+        assert auth._load_runtime_config("bob").username == "bob"
+        assert auth._load_runtime_config().password == ""
 
     monkeypatch.setattr(main.commands["job"].commands["list"], "callback", inspect_runtime)
     args = ["job", "list", "--workspace", "CPU资源空间"]

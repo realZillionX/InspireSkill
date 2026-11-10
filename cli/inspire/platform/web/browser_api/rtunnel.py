@@ -30,7 +30,6 @@ else:
 
 
 from inspire.platform.web.browser_api.core import (
-    NOTEBOOK_LAB_PATH,
     _get_base_url,
     _in_asyncio_loop,
     _launch_browser,
@@ -860,8 +859,10 @@ def probe_existing_rtunnel_proxy_url(
 ) -> str | None:
     """Return the existing proxy URL if it looks reachable (otherwise None)."""
     base_url = _get_base_url().rstrip("/")
-    notebook_lab_path = f"{NOTEBOOK_LAB_PATH}/{notebook_id}/proxy/{port}/"
-    known_proxy_url = f"{base_url}{notebook_lab_path}"
+    from .jupyter_terminal import _notebook_jupyter_url
+    from .playwright_notebooks import build_jupyter_proxy_url
+    lab_url = _notebook_jupyter_url(session, notebook_id)
+    known_proxy_url = build_jupyter_proxy_url(lab_url, port=port) if lab_url else None
 
     resolved_account = _resolve_rtunnel_account(explicit=account, session=session)
     urls: list[str] = []
@@ -874,7 +875,8 @@ def probe_existing_rtunnel_proxy_url(
                 timeout_s=ide_timeout_s,
             )
         )
-    urls.append(known_proxy_url)
+    if known_proxy_url:
+        urls.append(known_proxy_url)
     if candidate_urls:
         urls.extend(candidate_urls)
     urls.extend(
@@ -2195,7 +2197,7 @@ def _setup_notebook_rtunnel_sync(
 
     with sync_playwright() as p:
         browser = _launch_browser(p, headless=headless)
-        context = _new_context(browser, storage_state=session.storage_state)
+        context = _new_context(browser, account=session.account)
         page = context.new_page()
         setup_terminal_cleanup: Callable[[], None] | None = None
 

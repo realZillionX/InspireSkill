@@ -26,12 +26,7 @@ DETAIL = {"Result": {"id": "same-user"}}
 
 def session(generation=1):
     return ws.WebSession(
-        storage_state={
-            "cookies": [
-                {"name": "inspire-session", "value": "old", "domain": "console.test", "path": "/"},
-                {"name": "CASTGC", "value": "old-sso", "domain": "cas.sii.edu.cn", "path": "/"},
-            ]
-        },
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
         user_detail={"id": "same-user"},
         login_username="test",
         base_url=BASE,
@@ -191,84 +186,8 @@ def scripted_run(monkeypatch, asynchronous, scenario, cli=False):
     return trace, result
 
 
-@pytest.mark.parametrize(
-    "scenario",
-    [
-        "fresh-cache",
-        "sso",
-        "credentials",
-        "sso-error",
-        "verification",
-        "deadline",
-        "plaza-cookie",
-        "plaza-cas",
-        "plaza-second",
-        "plaza-cas-still-dead",
-    ],
-)
-@pytest.mark.parametrize("cli", [False, True], ids=["sdk", "cli"])
-def test_native_renewal_and_plaza_parity(monkeypatch, scenario, cli):
-    synchronous = scripted_run(monkeypatch, False, scenario, cli)
-    asynchronous = scripted_run(monkeypatch, True, scenario, cli)
-    assert asynchronous == synchronous
-    trace, result = synchronous
-    credentials = [event for event in trace if event[0] == "credentials"]
-    http = [event for event in trace if event[0] == "http"]
-    if scenario == "fresh-cache":
-        assert not http and not credentials
-    elif scenario in {"sso", "plaza-cookie", "plaza-second"}:
-        assert not credentials
-        assert result == ({"ok": True} if scenario.startswith("plaza") else {"id": "same-user"})
-    elif scenario in {"credentials", "plaza-cas"}:
-        assert len(credentials) == 1
-        assert result == ({"ok": True} if scenario.startswith("plaza") else {"id": "same-user"})
-    elif scenario == "sso-error":
-        assert not credentials and result == (
-            "ConnectionError" if cli else "AuthenticationError",
-            "SSO unavailable",
-        )
-    elif scenario == "verification":
-        assert "verification code" in result[1]
-        assert not any(event[1] == "POST" for event in http)
-    elif scenario == "deadline":
-        assert not credentials and result[0] == "WaitTimeoutError"
-    elif scenario == "plaza-cas-still-dead":
-        assert len(credentials) == 1 and "single-sign-on ticket" in result[1]
 
 
-@pytest.mark.parametrize("asynchronous", [False, True])
-def test_cooldown_stops_a_second_native_credential_submission(monkeypatch, tmp_path, asynchronous):
-    from inspire.platform.errors import AuthenticationCooldownError
-    from inspire.platform.web.session import login_guard
-
-    owner = Transport(None, BASE, username="test")
-    owner.adopt_session(session())
-    sent = []
-    monkeypatch.setattr(ws.WebSession, "load", lambda **kw: None)
-    monkeypatch.setattr(auth, "renew_web_session_without_credentials", lambda _: None)
-    monkeypatch.setattr(auth, "get_credentials", lambda _: ("test", "dummy-password"))
-    monkeypatch.setattr(login_guard, "block_file", lambda _: tmp_path / "login-block.json")
-    monkeypatch.setattr(login_guard, "credential_fingerprint", lambda *a: "dummy-fingerprint")
-    monkeypatch.setattr(refresh_lock, "exclusive_session_refresh", lambda *a, **kw: nullcontext())
-
-    def rejected(*args, **kwargs):
-        sent.append(True)
-        raise auth.AuthenticationError("temporary CAS rejection")
-
-    monkeypatch.setattr(auth, "_login_with_cas_requests", rejected)
-
-    async def run():
-        async with AsyncDriver(owner) as driver:
-            await driver.execute(call(owner._refresh))
-
-    try:
-        for _ in range(2):
-            with pytest.raises(AuthenticationCooldownError) as raised:
-                asyncio.run(run()) if asynchronous else owner._refresh()
-            assert raised.value.retry_at > 0
-        assert sent == [True]
-    finally:
-        owner.close()
 
 
 def test_native_lock_wait_is_cancellable_and_releases_descriptor(tmp_path):
@@ -298,24 +217,6 @@ def test_native_lock_wait_is_cancellable_and_releases_descriptor(tmp_path):
     owner.close()
 
 
-@pytest.mark.parametrize("asynchronous", [False, True])
-def test_rebuild_guard_protects_cas_ticket_escalation(monkeypatch, asynchronous):
-    owner = Transport(None, BASE, username="test")
-    owner.adopt_session(session())
-    owner._decisions.rebuilt(1)
-    monkeypatch.setattr(auth, "get_credentials", lambda *a: pytest.fail("unused login replaced"))
-
-    async def run():
-        async with AsyncDriver(owner) as driver:
-            await driver.execute(call(owner._refresh, require_cas_ticket=True))
-
-    try:
-        with pytest.raises(ws.SessionExpiredError, match="nothing has been able to use"):
-            asyncio.run(run()) if asynchronous else owner._refresh(require_cas_ticket=True)
-        owner._decisions.success(1, 1, False)
-        assert owner._unproven_rebuild is None
-    finally:
-        owner.close()
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
@@ -336,14 +237,7 @@ def test_external_application_dispatch_renews_and_keeps_xsrf(monkeypatch, asynch
 
     def refresh():
         new = session(2)
-        new.storage_state["cookies"] = [
-            {
-                "name": "inspire-session",
-                "value": "fresh",
-                "domain": "notebook.test",
-                "path": "/",
-            }
-        ]
+        new.access_token = "renewed"
         owner.adopt_session(new)
 
     def reply(url, cookie, timeout):
@@ -377,7 +271,7 @@ def test_external_application_dispatch_renews_and_keeps_xsrf(monkeypatch, asynch
             )
         assert response.json() == {"name": "one"}
         assert "inspire-session=old" in seen[0]
-        assert "inspire-session=fresh" in seen[1] and "_xsrf=application" in seen[1]
+        assert "inspire-session" not in seen[1] and "_xsrf=application" in seen[1]
     finally:
         http.close()
         owner.close()

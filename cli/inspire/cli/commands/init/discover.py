@@ -10,8 +10,6 @@ import click
 
 from inspire.config import Config
 from inspire.platform.web.browser_api.core import _set_base_url
-from inspire.platform.web.session import AuthenticationError
-from inspire.platform.web.session.browser_launch import is_playwright_browser_runtime_error
 
 from inspire.services.account.account_config import (
     toml_dumps as _toml_dumps,
@@ -86,57 +84,6 @@ def _ensure_playwright_browser(*, non_interactive: bool = False) -> None:
         raise SystemExit(1)
 
 
-def _resolve_credentials_interactive(
-    config: object,
-    *,
-    cli_username: str | None,
-    cli_base_url: str | None,
-    allow_config_password: bool = False,
-    confirm_config_username: bool = False,
-    non_interactive: bool = False,
-) -> tuple[str, str, str]:
-    """Resolve base URL, username and password, prompting when missing."""
-    base_url = (cli_base_url or "").strip() or _usable_base_url(
-        getattr(config, "base_url", "")
-    )
-    if not base_url:
-        if non_interactive:
-            raise ValueError("Platform URL is required for non-interactive init.")
-        base_url = click.prompt("Platform URL", type=str).strip()
-    if not base_url:
-        raise ValueError("Platform URL is required.")
-
-    username = (cli_username or "").strip()
-    if not username:
-        configured = _usable_username(getattr(config, "username", ""))
-        if configured and confirm_config_username and not non_interactive:
-            username = click.prompt(
-                "Platform login name (not display name)",
-                default=configured,
-                type=str,
-            ).strip()
-        else:
-            username = configured
-    if not username:
-        if non_interactive:
-            raise ValueError("Username is required for non-interactive init.")
-        username = click.prompt("Platform login name (not display name)", type=str).strip()
-    if not username:
-        raise ValueError("Username is required.")
-
-    password = ""
-    if allow_config_password or non_interactive:
-        password = str(getattr(config, "password", "") or "").strip()
-    if not password:
-        if non_interactive:
-            raise ValueError("Password is required for non-interactive init.")
-        password = click.prompt("Password", type=str, hide_input=True)
-    if not password:
-        raise ValueError("Password is required.")
-
-    return username, password, base_url
-
-
 def _ensure_ssh_key(*, non_interactive: bool = False) -> None:
     """Check for an SSH key; offer to generate one if missing."""
     import subprocess
@@ -201,56 +148,8 @@ def _resolve_discover_runtime(
     non_interactive: bool = False,
     verbose: bool = False,
 ) -> tuple[object, tuple[str, str, str] | None, str]:
-    session = None
+    session = web_session_module.get_web_session(require_workspace=True)
     prompted_credentials: tuple[str, str, str] | None = None
-    if cli_username or cli_base_url:
-        _ensure_playwright_browser(non_interactive=non_interactive)
-        username, password, base_url = _resolve_credentials_interactive(
-            config,
-            cli_username=cli_username,
-            cli_base_url=cli_base_url,
-            allow_config_password=True,
-            non_interactive=non_interactive,
-        )
-        prompted_credentials = (username, password, base_url)
-        _progress(verbose, "Logging in...")
-        session = web_session_module.login_with_playwright(
-            username,
-            password,
-            base_url=base_url,
-        )
-    else:
-        try:
-            session = web_session_module.get_web_session(require_workspace=True)
-        except (ValueError, RuntimeError) as exc:
-            _ensure_playwright_browser(non_interactive=non_interactive)
-            if is_playwright_browser_runtime_error(exc):
-                try:
-                    session = web_session_module.get_web_session(
-                        force_refresh=True,
-                        require_workspace=True,
-                    )
-                except (ValueError, RuntimeError) as retry_exc:
-                    if is_playwright_browser_runtime_error(retry_exc):
-                        raise
-            if session is None:
-                if isinstance(exc, AuthenticationError):
-                    click.echo(click.style(str(exc), fg="yellow"), err=True)
-                username, password, base_url = _resolve_credentials_interactive(
-                    config,
-                    cli_username=cli_username,
-                    cli_base_url=cli_base_url,
-                    confirm_config_username=True,
-                    non_interactive=non_interactive,
-                )
-                prompted_credentials = (username, password, base_url)
-                _progress(verbose, "Logging in...")
-                session = web_session_module.login_with_playwright(
-                    username,
-                    password,
-                    base_url=base_url,
-                )
-
     account_key = (
         _usable_username(prompted_credentials[0])
         if prompted_credentials
@@ -311,7 +210,6 @@ def _persist_prompted_credentials(
         auth = {}
         account_data["auth"] = auth
     auth["username"] = username
-    auth["password"] = password
     api = account_data.get("api")
     if not isinstance(api, dict):
         api = {}

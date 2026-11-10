@@ -118,20 +118,8 @@ def test_load_accepts_valid_payload_and_normalizes_optional_storage_fields(
 ) -> None:
     payload = {
         "created_at": time.time(),
-        "storage_state": {
-            "cookies": [
-                {
-                    "name": "session",
-                    "value": "secret",
-                    "domain": ".example.test",
-                    "path": "/",
-                    "expires": -1,
-                    "httpOnly": True,
-                    "secure": True,
-                    "sameSite": "Lax",
-                }
-            ]
-        },
+        "access_token": "test-access", "refresh_token": "test-refresh",
+        "access_expires_at": 9999999999, "refresh_expires_at": 9999999999,
         "workspace_id": "ws-test",
         "all_workspace_ids": ["ws-test"],
         "all_workspace_names": {"ws-test": "Test"},
@@ -144,8 +132,7 @@ def test_load_accepts_valid_payload_and_normalizes_optional_storage_fields(
     assert session is not None
     assert session.account == "alice"
     assert session.workspace_id == "ws-test"
-    assert session.storage_state["origins"] == []
-    assert session.cookies == {"session": "secret"}
+    assert session.access_token == "test-access"
     assert session.all_workspace_fair_scheduling == {"ws-test": True}
 
 
@@ -160,7 +147,7 @@ def test_load_rejects_cookie_only_cache(session_cache_file: Path) -> None:
 
 
 def test_load_preserves_expired_cache_behavior(session_cache_file: Path) -> None:
-    payload = {"created_at": 0, "storage_state": {"cookies": []}}
+    payload = {"created_at": 0, "access_token": "a", "refresh_token": "r", "access_expires_at": 0, "refresh_expires_at": 9999999999}
     session_cache_file.write_text(json.dumps(payload), encoding="utf-8")
 
     assert WebSession.load(account="alice") is None
@@ -171,7 +158,7 @@ def test_load_does_not_hide_deserialization_errors(
     session_cache_file: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    payload = {"created_at": time.time(), "storage_state": {"cookies": []}}
+    payload = {"created_at": time.time(), "access_token": "a", "refresh_token": "r", "access_expires_at": 9999999999, "refresh_expires_at": 9999999999}
     session_cache_file.write_text(json.dumps(payload), encoding="utf-8")
 
     def fail_from_dict(cls: type[WebSession], data: dict[str, Any]) -> WebSession:

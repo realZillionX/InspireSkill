@@ -58,7 +58,7 @@ def test_workspace_catalog_propagates_api_errors(payload):
 
 @pytest.mark.parametrize("current_workspace", [None, DEFAULT_WORKSPACE_ID, STANDARD_ID])
 def test_workspace_enumeration_is_unscoped(monkeypatch, current_workspace):
-    session = WebSession(storage_state={}, created_at=1, workspace_id=current_workspace)
+    session = WebSession(access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999, created_at=1, workspace_id=current_workspace)
     session.all_workspace_fair_scheduling = {STANDARD_ID: True}
     calls = []
 
@@ -82,7 +82,7 @@ def test_workspace_enumeration_is_unscoped(monkeypatch, current_workspace):
 ])
 def test_workspace_enumeration_failure_preserves_capabilities(monkeypatch, payload):
     session = WebSession(
-        storage_state={}, created_at=1, all_workspace_fair_scheduling={WORKSPACE_ID: True},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999, created_at=1, all_workspace_fair_scheduling={WORKSPACE_ID: True},
         all_workspace_ids=[WORKSPACE_ID], all_workspace_names={WORKSPACE_ID: "Training"},
     )
     monkeypatch.setattr(workspaces, "_request_json", lambda *a, **kw: payload)
@@ -98,7 +98,7 @@ def test_workspace_enumeration_failure_preserves_capabilities(monkeypatch, paylo
 
 def test_empty_workspace_enumeration_clears_capabilities(monkeypatch):
     session = WebSession(
-        storage_state={}, created_at=1, all_workspace_fair_scheduling={WORKSPACE_ID: True},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999, created_at=1, all_workspace_fair_scheduling={WORKSPACE_ID: True},
         all_workspace_ids=[WORKSPACE_ID], all_workspace_names={WORKSPACE_ID: "Training"},
     )
     monkeypatch.setattr(

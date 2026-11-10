@@ -15,33 +15,27 @@ from .models import WebSession
 from .proxy import resolve_requests_proxy_config
 
 
-def _cookie_jar_from_session(
-    session: WebSession, base_url: str
-) -> requests.cookies.RequestsCookieJar:
-    jar = requests.cookies.RequestsCookieJar()
-    base_host = urlsplit(base_url).hostname or ""
+class PlatformAuth(requests.auth.AuthBase):
+    def __init__(self, session: WebSession, base_url: str):
+        self.session = session
+        self.base_url = base_url
 
-    storage_cookies = session.storage_state.get("cookies") if session.storage_state else None
-    if storage_cookies:
-        for cookie in storage_cookies:
-            name = cookie.get("name")
-            value = cookie.get("value")
-            if not name:
-                continue
-            domain = cookie.get("domain") or base_host
-            path = cookie.get("path") or "/"
-            jar.set(name, value, domain=domain, path=path)
+    def __call__(self, request: requests.PreparedRequest) -> requests.PreparedRequest:
+        from .oauth import platform_headers
 
-    return jar
+        request.headers.update(
+            platform_headers(self.base_url, request.url or "", self.session.access_token)
+        )
+        return request
 
 
 @blocking_io
 def _configure(http: requests.Session, session: WebSession, base_url: str) -> requests.Session:
-    """Apply this call's cookies, headers, and proxy settings to *http*."""
-    # Assigned, not merged: every call starts from the cookies the stored
-    # session actually holds, so a jar that outlives one request can never
-    # shadow them with something a response set in between.
-    http.cookies = _cookie_jar_from_session(session, base_url)
+    """Apply origin-scoped OAuth authentication and proxy settings."""
+    # Platform sessions never replay cookies. ApplicationConnection preserves
+    # its separate application cookie jar around reconfiguration.
+    http.cookies.clear()
+    http.auth = PlatformAuth(session, session.base_url or base_url)
     http.headers.update(
         {
             "Accept": "application/json, text/plain, */*",
@@ -64,9 +58,8 @@ def _configure(http: requests.Session, session: WebSession, base_url: str) -> re
 
 def build_requests_session(session: WebSession, base_url: str) -> requests.Session:
     """Return a private HTTP session the caller owns and may close."""
-    storage_cookies = session.storage_state.get("cookies") if session.storage_state else None
-    if not storage_cookies:
-        raise ValueError("Session expired or invalid (missing storage state)")
+    if not session.access_token:
+        raise ValueError("Not logged in; run inspire login.")
 
     return _configure(requests.Session(), session, base_url)
 
@@ -110,9 +103,8 @@ def pooled_requests_session(session: WebSession, base_url: str) -> requests.Sess
     :func:`build_requests_session`; closing this one empties the pool for
     everybody.
     """
-    storage_cookies = session.storage_state.get("cookies") if session.storage_state else None
-    if not storage_cookies:
-        raise ValueError("Session expired or invalid (missing storage state)")
+    if not session.access_token:
+        raise ValueError("Not logged in; run inspire login.")
 
     thread_id = threading.get_ident()
     with _pooled_lock:

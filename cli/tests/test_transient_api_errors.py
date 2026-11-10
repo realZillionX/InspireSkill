@@ -65,8 +65,8 @@ class _HTTP:
 
 def _session() -> WebSession:
     return WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "abc"}]},
-        cookies={"session": "abc"},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
+
         workspace_id="ws-test",
         created_at=0,
     )

@@ -86,4 +86,10 @@ Load only when maintaining the CLI's Browser API wrappers, auditing frontend req
 
 | Topic | Reference |
 | --- | --- |
-| `/api/v2` request/response envelopes, session & login guard, pagination, workspace scoping, probing methodology, per-route Action tables, creation payload contracts, and Dataset Hub (`plaza`) protocol | [`references/dev/browser-api.md`](references/dev/browser-api.md) |
+| `/api/v2` request/response envelopes, OAuth token sessions, pagination, workspace scoping, probing methodology, per-route Action tables, creation payload contracts, and Dataset Hub (`plaza`) protocol | [`references/dev/browser-api.md`](references/dev/browser-api.md) |
+
+## Authentication
+
+Run `inspire login` explicitly for the selected account. The device verification URL and code are printed immediately to stderr; open the URL and approve while the command waits. `--no-browser` disables automatic browser opening; `--json` returns metadata without tokens. Ordinary API commands never initiate device authorization. Tokens refresh automatically under the account lock; run login again when refresh expires. Existing cookie caches require one login per account. Passwords are ignored. `inspire logout` removes local tokens only. Notebook automation still uses Playwright, but login does not require Chromium.
+
+For agents: run `inspire login` in the background (or with a long timeout), relay the printed URL and code to the user, and wait for the command to finish; do not retry login in a loop.

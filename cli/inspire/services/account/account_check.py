@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit
 
-from inspire.config import Config, ConfigError, SOURCE_DEFAULT
+from inspire.config import Config, SOURCE_DEFAULT
 
 
 _PLACEHOLDER_HOSTS = {
@@ -101,9 +101,4 @@ def format_placeholder_issue_message(issues: list[dict[str, str]]) -> str:
 
 
 def validate_required_credentials(cfg: Config) -> None:
-    if not cfg.username or not cfg.password:
-        raise ConfigError(
-            "Missing platform credentials. Run `inspire account add <name>` to "
-            "configure them; the active account's `[auth]` block is the only "
-            "supported source."
-        )
+    """Passwords are ignored; account health is verified by the token API probe."""

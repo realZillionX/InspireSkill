@@ -44,7 +44,7 @@ class DummyHTTP:
 
 def _session() -> WebSession:
     return WebSession(
-        storage_state={"cookies": [{"name": "s", "value": "v"}], "origins": []},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
         created_at=0,
         login_username="user-1",
     )
@@ -89,7 +89,7 @@ def test_probe_uses_cached_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
     session = _session()
     base_url = "https://qz.example"
     notebook_id = "notebook-123"
-    known_url = f"{base_url}/api/v2/notebook/lab/{notebook_id}/proxy/31337/"
+    known_url = f"https://notebook.test/jupyter/{notebook_id}/token/proxy/31337/?token=token"
     cached_url = "https://nat.example/ws/x/vscode/notebook-123/token/proxy/31337/?token=t"
 
     monkeypatch.setattr(rtunnel_module, "_get_base_url", lambda: base_url)
@@ -194,7 +194,7 @@ def test_probe_uses_tunnel_profile_and_rewrites_proxy_port(
     session = _session()
     base_url = "https://qz.example"
     notebook_id = "notebook-abc"
-    known_url = f"{base_url}/api/v2/notebook/lab/{notebook_id}/proxy/31337/"
+    known_url = f"https://notebook.test/jupyter/{notebook_id}/token/proxy/31337/?token=token"
     bridge_url = "https://nat.example/ws/demo/user/vscode/notebook-abc/aaa/proxy/22222/?token=abc"
     rewritten = "https://nat.example/ws/demo/user/vscode/notebook-abc/aaa/proxy/31337/?token=abc"
 
@@ -236,7 +236,7 @@ def test_probe_rejects_html_response(monkeypatch: pytest.MonkeyPatch) -> None:
     session = _session()
     base_url = "https://qz.example"
     notebook_id = "nb-html"
-    known_url = f"{base_url}/api/v2/notebook/lab/{notebook_id}/proxy/31337/"
+    known_url = f"https://notebook.test/jupyter/{notebook_id}/token/proxy/31337/?token=token"
 
     monkeypatch.setattr(rtunnel_module, "_get_base_url", lambda: base_url)
     monkeypatch.setattr(
@@ -271,7 +271,7 @@ def test_probe_reads_only_stream_prefix(monkeypatch: pytest.MonkeyPatch) -> None
     session = _session()
     base_url = "https://qz.example"
     notebook_id = "nb-stream"
-    known_url = f"{base_url}/api/v2/notebook/lab/{notebook_id}/proxy/31337/"
+    known_url = f"https://notebook.test/jupyter/{notebook_id}/token/proxy/31337/?token=token"
 
     class StreamingResponse:
         status_code = 200
@@ -319,3 +319,9 @@ def test_probe_reads_only_stream_prefix(monkeypatch: pytest.MonkeyPatch) -> None
 
     assert resolved == known_url
     assert response.closed is True
+
+
+@pytest.fixture(autouse=True)
+def mock_access_url(monkeypatch):
+    monkeypatch.setattr("inspire.platform.web.browser_api.jupyter_terminal._notebook_jupyter_url",
+                        lambda session, notebook_id: f"https://notebook.test/jupyter/{notebook_id}/token/lab?token=token")

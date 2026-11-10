@@ -148,7 +148,7 @@ def _patch_terminal_http(monkeypatch, http, *, jupyter_url):  # noqa: ANN001, AN
 
     transport = Transport(None, "https://console.test", username="")
     transport.adopt_session(WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "test"}]},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
         base_url="https://console.test", created_at=1,
     ))
     monkeypatch.setattr(preparation, "build_requests_session", lambda *_a, **_k: http)

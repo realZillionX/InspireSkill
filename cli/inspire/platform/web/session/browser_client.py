@@ -8,7 +8,6 @@ from inspire.platform.web.flow import blocking_io
 
 import contextlib
 import logging
-import hashlib
 import json
 import threading
 from typing import Any, Optional, cast
@@ -40,13 +39,13 @@ class _BrowserRequestClient:
         from playwright.sync_api import sync_playwright
 
         proxy = cast(Any, get_playwright_proxy(account=session.account))
+        self.session = session
         self._closed = False
         self._playwright = sync_playwright().start()
         self._browser = self._playwright.chromium.launch(
             **chromium_launch_kwargs(headless=True, proxy=proxy)
         )
         self._context = self._browser.new_context(
-            storage_state=cast(Any, session.storage_state),
             proxy=proxy,
             ignore_https_errors=True,
         )
@@ -64,6 +63,9 @@ class _BrowserRequestClient:
         if self._closed:
             raise RuntimeError("Browser request client is closed")
 
+        from .oauth import platform_headers
+        headers = dict(headers or {})
+        headers.update(platform_headers(self.session.base_url or "", url, self.session.access_token))
         method_upper, options = _request_options(method, headers, body, timeout)
         resp = getattr(self._context.request, method_upper.lower())(url, **options)
         try:
@@ -94,21 +96,7 @@ class _BrowserRequestClient:
 
 
 def _session_fingerprint(session: WebSession) -> str:
-    cookies = session.storage_state.get("cookies") if session.storage_state else []
-    payload = json.dumps(
-        [
-            {
-                "name": c.get("name"),
-                "value": c.get("value"),
-                "domain": c.get("domain"),
-                "path": c.get("path"),
-            }
-            for c in cookies or []
-        ],
-        sort_keys=True,
-        ensure_ascii=True,
-    )
-    return hashlib.sha256(payload.encode()).hexdigest()
+    return str((session.account, session.created_at))
 
 
 _BROWSER_CLIENT_TLS = threading.local()
@@ -248,7 +236,7 @@ class AsyncBrowserRequestClient:
                 **chromium_launch_kwargs(headless=True, proxy=proxy)
             )
             self._context = await self._browser.new_context(
-                storage_state=cast(Any, self.session.storage_state), proxy=proxy,
+                proxy=proxy,
                 ignore_https_errors=True,
             )
             return self
@@ -264,6 +252,9 @@ class AsyncBrowserRequestClient:
                            body: dict | None = None, timeout: float = 30) -> dict:
         if self._closed:
             raise RuntimeError("Browser request client is closed")
+        from .oauth import platform_headers
+        headers = dict(headers or {})
+        headers.update(platform_headers(self.session.base_url or "", url, self.session.access_token))
         method_upper, options = _request_options(method, headers, body, timeout)
         resp = await getattr(self._context.request, method_upper.lower())(url, **options)
         try:

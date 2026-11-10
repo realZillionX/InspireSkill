@@ -71,15 +71,13 @@ if __name__ == "__main__":
 ```python
 from inspire import Accounts, InspireClient
 
-Accounts.add("research", username="login-name", password="password", use=False)
+Accounts.add("research", username="login-name", password="", use=False)
+# Authorize this profile separately: inspire login --account research
 with InspireClient(account="research") as client:
     identity = client.login()
     result = client.init()
     print(result.config_path, result.changed, result.warnings)
 
-# Or construct directly from credentials (updates local config without changing the default account):
-with InspireClient.from_credentials("login-name", "password", account="research") as client:
-    identity = client.login()
 ```
 
 ### Client Construction, `login()`, and `init()`
@@ -87,11 +85,11 @@ with InspireClient.from_credentials("login-name", "password", account="research"
 - **Constructors:**
   - `InspireClient(account=None, *, username=None, password=None, base_url=None, proxy=None, allow_browser=False, timeout=30, operation_timeout=120, catalog_ttl=60, catalog_disk_cache=False)`
   - `InspireAsyncClient(account=None, *, username=None, password=None, base_url=None, proxy=None, allow_browser=False, timeout=30, operation_timeout=120, catalog_ttl=60, catalog_disk_cache=False, concurrency=None)`
-  - If `username` and `password` are omitted, the client loads the named `account` (or the current default account if `account=None`). If `username` and `password` are provided (as a pair), missing accounts are created and existing accounts update only explicitly changed `auth`/`api`/`proxy` fields (`proxy=""` clears proxy settings; `proxy=None` preserves existing proxy settings). Constructing a client never alters `~/.inspire/current`.
+  - If `username` and `password` are omitted, the client loads the named `account` (or the current default account if `account=None`). If `username` and `password` are provided (as a pair), missing accounts are created and existing accounts update only explicitly changed `auth`/`api`/`proxy` fields (`proxy=""` clears proxy settings; `proxy=None` preserves existing proxy settings). The legacy password argument is ignored and never stored or submitted. Constructing a client never alters `~/.inspire/current`.
   - `InspireClient` pins its account at construction time; `InspireAsyncClient` performs local config loading when entering `async with` or on its first method call (accessing `.account` or `.base_url` before initialization raises `ConfigurationError`).
 - **`login(*, force=False) -> AccountInfo`** (async: `await client.login(force=False)`):
-  - Reuses a cached disk session if under the 1-hour `SESSION_TTL` and verifies it via `GetUserDetail`; otherwise (or when `force=True`) renews the session under the account refresh lock: re-reads disk cache → tries passwordless SSO cookie renewal → performs credential login guarded by the login circuit breaker (`AuthenticationCooldownError.retry_at`).
-  - Chromium login fallback and browser-backed requests are enabled only when `allow_browser=True`. If a CAPTCHA is required and cannot be satisfied non-interactively, `AuthenticationError` is raised without submitting credentials.
+  - Run `inspire login --account <alias>` before using the SDK. Cached OAuth tokens refresh automatically under a per-account lock with a disk reread; rotated refresh tokens are persisted. The SDK never opens a device login implicitly. Old cookie caches require explicit login. Password configuration is ignored.
+  - `allow_browser=True` enables browser-backed requests for non-login operations. Device authorization never needs Chromium, and missing tokens always require an explicit CLI login.
 - **`init(*, force=False) -> InitResult`** (async: `await client.init(force=False)`):
   - Logs in, verifies at least one accessible Workspace, and atomically writes normalized account config (`force=False` merges discovered fields while preserving custom TOML sections; `force=True` rebuilds from the template). Interactive prompts, Playwright installation, and `ssh-keygen` remain CLI-only (`inspire init`).
 
