@@ -107,6 +107,23 @@ def _bootstrap_first_account_if_needed(
     return True
 
 
+def _login_if_logged_out() -> None:
+    """Start device login before discovery captures output in JSON mode."""
+    from inspire.platform.web.session import auth
+    from inspire.platform.web.session.models import AuthenticationError
+
+    account = current_account()
+    if not account:
+        return
+    try:
+        auth.get_web_session(account=account)
+    except AuthenticationError:
+        from inspire.cli.commands.login import run_login
+
+        click.echo(f"Account {account} is not logged in; starting device login.", err=True)
+        run_login(account)
+
+
 @click.command()
 @click.option("--force", "-f", is_flag=True, help="Overwrite existing config without prompting")
 @click.option(
@@ -188,6 +205,7 @@ def init(
             )
 
         if run_discovery:
+            _login_if_logged_out()
             run_init_action(
                 _init_discover_mode,
                 effective_json,

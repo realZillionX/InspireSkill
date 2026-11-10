@@ -105,6 +105,7 @@ def test_init_defaults_to_discover_mode_with_active_account(
         calls["kwargs"] = kwargs
 
     monkeypatch.setattr(init_cmd_module, "run_init_action", fake_run_init_action)
+    monkeypatch.setattr(init_cmd_module, "_login_if_logged_out", lambda: None)
     monkeypatch.setattr(init_cmd_module, "emit_init_result", lambda **kwargs: None)
 
     runner = CliRunner()
@@ -146,6 +147,7 @@ def test_init_bootstraps_first_account_before_discover(
         calls["kwargs"] = kwargs
 
     monkeypatch.setattr(init_cmd_module, "run_init_action", fake_run_init_action)
+    monkeypatch.setattr(init_cmd_module, "_login_if_logged_out", lambda: None)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -184,6 +186,7 @@ def test_init_bootstrap_reprompts_empty_account_alias(
         calls["func"] = func
 
     monkeypatch.setattr(init_cmd_module, "run_init_action", fake_run_init_action)
+    monkeypatch.setattr(init_cmd_module, "_login_if_logged_out", lambda: None)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -377,47 +380,39 @@ def test_init_json_report_only_emits_result_and_changed_configs(
     assert str(tmp_path) not in rendered
 
 
-def test_discover_runs_device_login_when_logged_out(
+
+def test_init_logs_in_before_discovery_when_logged_out(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from inspire.cli.commands.init import discover
+    from inspire.platform.web.session import auth
     from inspire.platform.web.session.models import AuthenticationError
 
-    session = object()
     calls: list[str] = []
 
-    class FakeSessions:
-        @staticmethod
-        def get_web_session(require_workspace: bool = False) -> object:
-            calls.append("get")
-            if len(calls) == 1:
-                raise AuthenticationError("Not logged in; run inspire login.")
-            return session
+    def fake_get_web_session(**kwargs: object) -> object:
+        calls.append("session")
+        raise AuthenticationError("Not logged in; run inspire login.")
 
-    monkeypatch.setattr("inspire.accounts.current_account", lambda: "alice")
+    monkeypatch.setattr(init_cmd_module, "current_account", lambda: "alice")
+    monkeypatch.setattr(auth, "get_web_session", fake_get_web_session)
     monkeypatch.setattr(
         "inspire.cli.commands.login.run_login",
         lambda account, **kw: calls.append(f"login:{account}"),
     )
 
-    assert discover._session_or_login(FakeSessions) is session
-    assert calls == ["get", "login:alice", "get"]
+    init_cmd_module._login_if_logged_out()
+    assert calls == ["session", "login:alice"]
 
 
-def test_discover_does_not_login_when_session_is_valid(
+def test_init_skips_login_when_session_is_valid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from inspire.cli.commands.init import discover
-
-    session = object()
-
-    class FakeSessions:
-        @staticmethod
-        def get_web_session(require_workspace: bool = False) -> object:
-            return session
+    from inspire.platform.web.session import auth
 
     def fail_login(*args: object, **kwargs: object) -> None:
         raise AssertionError("login must not run")
 
+    monkeypatch.setattr(init_cmd_module, "current_account", lambda: "alice")
+    monkeypatch.setattr(auth, "get_web_session", lambda **kwargs: object())
     monkeypatch.setattr("inspire.cli.commands.login.run_login", fail_login)
-    assert discover._session_or_login(FakeSessions) is session
+    init_cmd_module._login_if_logged_out()

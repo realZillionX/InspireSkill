@@ -138,24 +138,6 @@ def _usable_base_url(value: object) -> str:
     return text
 
 
-def _session_or_login(web_session_module: Any) -> Any:
-    """Load the token session, running device login first when logged out."""
-    from inspire.accounts import current_account
-    from inspire.platform.web.session.models import AuthenticationError
-
-    try:
-        return web_session_module.get_web_session(require_workspace=True)
-    except AuthenticationError:
-        account = current_account()
-        if not account:
-            raise
-    from inspire.cli.commands.login import run_login
-
-    click.echo(f"Account {account} is not logged in; starting device login.", err=True)
-    run_login(account)
-    return web_session_module.get_web_session(require_workspace=True)
-
-
 def _resolve_discover_runtime(
     *,
     config: Config,
@@ -166,7 +148,7 @@ def _resolve_discover_runtime(
     non_interactive: bool = False,
     verbose: bool = False,
 ) -> tuple[object, tuple[str, str, str] | None, str]:
-    session = _session_or_login(web_session_module)
+    session = web_session_module.get_web_session(require_workspace=True)
     prompted_credentials: tuple[str, str, str] | None = None
     account_key = (
         _usable_username(prompted_credentials[0])
