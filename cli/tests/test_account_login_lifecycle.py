@@ -94,20 +94,21 @@ def test_login_and_add_share_creation(isolated, monkeypatch):
     assert isolated.call_count == 2
 
 
-def test_login_without_account_requires_alias(isolated):
+def test_bare_login_creates_default_account(isolated):
+    result = CliRunner().invoke(main, ["login"])
+    assert result.exit_code == 0, result.output
+    assert accounts.account_dir("default").exists()
+    assert accounts.default_account() == "default"
+    assert isolated.call_args.args[0] == "default"
+
+
+def test_bare_login_without_active_account_still_errors(isolated):
+    CliRunner().invoke(main, ["login", "--account", "one", "--no-use"])
+    assert accounts.default_account() is None
     result = CliRunner().invoke(main, ["login"])
     assert result.exit_code != 0
-    assert "Pass --account NAME to create and log in to an account." in result.output
-    isolated.assert_not_called()
-
-
-def test_first_interactive_login_prompts_alias(isolated, monkeypatch):
-    monkeypatch.setattr(commands, "stdin_is_interactive", lambda: True)
-    result = CliRunner().invoke(main, ["login"], input="\nbad name\nfirst\n\n\n")
-    assert result.exit_code == 0, result.output
-    assert "Account alias is required" in result.output
-    assert "Invalid account alias" in result.output
-    assert accounts.default_account() == "first"
+    assert "No active account" in result.output
+    assert not accounts.account_dir("default").exists()
 
 
 @pytest.mark.parametrize("command", ["logout", "remove"])
@@ -151,7 +152,6 @@ def test_deletion_requires_confirmation_and_clears_tokens_under_lock(isolated, m
     assert accounts.default_account() == (None if active else "keep")
     if active:
         assert not accounts.current_file().exists()
-
 
 def test_config_writers_and_legacy_loading(isolated, monkeypatch):
     for content in (ACCOUNT_CONFIG_TEMPLATE, render_account_config(base_url=DEFAULT_BASE_URL, proxy="")):

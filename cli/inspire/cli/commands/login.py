@@ -20,6 +20,10 @@ from inspire.platform.web.session.auth import device_login
 from inspire.platform.web.session.models import WebSession
 
 
+DEFAULT_ACCOUNT_NAME = "default"
+"""Account a bare ``inspire login`` creates when no account exists."""
+
+
 def run_login(account: str, *, no_browser: bool = False) -> WebSession:
     """Authorize an account while immediately relaying device instructions."""
     def notify(uri: str, code: str, expires: float) -> None:
@@ -118,9 +122,7 @@ def login(
     if not account:
         if list_accounts():
             raise click.ClickException("No active account. Pass --account NAME or run inspire account use NAME.")
-        if ctx.json_output or not stdin_is_interactive():
-            raise click.ClickException("Pass --account NAME to create and log in to an account.")
-        account = prompt_account_alias()
+        account = DEFAULT_ACCOUNT_NAME
     try:
         session = ensure_account_and_login(
             ctx, account, base_url=base_url, proxy=proxy, make_active=make_active,
