@@ -375,3 +375,49 @@ def test_init_json_report_only_emits_result_and_changed_configs(
     payload = parsed.get("data", parsed)
     assert payload == {"status": "updated"}
     assert str(tmp_path) not in rendered
+
+
+def test_discover_runs_device_login_when_logged_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from inspire.cli.commands.init import discover
+    from inspire.platform.web.session.models import AuthenticationError
+
+    session = object()
+    calls: list[str] = []
+
+    class FakeSessions:
+        @staticmethod
+        def get_web_session(require_workspace: bool = False) -> object:
+            calls.append("get")
+            if len(calls) == 1:
+                raise AuthenticationError("Not logged in; run inspire login.")
+            return session
+
+    monkeypatch.setattr("inspire.accounts.current_account", lambda: "alice")
+    monkeypatch.setattr(
+        "inspire.cli.commands.login.run_login",
+        lambda account, **kw: calls.append(f"login:{account}"),
+    )
+
+    assert discover._session_or_login(FakeSessions) is session
+    assert calls == ["get", "login:alice", "get"]
+
+
+def test_discover_does_not_login_when_session_is_valid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from inspire.cli.commands.init import discover
+
+    session = object()
+
+    class FakeSessions:
+        @staticmethod
+        def get_web_session(require_workspace: bool = False) -> object:
+            return session
+
+    def fail_login(*args: object, **kwargs: object) -> None:
+        raise AssertionError("login must not run")
+
+    monkeypatch.setattr("inspire.cli.commands.login.run_login", fail_login)
+    assert discover._session_or_login(FakeSessions) is session

@@ -4,7 +4,7 @@
 
 ## Unreleased
 
-- 登录改用官方 OAuth 设备授权，新增 `inspire login` 和仅清除本地令牌的 `inspire logout`；访问令牌自动刷新，密码配置不再使用，已有用户需为每个账号重新登录一次。
+- 登录改用官方 OAuth 设备授权，新增 `inspire login` 和仅清除本地令牌的 `inspire logout`；访问令牌自动刷新，密码配置不再使用，已有用户需为每个账号重新登录一次；`inspire init` 发现账号未登录时会直接发起设备授权。
 - 账号创建后默认启动设备授权，可用 `account add --no-login` 暂缓登录。
 
 ## v7.1.16
