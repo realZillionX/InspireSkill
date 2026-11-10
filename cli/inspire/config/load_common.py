@@ -15,8 +15,6 @@ _ACCOUNT_DEFAULTS_FIELD_MAP = {
 
 def _default_config_values() -> dict[str, Any]:
     return {
-        "username": "",
-        "password": "",
         "base_url": DEFAULT_BASE_URL,
         "requests_http_proxy": None,
         "requests_https_proxy": None,

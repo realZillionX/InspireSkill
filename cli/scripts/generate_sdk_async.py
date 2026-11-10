@@ -29,7 +29,7 @@ def generate() -> str:
     # Local bindings only: no account files or platform access.
     with patch("inspire.accounts.account_exists", return_value=True), patch(
         "inspire.config.Config.from_files_and_env",
-        return_value=(SimpleNamespace(base_url="https://example.invalid", username="fake"), None),
+        return_value=(SimpleNamespace(base_url="https://example.invalid"), None),
     ):
         client = InspireClient("generator")
     facades = {name: type(value) for name, value in vars(client).items()
@@ -173,7 +173,7 @@ def generate() -> str:
     body.append("""
     @classmethod
     def from_credentials(
-        cls, username: str, password: str, *, base_url: str | None = None,
+        cls, username: str | None = None, password: str | None = None, *, base_url: str | None = None,
         proxy: str | None = None, account: str | None = None, **client_kwargs: Any,
     ) -> InspireAsyncClient:
         return cls(account, username=username, password=password, base_url=base_url,

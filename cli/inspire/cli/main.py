@@ -151,8 +151,12 @@ def main(
     """
     from inspire.cli.utils.web_transport import install_web_transport
 
-    install_web_transport()
     ctx.json_output = json_output
+    click_ctx = click.get_current_context()
+    missing_account = click_ctx.meta.get("missing_selected_account")
+    if click_ctx.invoked_subcommand != "login" and missing_account:
+        _handle_error(ctx, "ConfigError", f"Account not found: {missing_account}", EXIT_CONFIG_ERROR)
+    install_web_transport()
     ctx.debug = debug
 
     try:

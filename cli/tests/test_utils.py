@@ -397,8 +397,6 @@ class TestProxyCommand:
         )
         rtunnel_bin = tmp_path / "rtunnel"
         cfg = Config(
-            username="",
-            password="",
             base_url="https://qz.sii.edu.cn",
             rtunnel_proxy="http://127.0.0.1:7897",
         )

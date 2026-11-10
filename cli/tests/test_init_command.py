@@ -163,7 +163,7 @@ def test_init_bootstraps_first_account_before_discover(
     account_config = (
         tmp_path / ".inspire" / "accounts" / "zillionx" / "config.toml"
     ).read_text(encoding="utf-8")
-    assert 'username = "zillionx"' in account_config
+    assert "[auth]" not in account_config
     assert 'base_url = "https://qz.sii.edu.cn"' in account_config
 
 
@@ -338,24 +338,12 @@ def test_run_init_action_json_discards_child_error_details(
 
 
 
-def test_persist_prompted_credentials_updates_auth_username() -> None:
-    account_data = {
-        "auth": {"username": "仝", "password": "old-secret"},
+def test_sanitize_drops_old_login_credentials() -> None:
+    data = discover_module._sanitize_account_config({
+        "auth": {"username": "old-user", "password": "old-secret"},
         "api": {"base_url": "https://qz.sii.edu.cn"},
-    }
-
-    discover_module._persist_prompted_credentials(
-        account_data=account_data,
-        prompted_credentials=(
-            "253108120116",
-            "new-secret",
-            "https://qz.sii.edu.cn",
-        ),
-    )
-
-    assert account_data["auth"]["username"] == "253108120116"
-    assert account_data["auth"]["password"] == "old-secret"
-    assert account_data["api"]["base_url"] == "https://qz.sii.edu.cn"
+    })
+    assert data == {"api": {"base_url": "https://qz.sii.edu.cn"}}
 
 
 def test_init_json_report_only_emits_result_and_changed_configs(

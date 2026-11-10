@@ -47,7 +47,7 @@ def test_account_context_help_only_describes_name_inputs() -> None:
 
 
 def _patch_large_context(monkeypatch: pytest.MonkeyPatch) -> None:
-    cfg = Config(username="login-user", password="secret")
+    cfg = Config()
     cfg.context_project = "Project 00"
     cfg.context_workspace = "Workspace 00"
 
@@ -168,7 +168,7 @@ def test_account_context_rejects_limit_with_all_as_single_json_document() -> Non
 def test_account_context_reports_actionable_workspace_discovery_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cfg = Config(username="login-user", password="secret")
+    cfg = Config()
     monkeypatch.setattr(
         context_module.Config,
         "from_files_and_env",
@@ -200,7 +200,7 @@ def test_account_context_reports_actionable_workspace_discovery_failure(
 def test_account_context_uses_live_catalogs_and_ignores_stale_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cfg = Config(username="login-user", password="secret")
+    cfg = Config()
     cfg.project_catalog = {"stale": {"name": "Stale Catalog Project"}}
     cfg.compute_groups = [{"name": "Stale Group"}]
     session = object()
@@ -250,7 +250,7 @@ def test_account_context_uses_live_catalogs_and_ignores_stale_config(
 def test_account_context_keeps_partial_live_compute_groups_with_warning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cfg = Config(username="login-user", password="secret")
+    cfg = Config()
     session = object()
 
     monkeypatch.setattr("inspire.accounts.current_account", lambda: "primary")

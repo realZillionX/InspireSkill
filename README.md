@@ -71,10 +71,12 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ## 账号与初始化
 
-账号配置按本地别名（`<name>`）保存在 `~/.inspire/accounts/<name>/config.toml`。`account add` 创建账号后启动官方 OAuth 设备授权：打开终端给出的链接并确认授权；可用 `--no-login` 暂缓。`inspire init` 发现当前账号未登录时也会直接发起同样的授权；也可单独用 `inspire login --account <name>` 登录，`inspire logout` 仅清除本地 token。密码和 `INSPIRE_PASSWORD` 不再使用；已有用户需要为每个账号运行一次 `inspire login`。
+账号就是已登录的身份。运行 `inspire login --account <name>` 即可创建本地账号并启动官方 OAuth 设备授权，打开终端给出的链接并输入验证码完成授权。连接配置保存在 `~/.inspire/accounts/<name>/config.toml`，访问令牌和轮换的刷新令牌保存在同目录的 `web_session.json`；访问令牌自动刷新，刷新令牌过期后需重新登录。`account add <name>` 保留为兼容创建入口（重复账号报错，可用 `--no-login` 暂缓授权）。用户名和密码不再存储或读取，包括旧 `[auth]` 配置及 `INSPIRE_USERNAME` / `INSPIRE_PASSWORD`。`inspire init --force` 重写配置时会删除这些旧字段。`inspire init` 发现当前账号未登录时也会启动设备授权。
+
+`inspire logout --account <name> --yes` 与 `inspire account remove <name> --yes` 等价：删除整个本地账号目录，包括令牌、配置及 bridge/tunnel 状态，平台工作负载继续运行。删除活动账号后不再保留活动指针。首个账号默认激活，`--use` 强制激活、`--no-use` 阻止激活；登录已有账号默认不切换活动账号。`login` 的 `--base-url` / `--proxy` 仅用于新配置，已有配置不会被覆盖。
 
 ```bash
-inspire account add <name>
+inspire login --account <name>
 inspire account check
 inspire init
 inspire resources availability --workspace 分布式训练空间 --include-cpu

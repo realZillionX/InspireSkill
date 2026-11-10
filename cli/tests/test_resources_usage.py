@@ -23,8 +23,6 @@ class _Session:
 
 def _patch_config(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://qz.sii.edu.cn",
     )
     monkeypatch.setattr(

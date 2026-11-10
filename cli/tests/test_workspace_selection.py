@@ -24,7 +24,7 @@ WS_RECREATED = "ws-33333333-3333-3333-3333-333333333333"
 
 
 def _cfg(**kwargs) -> Config:
-    cfg = Config(username="", password="")
+    cfg = Config()
     for key, value in kwargs.items():
         setattr(cfg, key, value)
     return cfg

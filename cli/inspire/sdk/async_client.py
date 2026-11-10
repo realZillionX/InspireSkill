@@ -2559,7 +2559,7 @@ class InspireAsyncClient(AsyncRuntime):
 
     @classmethod
     def from_credentials(
-        cls, username: str, password: str, *, base_url: str | None = None,
+        cls, username: str | None = None, password: str | None = None, *, base_url: str | None = None,
         proxy: str | None = None, account: str | None = None, **client_kwargs: Any,
     ) -> InspireAsyncClient:
         return cls(account, username=username, password=password, base_url=base_url,

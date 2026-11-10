@@ -22,8 +22,6 @@ class _FakeSession:
 
 def _patch_config(monkeypatch: pytest.MonkeyPatch) -> None:
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
 

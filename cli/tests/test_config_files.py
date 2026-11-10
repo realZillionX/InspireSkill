@@ -14,7 +14,6 @@ from inspire.cli.main import main as cli_main
 from inspire.config import (
     CONFIG_OPTIONS,
     SOURCE_ACCOUNT,
-    SOURCE_DEFAULT,
     SOURCE_ENV,
     SOURCE_ENV_FILE,
     Config,
@@ -53,7 +52,7 @@ def test_every_config_option_is_account_scoped() -> None:
 
 
 def test_toml_keys_map_to_loader_fields() -> None:
-    assert get_option_by_toml("auth.username").field_name == "username"
+    assert get_option_by_toml("auth.username") is None
     assert get_option_by_toml("api.base_url").field_name == "base_url"
     assert get_option_by_toml("job.shm_size").field_name == "shm_size"
     assert get_option_by_toml("notebook.post_start").field_name == "notebook_post_start"
@@ -69,7 +68,7 @@ def test_toml_helpers_round_trip(tmp_path: Path) -> None:
         "auth.username": "alice",
         "api.base_url": "https://x",
     }
-    assert Config._toml_key_to_field("auth.username") == "username"
+    assert Config._toml_key_to_field("auth.username") is None
 
 
 def test_defaults_do_not_depend_on_repository(
@@ -78,10 +77,10 @@ def test_defaults_do_not_depend_on_repository(
     del home
     monkeypatch.chdir(tmp_path)
     cfg, sources = Config.from_files_and_env(require_credentials=False)
-    assert cfg.username == ""
+    assert not hasattr(cfg, "username")
     assert cfg.base_url == "https://qz.sii.edu.cn"
     assert cfg.shm_size is None
-    assert sources["username"] == SOURCE_DEFAULT
+    assert "username" not in sources
 
 
 def test_account_config_loads_identity_and_workload_behavior(
@@ -101,8 +100,8 @@ def test_account_config_loads_identity_and_workload_behavior(
 
     cfg, sources = Config.from_files_and_env()
 
-    assert cfg.username == "alice-login"
-    assert cfg.password == ""
+    assert not hasattr(cfg, "username")
+    assert not hasattr(cfg, "password")
     assert cfg.shm_size == 64
     assert cfg.job_auto_fault_tolerance is True
     assert cfg.job_fault_tolerance_max_retry == 6
@@ -128,9 +127,9 @@ def test_environment_overrides_runtime_but_not_account_identity(
 
     cfg, sources = Config.from_files_and_env()
 
-    assert cfg.username == "toml-user"
+    assert not hasattr(cfg, "username")
     assert cfg.shm_size == 96
-    assert sources["username"] == SOURCE_ACCOUNT
+    assert "username" not in sources
     assert sources["shm_size"] == SOURCE_ENV
 
 
@@ -152,7 +151,7 @@ def test_repository_inspire_directory_is_never_read(
 
     cfg, _ = Config.from_files_and_env()
 
-    assert cfg.username == "alice"
+    assert not hasattr(cfg, "username")
 
 
 def test_missing_active_account_fails_when_credentials_are_required(
@@ -161,7 +160,7 @@ def test_missing_active_account_fails_when_credentials_are_required(
 ) -> None:
     del home
     config, _ = Config.from_files_and_env()
-    assert config.password == ""
+    assert not hasattr(config, "password")
 
 
 def test_writable_config_path_targets_active_account(home: Path, clean_env: None) -> None:
@@ -182,7 +181,7 @@ def test_init_template_writes_only_account_config(
 
     assert result.exit_code == 0, result.output
     content = account.read_text(encoding="utf-8")
-    assert "[auth]" in content
+    assert "[auth]" not in content
     assert "[job]" in content
     assert "[notebook]" in content
     assert not (tmp_path / ".inspire").exists()
@@ -229,8 +228,8 @@ def test_init_smart_mode_preserves_existing_account_identity(
 
     assert result.exit_code == 0, result.output
     content = account.read_text(encoding="utf-8")
-    assert 'username = "alice-login"' in content
-    assert 'password = "secret"' in content
+    assert "username" not in content
+    assert "password" not in content
     assert "shm_size = 72" in content
 
 
@@ -263,7 +262,6 @@ def test_sanitizer_drops_all_retired_repository_state() -> None:
         }
     )
     assert cleaned == {
-        "auth": {"username": "alice"},
         "api": {"base_url": "https://qz.sii.edu.cn"},
         "future": {"enabled": True},
     }

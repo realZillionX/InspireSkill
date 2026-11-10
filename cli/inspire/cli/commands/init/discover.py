@@ -143,30 +143,20 @@ def _resolve_discover_runtime(
     config: Config,
     web_session_module,  # noqa: ANN001
     default_workspace_id: str,
-    cli_username: str | None,
     cli_base_url: str | None,
     non_interactive: bool = False,
     verbose: bool = False,
-) -> tuple[object, tuple[str, str, str] | None, str]:
+) -> tuple[object, str]:
     session = web_session_module.get_web_session(require_workspace=True)
-    prompted_credentials: tuple[str, str, str] | None = None
-    account_key = (
-        _usable_username(prompted_credentials[0])
-        if prompted_credentials
-        else _usable_username(getattr(session, "login_username", ""))
-        or _usable_username(getattr(config, "username", ""))
-    )
+    account_key = _usable_username(getattr(session, "login_username", ""))
     if not account_key:
         raise ValueError("Could not resolve account login name.")
 
-    if prompted_credentials:
-        _set_base_url(prompted_credentials[2])
-    else:
-        base_url = _usable_base_url(getattr(config, "base_url", "")) or _usable_base_url(
-            getattr(session, "base_url", "")
-        )
-        if base_url:
-            _set_base_url(base_url)
+    base_url = _usable_base_url(getattr(config, "base_url", "")) or _usable_base_url(
+        getattr(session, "base_url", "")
+    )
+    if base_url:
+        _set_base_url(base_url)
 
     workspace_id = str(getattr(session, "workspace_id", "") or "").strip()
     if not workspace_id or workspace_id == default_workspace_id:
@@ -175,7 +165,7 @@ def _resolve_discover_runtime(
             "Re-run `inspire init` with an account that can see at least one workspace."
         )
 
-    return session, prompted_credentials, account_key
+    return session, account_key
 
 
 def _persist_api_base_url(
@@ -197,44 +187,11 @@ def _persist_api_base_url(
         api["base_url"] = base_url
 
 
-def _persist_prompted_credentials(
-    *,
-    account_data: dict[str, Any],
-    prompted_credentials: tuple[str, str, str] | None,
-) -> None:
-    if not prompted_credentials:
-        return
-    username, password, base_url = prompted_credentials
-    auth = account_data.get("auth")
-    if not isinstance(auth, dict):
-        auth = {}
-        account_data["auth"] = auth
-    auth["username"] = username
-    api = account_data.get("api")
-    if not isinstance(api, dict):
-        api = {}
-        account_data["api"] = api
-    api["base_url"] = base_url
-
-
-def _persist_cached_session_identity(*, account_data: dict[str, Any], session: Any) -> None:
-    username = _usable_username(getattr(session, "login_username", ""))
-    if not username:
-        return
-    auth = account_data.get("auth")
-    if not isinstance(auth, dict):
-        auth = {}
-        account_data["auth"] = auth
-    if not _usable_username(auth.get("username")):
-        auth["username"] = username
-
-
 def _persist_account_config(
     *,
     force: bool,
     config: Config,
     session: Any,
-    prompted_credentials: tuple[str, str, str] | None,
     non_interactive: bool,
     verbose: bool,
 ) -> None:
@@ -256,13 +213,6 @@ def _persist_account_config(
     raw_data = Config._load_toml(path) if path.exists() else {}
     account_data = _sanitize_account_config(raw_data)
     _persist_api_base_url(account_data=account_data, config=config, session=session)
-    _persist_prompted_credentials(
-        account_data=account_data,
-        prompted_credentials=prompted_credentials,
-    )
-    if not prompted_credentials:
-        _persist_cached_session_identity(account_data=account_data, session=session)
-
     _progress(verbose, "Writing account configuration...")
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(path, _toml_dumps(account_data), private=True)
@@ -272,7 +222,6 @@ def _persist_account_config(
 def _init_discover_mode(
     force: bool,
     *,
-    cli_username: str | None = None,
     cli_base_url: str | None = None,
     non_interactive: bool = False,
     verbose: bool = False,
@@ -283,11 +232,10 @@ def _init_discover_mode(
     from inspire.platform.web.session.browser_client import _close_browser_client
 
     config, _ = Config.from_files_and_env(require_credentials=False)
-    session, prompted_credentials, account_key = _resolve_discover_runtime(
+    session, account_key = _resolve_discover_runtime(
         config=config,
         web_session_module=web_session_module,
         default_workspace_id=DEFAULT_WORKSPACE_ID,
-        cli_username=cli_username,
         cli_base_url=cli_base_url,
         non_interactive=non_interactive,
         verbose=verbose,
@@ -298,7 +246,6 @@ def _init_discover_mode(
             force=force,
             config=config,
             session=session,
-            prompted_credentials=prompted_credentials,
             non_interactive=non_interactive,
             verbose=verbose,
         )

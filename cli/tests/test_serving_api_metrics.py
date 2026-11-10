@@ -39,7 +39,7 @@ class _FakeSession:
 
 
 def _patch_cli(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
-    config = config_module.Config(username="user", password="pass")
+    config = config_module.Config()
     resolutions: list[dict[str, Any]] = []
 
     monkeypatch.setattr(

@@ -30,7 +30,7 @@ class AccountInformation(Service):
         user = self._current_user()
         return AccountInfo(
             self.client.account,
-            self.client._config.username,
+            self.session.login_username or "",
             self.client.base_url,
             str(user.get("id") or user.get("user_id") or ""),
             str(user.get("name") or user.get("user_name") or ""),

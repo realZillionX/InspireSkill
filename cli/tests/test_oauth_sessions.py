@@ -99,7 +99,7 @@ def test_cli_login_logout_metadata_only(account, monkeypatch):
     assert "old-access" not in result.output
     assert "old-refresh" not in result.output
     assert "alice" in result.stdout
-    result = runner.invoke(main, ["logout"])
+    result = runner.invoke(main, ["logout", "--yes"])
     assert result.exit_code == 0, result.output
     assert WebSession.load() is None
 
@@ -166,7 +166,7 @@ def test_account_add_authorizes_without_password(account, monkeypatch):
     import importlib
     commands = importlib.import_module("inspire.cli.commands.login")
     calls = []
-    monkeypatch.setattr(commands, "run_login", lambda alias: calls.append(alias))
+    monkeypatch.setattr(commands, "run_login", lambda alias, **kwargs: calls.append(alias))
     result = CliRunner().invoke(main, ["account", "add", "second", "--non-interactive",
                                      "--username", "ignored", "--password", "secret-password"])
     assert result.exit_code == 0, result.output

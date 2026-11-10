@@ -21,22 +21,15 @@ def _apply_env_layer(
     *,
     config_dict: dict[str, Any],
     sources: dict[str, str],
-    allow_env_identity: bool = True,
-) -> str | None:
-    env_password = os.getenv("INSPIRE_PASSWORD")
+) -> None:
 
     for option in CONFIG_OPTIONS:
-        if option.env_var == "INSPIRE_PASSWORD":
-            continue
-
         source_key = option.env_var
         value = os.getenv(option.env_var)
         if value is None:
             continue
 
         field_name = option.field_name
-        if field_name == "username" and not allow_env_identity:
-            continue
         if field_name not in config_dict:
             continue
 
@@ -51,29 +44,3 @@ def _apply_env_layer(
 
         config_dict[field_name] = new_value
         sources[field_name] = _env_source_for(source_key)
-
-    return env_password
-
-
-def _apply_password_fallback(
-    *,
-    config_dict: dict[str, Any],
-    sources: dict[str, str],
-    env_password: str | None,
-) -> None:
-    config_dict["password"] = ""
-
-
-def _validate_required_config(
-    *,
-    config_dict: dict[str, Any],
-    require_credentials: bool,
-) -> None:
-    config_dict["password"] = ""
-
-
-__all__ = [
-    "_apply_env_layer",
-    "_apply_password_fallback",
-    "_validate_required_config",
-]

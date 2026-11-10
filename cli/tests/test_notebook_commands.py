@@ -74,8 +74,6 @@ def _workspace_metavars(group: click.Group) -> dict[str, str | None]:
 
 def make_test_config(tmp_path: Path, include_compute_groups: bool = False) -> config_module.Config:
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
     if include_compute_groups:
@@ -1346,8 +1344,6 @@ def test_notebook_start_accepts_name(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     ws_gpu = "ws-9dcc0e1f-80a4-4af2-bc2f-0e352e7b17e6"
 
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
 
@@ -1444,8 +1440,6 @@ def test_notebook_start_wait_prints_progress(
     ws_cpu = "ws-6e6ba362-e98e-45b2-9c5a-311998e93d65"
 
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
 
@@ -1541,8 +1535,6 @@ def test_notebook_start_name_conflict_prompts_selection(
     ws_gpu = "ws-9dcc0e1f-80a4-4af2-bc2f-0e352e7b17e6"
 
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
 
@@ -1647,8 +1639,6 @@ def test_notebook_start_warns_when_no_wait_conflicts_with_configured_post_start(
     ws_gpu = "ws-9dcc0e1f-80a4-4af2-bc2f-0e352e7b17e6"
 
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
         notebook_post_start="echo from config",
     )
@@ -2605,8 +2595,6 @@ def test_notebook_exec_cwd_uses_absolute_path(
     tmp_path: Path,
 ) -> None:
     config = config_module.Config(
-        username="",
-        password="",
     )
     tunnel_config = tunnel_module.TunnelConfig()
     tunnel_config.add_bridge(
@@ -2653,7 +2641,7 @@ def test_notebook_exec_cwd_uses_absolute_path(
 def test_notebook_exec_verifies_target_cache_before_use(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = config_module.Config(username="", password="")
+    config = config_module.Config()
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(
@@ -2694,8 +2682,6 @@ def test_notebook_shell_cwd_uses_absolute_path(
     tmp_path: Path,
 ) -> None:
     config = config_module.Config(
-        username="",
-        password="",
     )
     tunnel_config = tunnel_module.TunnelConfig()
     tunnel_config.add_bridge(
@@ -2746,7 +2732,7 @@ def test_notebook_shell_cwd_uses_absolute_path(
 def test_notebook_shell_without_explicit_cwd_preserves_remote_initial_cwd(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = config_module.Config(username="", password="")
+    config = config_module.Config()
     tunnel_config = tunnel_module.TunnelConfig()
     tunnel_config.add_bridge(
         tunnel_module.BridgeProfile(name="gpu-main", proxy_url="https://proxy.example.com")

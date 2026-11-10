@@ -16,7 +16,7 @@ from inspire.platform.web.session.models import TransientAPIError
 @pytest.fixture
 def job_list(monkeypatch):
     monkeypatch.setattr(Config, "from_files_and_env", classmethod(
-        lambda cls, **kw: (Config(username="", password=""), {}),
+        lambda cls, **kw: (Config(), {}),
     ))
     monkeypatch.setattr(job_commands, "get_web_session", lambda: SimpleNamespace())
     monkeypatch.setattr(job_commands, "_current_user_id", lambda session: "user-test")

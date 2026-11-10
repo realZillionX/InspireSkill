@@ -214,16 +214,17 @@ class TestRenameStorage:
 
 
 def _add(runner: CliRunner, *args: str, input_: str | None = None):
-    return runner.invoke(account, ["add", "--no-login", *args], input=input_)
+    from unittest.mock import patch
+    with patch("inspire.cli.commands.login.stdin_is_interactive", return_value=input_ is not None):
+        return runner.invoke(account, ["add", "--no-login", *args], input=input_)
 
 
 class TestAccountAddCommand:
     def test_interactive_walkthrough_accepts_all_defaults(
         self, home: Path, runner: CliRunner
     ) -> None:
-        """Default path: five prompts (username / password x2 / base URL / proxy).
+        """Default path: base URL and proxy prompts.
         Empty lines accept the shown defaults; proxy stays unset."""
-        # username(accept default), password, confirm, base URL(default), proxy(empty)
         inputs = "\n\n"
         result = _add(runner, "alice", input_=inputs)
         assert result.exit_code == 0, result.output
@@ -234,7 +235,7 @@ class TestAccountAddCommand:
         assert "Account added: alice (active)" in result.output
 
         config = (home / ".inspire" / "accounts" / "alice" / "config.toml").read_text(encoding="utf-8")
-        assert 'username = ""' in config
+        assert "[auth]" not in config
         assert "password" not in config
         assert 'base_url = "https://qz.sii.edu.cn"' in config
         assert "proxy" not in config
@@ -250,7 +251,7 @@ class TestAccountAddCommand:
         result = _add(runner, "alice", input_=inputs)
         assert result.exit_code == 0, result.output
         config = storage.account_config_path("alice").read_text(encoding="utf-8")
-        assert 'username = ""' in config
+        assert "[auth]" not in config
         assert 'base_url = "https://staging.x"' in config
         assert 'playwright = "http://127.0.0.1:7897"' in config
 
@@ -302,7 +303,7 @@ class TestAccountAddCommand:
         )
         assert result.exit_code == 0, result.output
         config = storage.account_config_path("alice").read_text(encoding="utf-8")
-        assert 'username = ""' in config
+        assert "[auth]" not in config
         assert 'playwright = "http://127.0.0.1:7897"' in config
         assert storage.current_account() == "alice"
 
@@ -361,7 +362,7 @@ class TestAccountAddCommand:
         except ModuleNotFoundError:  # pragma: no cover - py3.10
             import tomli as tomllib  # type: ignore[no-redef]
         parsed = tomllib.loads(config)
-        assert "password" not in parsed["auth"]
+        assert "auth" not in parsed
 
 
 class TestAccountListCommand:
@@ -436,14 +437,14 @@ class TestAccountUseCommand:
         storage.set_current_account("alice")
         browser_core.clear_browser_api_runtime_cache()
         cfg, _ = Config.from_files_and_env(require_credentials=False)
-        assert cfg.username == "alice"
+        assert not hasattr(cfg, "username")
         assert browser_core._get_base_url() == "https://alice.example"
 
         result = runner.invoke(account, ["use", "bob"])
 
         assert result.exit_code == 0, result.output
         cfg, _ = Config.from_files_and_env(require_credentials=False)
-        assert cfg.username == "bob"
+        assert not hasattr(cfg, "username")
         assert browser_core._get_base_url() == "https://bob.example"
 
     def test_use_keeps_previous_account_runtime_cache(
@@ -604,9 +605,10 @@ class TestAccountRemoveCommand:
         assert storage.list_accounts() == []
 
     def test_remove_without_yes_requires_confirm(
-        self, home: Path, runner: CliRunner
+        self, home: Path, runner: CliRunner, monkeypatch
     ) -> None:
         storage.create_account("alice", "x = 1\n")
+        monkeypatch.setattr("inspire.cli.commands.login.stdin_is_interactive", lambda: True)
         result = runner.invoke(account, ["remove", "alice"], input="y\n")
         assert result.exit_code == 0
         assert storage.list_accounts() == []

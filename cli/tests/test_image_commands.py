@@ -97,8 +97,6 @@ def _offline_workspace_names(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _make_config(tmp_path: Path) -> config_module.Config:
     return config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
 

@@ -101,8 +101,6 @@ def _patch_hpc_metrics_name_resolver(
     expected_pick: int | None = None,
 ) -> None:
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
     session = _FakeSession()
@@ -143,8 +141,6 @@ def _patch_job_metrics_name_resolver(
     expected_pick: int | None = None,
 ) -> None:
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
     session = _FakeSession()
@@ -171,8 +167,6 @@ def _patch_serving_metrics_name_resolver(
     expected_pick: int | None = None,
 ) -> None:
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
     session = _FakeSession()
@@ -429,8 +423,6 @@ def test_serving_metrics_retries_stale_cached_handle_by_name(
     )
 
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
     session = _FakeSession()
@@ -548,8 +540,6 @@ def test_ray_metrics_resolver_and_wiring(
     )
 
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
     session = _FakeSession()

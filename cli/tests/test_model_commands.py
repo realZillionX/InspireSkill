@@ -58,8 +58,6 @@ def _patch_runtime(
     tmp_path: Path,
 ) -> config_module.Config:
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
     monkeypatch.setattr(

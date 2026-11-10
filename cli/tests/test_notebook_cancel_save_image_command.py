@@ -40,8 +40,6 @@ def _json_data(output: str) -> Any:
 
 def _patch_config_and_session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
 

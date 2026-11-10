@@ -32,10 +32,6 @@ SOURCE_ENV_FILE = "env-file"
 class Config:
     """Inspire CLI configuration."""
 
-    # Required (for platform API)
-    username: str
-    password: str
-
     # Optional with defaults
     base_url: str = DEFAULT_BASE_URL
 

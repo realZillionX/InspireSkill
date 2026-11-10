@@ -52,8 +52,6 @@ def _allow_exec_transport_policy(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def make_sync_config(tmp_path: Path) -> Config:
     return Config(
-        username="",
-        password="",
     )
 
 
