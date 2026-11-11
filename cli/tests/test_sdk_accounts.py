@@ -116,7 +116,8 @@ def test_login_refreshes_expired_tokens(client, monkeypatch, force):
     monkeypatch.setattr(auth, "refresh_session", refresh)
     monkeypatch.setattr("inspire.platform.web.browser_api.get_current_user", lambda **kw: {})
     assert isinstance(client.login(force=force), AccountInfo)
-    refresh.assert_called_once_with(old)
+    refresh.assert_called_once_with(old, lock_timeout=refresh.call_args.kwargs["lock_timeout"])
+    assert 0 < refresh.call_args.kwargs["lock_timeout"] <= 120
 
 
 def test_login_no_cache(client, monkeypatch):

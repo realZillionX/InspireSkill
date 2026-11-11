@@ -36,6 +36,9 @@ def _refresh(home: str, barrier: Barrier, counter: Counter, forced: bool) -> Non
 @pytest.mark.parametrize("forced", [False, True])
 def test_processes_share_one_rotating_refresh(monkeypatch, tmp_path, forced):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    from inspire.accounts import create_account
+
+    create_account("default", '[api]\nbase_url="https://example.test"\n')
     cached = WebSession(access_token="old-access", refresh_token="old-refresh",
                         access_expires_at=time.time()+(-10 if not forced else 3600),
                         refresh_expires_at=time.time()+6000, created_at=1,

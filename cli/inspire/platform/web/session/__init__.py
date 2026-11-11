@@ -135,9 +135,11 @@ def get_web_session(
     force_refresh: bool = False,
     require_workspace: bool = False,
     account: Optional[str] = None,
+    lock_timeout: float | None = None,
 ) -> Program[WebSession]:
     session = yield call(_get_web_session, force_refresh=force_refresh,
-                         require_workspace=require_workspace, account=account)
+                         require_workspace=require_workspace, account=account,
+                         lock_timeout=lock_timeout)
     from inspire.platform.web.runtime import session_transport
 
     adopt = session_transport.get()

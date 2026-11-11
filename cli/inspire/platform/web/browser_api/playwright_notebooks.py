@@ -524,7 +524,8 @@ def _resolve_notebook_ide_url_sync(
                 if key.lower() not in {"authorization", "x-inspire-client-source"}
             }
             headers.update(platform)
-            route.continue_(headers=headers)
+            response = route.fetch(headers=headers, max_redirects=0)
+            route.fulfill(response=response)
 
         context.route("**/*", authorize)
         page = context.new_page()

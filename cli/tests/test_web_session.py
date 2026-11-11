@@ -715,7 +715,7 @@ def test_request_json_auth_response_rebuilds_once_without_a_browser(
         "_get_browser_client",
         lambda _session: pytest.fail("an expiry must not be retried through a browser"),
     )
-    monkeypatch.setattr(ws_auth, "refresh_session", lambda _session: fake_login())
+    monkeypatch.setattr(ws_auth, "refresh_session", lambda _session, **kwargs: fake_login())
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
     monkeypatch.setattr(transport, "_force_browser", False)
 
@@ -865,7 +865,7 @@ def test_browser_client_reset_on_expired(transport, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(ws, "_get_browser_client", lambda _session: ExpiringBrowserClient())
     monkeypatch.setattr(ws, "_close_browser_client", fake_close)
     monkeypatch.setattr(transport, "_force_browser", True)
-    monkeypatch.setattr(ws_auth, "refresh_session", lambda _session: fake_get_web_session())
+    monkeypatch.setattr(ws_auth, "refresh_session", lambda _session, **kwargs: fake_get_web_session())
 
     with pytest.raises(ws.SessionExpiredError):
         transport.request("GET", "")
@@ -899,7 +899,7 @@ def test_request_json_reauth_is_silent(
     monkeypatch.setattr(ws, "_get_browser_client", lambda _session: ExpiringBrowserClient())
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
     monkeypatch.setattr(transport, "_force_browser", True)
-    monkeypatch.setattr(ws_auth, "refresh_session", lambda _session: refreshed)
+    monkeypatch.setattr(ws_auth, "refresh_session", lambda _session, **kwargs: refreshed)
     monkeypatch.setattr(
         ws,
         "pooled_requests_session",
@@ -946,7 +946,7 @@ def test_request_json_reauth_refreshes_session_in_place(transport, monkeypatch: 
     monkeypatch.setattr(ws, "_get_browser_client", lambda _session: expiring)
     monkeypatch.setattr(ws, "pooled_requests_session", lambda _session, _url: http)
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
-    monkeypatch.setattr(ws_auth, "refresh_session", lambda _session: fake_get_web_session())
+    monkeypatch.setattr(ws_auth, "refresh_session", lambda _session, **kwargs: fake_get_web_session())
     monkeypatch.setattr(transport, "_force_browser", True)
 
     result = transport.request("GET", "")
@@ -1013,7 +1013,7 @@ def test_a_rate_limited_call_still_gets_only_one_session_rebuild(
         )
 
     monkeypatch.setattr(ws, "pooled_requests_session", lambda _session, _url: http)
-    monkeypatch.setattr(ws_auth, "refresh_session", lambda _session: fake_login())
+    monkeypatch.setattr(ws_auth, "refresh_session", lambda _session, **kwargs: fake_login())
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
     monkeypatch.setattr(
         ws,
@@ -1110,7 +1110,7 @@ def test_a_login_nothing_can_use_is_not_repeated_for_every_call(
     monkeypatch.setattr(
         ws, "pooled_requests_session", lambda *_args: DummyHTTP(DummyResponse(401))
     )
-    monkeypatch.setattr(ws_auth, "refresh_session", lambda _session: fake_login())
+    monkeypatch.setattr(ws_auth, "refresh_session", lambda _session, **kwargs: fake_login())
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
     monkeypatch.setattr(
         ws, "_get_browser_client", lambda _session: pytest.fail("no browser expected")
@@ -1205,7 +1205,7 @@ def test_a_rebuilt_session_that_works_does_not_block_a_later_expiry(
         )
 
     monkeypatch.setattr(ws, "pooled_requests_session", lambda *_args: _Sequenced())
-    monkeypatch.setattr(ws_auth, "refresh_session", lambda _session: fake_login())
+    monkeypatch.setattr(ws_auth, "refresh_session", lambda _session, **kwargs: fake_login())
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
     monkeypatch.setattr(transport, "_force_browser", False)
 

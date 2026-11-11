@@ -91,7 +91,7 @@ with InspireClient(account="research") as client:
   - Run `inspire login --account <alias>` before using the SDK. Cached OAuth tokens refresh automatically under a per-account lock with a disk reread; rotated refresh tokens are persisted. The SDK never opens a device login implicitly. Old cookie caches require explicit login. Usernames and passwords are neither stored nor read; displayed identity comes from `WebSession.login_username`.
   - `allow_browser=True` enables browser-backed requests for non-login operations. Device authorization never needs Chromium, and missing tokens always require an explicit CLI login.
 - **`init(*, force=False) -> InitResult`** (async: `await client.init(force=False)`):
-  - Logs in, verifies at least one accessible Workspace, and atomically writes normalized account config (`force=False` removes `[auth]` username/password while preserving other existing TOML sections; `force=True` rebuilds from the template). Interactive prompts, Playwright installation, and `ssh-keygen` remain CLI-only (`inspire init`).
+  - Uses an existing OAuth session, verifies at least one accessible Workspace, and atomically writes normalized account config (`force=False` removes `[auth]` username/password while preserving other existing TOML sections; `force=True` rebuilds from the template). Device login prompts and `ssh-keygen` remain CLI-only (`inspire init`); device login does not require Chromium.
 
 ## 3. Concurrency, Cancellation & Lifecycle
 

@@ -185,7 +185,7 @@ def test_shared_transport_refresh_is_in_place_and_budgeted(monkeypatch, cli_sess
 
         )
 
-    monkeypatch.setattr("inspire.platform.web.session.auth.refresh_session", lambda session: login())
+    monkeypatch.setattr("inspire.platform.web.session.auth.refresh_session", lambda session, **kwargs: login())
     monkeypatch.setattr(
         ws,
         "pooled_requests_session",
@@ -299,7 +299,7 @@ def test_threads_share_one_refresh_and_the_original_session(monkeypatch, cli_ses
         )
 
     monkeypatch.setattr(ws, "pooled_requests_session", lambda *args: SimpleNamespace(get=get))
-    monkeypatch.setattr("inspire.platform.web.session.auth.refresh_session", lambda session: login())
+    monkeypatch.setattr("inspire.platform.web.session.auth.refresh_session", lambda session, **kwargs: login())
     transport = get_transport(cli_session)
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(lambda _: transport.request("GET", "/test"), range(8)))

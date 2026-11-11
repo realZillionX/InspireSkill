@@ -20,7 +20,7 @@ from inspire.cli.context import Context, EXIT_GENERAL_ERROR, pass_context
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.config import DEFAULT_BASE_URL, Config
 
-from .discover import _init_discover_mode
+from .discover import _init_discover_mode, _validate_cli_base_url
 from .env_detect import _detect_env_vars
 from .errors import run_init_action
 from .json_report import emit_init_result, snapshot_paths
@@ -89,7 +89,7 @@ def _bootstrap_first_account_if_needed(
     return True
 
 
-def _login_if_logged_out() -> None:
+def _login_if_logged_out(cli_base_url: str | None = None) -> None:
     """Start device login before discovery captures output in JSON mode."""
     from inspire.platform.web.session import auth
     from inspire.platform.web.session.models import AuthenticationError
@@ -97,6 +97,8 @@ def _login_if_logged_out() -> None:
     account = current_account()
     if not account:
         return
+    config, _ = Config.from_files_and_env(require_credentials=False, account=account)
+    _validate_cli_base_url(config, cli_base_url)
     try:
         auth.get_web_session(account=account)
     except AuthenticationError:
@@ -189,7 +191,7 @@ def init(
             )
 
         if run_discovery:
-            _login_if_logged_out()
+            _login_if_logged_out(base_url)
             run_init_action(
                 _init_discover_mode,
                 effective_json,

@@ -69,6 +69,18 @@ def _http(account: str | None) -> requests.Session:
     return http
 
 
+def _save_existing_account(session: WebSession, account: str | None) -> None:
+    """Persist after network I/O; caller must hold exclusive_session_refresh."""
+    from inspire.accounts import account_exists
+
+    name = models._resolve_account_for_storage(account)
+    if not name or not account_exists(name):
+        raise AuthenticationError(
+            f"Account {name} was removed; run inspire login --account {name}."
+        )
+    session.save(account=name)
+
+
 @blocking_io
 def refresh_cached(account: str | None, observed: float | None = None) -> WebSession:
     """Caller holds the refresh lock; always reread the rotating token."""
@@ -95,13 +107,14 @@ def refresh_cached(account: str | None, observed: float | None = None) -> WebSes
         created_at=time.time(),
         login_username=cached.login_username or token_login_username(tokens.access_token),
     )
-    refreshed.save(account=account)
+    _save_existing_account(refreshed, account)
     return refreshed
 
 
 @workflow
 def get_web_session(
-    force_refresh: bool = False, require_workspace: bool = False, account: Optional[str] = None
+    force_refresh: bool = False, require_workspace: bool = False, account: Optional[str] = None,
+    lock_timeout: float | None = None
 ) -> Program[WebSession]:
     """Load or refresh cached tokens without starting device authorization."""
     account = models._resolve_account_for_storage(account)
@@ -109,7 +122,7 @@ def get_web_session(
     if cached is None:
         raise login_required(account)
     if force_refresh or not cached.is_valid():
-        context = exclusive_session_refresh(account)
+        context = exclusive_session_refresh(account, timeout=lock_timeout)
         yield call(enter_context, context)
         try:
             observed = cached.created_at if force_refresh else None
@@ -133,14 +146,16 @@ def _ensure_workspace_catalog(session: WebSession, account: str | None) -> WebSe
     _discover_identity(session, base_url)
     if _has_workspace(session):
         with exclusive_session_refresh(account):
-            session.save(account=account)
+            _save_existing_account(session, account)
     return session
 
 
 @workflow
-def refresh_session(session: WebSession) -> Program[WebSession]:
+def refresh_session(
+    session: WebSession, *, lock_timeout: float | None = None
+) -> Program[WebSession]:
     """Refresh a refused generation under the account lock."""
-    context = exclusive_session_refresh(session.account)
+    context = exclusive_session_refresh(session.account, timeout=lock_timeout)
     yield call(enter_context, context)
     try:
         return (yield call(refresh_cached, session.account, session.created_at))
@@ -206,8 +221,8 @@ def device_login(account: str, notify: Callable[[str, str, float], None]) -> Web
     )
     with exclusive_session_refresh(account):
         session.created_at = time.time()
-        session.save(account=account)
+        _save_existing_account(session, account)
     _discover_identity(session, config.base_url)
     with exclusive_session_refresh(account):
-        session.save(account=account)
+        _save_existing_account(session, account)
     return session

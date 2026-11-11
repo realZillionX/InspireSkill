@@ -24,7 +24,8 @@
 
 ```http
 POST {base_url}/api/v2/{route}?Action={Action}
-Cookie: inspire-session=…
+Authorization: Bearer …
+X-Inspire-Client-Source: inspire-cli/inspireskill-<version>
 Content-Type: application/json
 Referer: {base_url}/{console_page_path}
 
@@ -37,7 +38,7 @@ Referer: {base_url}/{console_page_path}
 | Authentication | Requires Bearer authorization and `X-Inspire-Client-Source: inspire-cli/inspireskill-<version>`. |
 | `Referer` | Must match the origin and corresponding console page path; constructed per wrapper. |
 | Field Casing | Protobuf JSON unmarshaling is case- and underscore-insensitive (`ImageId` / `image_id` / `Image_Id` map to the same field), **except** when the underlying field name itself differs (e.g., `image.UpdateImage` requires `id`, whereas `image_id` is silently ignored). |
-| Account Isolation | Every request uses the SSO session and proxy configuration of the selected Account Alias; cross-account commands never fall back to the active default account. |
+| Account Isolation | Every request uses the OAuth token session and proxy configuration of the selected Account Alias; cross-account commands never fall back to the active default account. |
 
 ### Response Envelope
 
@@ -510,6 +511,8 @@ Called per service route (`POST /api/v2/{notebook|train|hpc|ray|inference_servin
 ---
 
 ## 11. Dataset Hub (`plaza/`)
+
+The CAS handshake is currently disabled (`CAS_SIGN_IN_ENABLED = False`) because OAuth device sessions have no CAS cookie. Dataset catalogue calls raise `PlazaUnavailable`; qz dataset mounts and `dataset validate` are unaffected. The protocol notes below are retained for a future interactive CAS sign-in.
 
 The Dataset Hub (`PLAZA_BASE_URL` in [`plaza/core.py`](../../cli/inspire/platform/web/plaza/core.py)) is a separate service sharing CAS SSO (`CAS_BASE_URL`), implemented in [`plaza/`](../../cli/inspire/platform/web/plaza/).
 

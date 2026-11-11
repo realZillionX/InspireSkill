@@ -105,7 +105,7 @@ def test_init_defaults_to_discover_mode_with_active_account(
         calls["kwargs"] = kwargs
 
     monkeypatch.setattr(init_cmd_module, "run_init_action", fake_run_init_action)
-    monkeypatch.setattr(init_cmd_module, "_login_if_logged_out", lambda: None)
+    monkeypatch.setattr(init_cmd_module, "_login_if_logged_out", lambda *args: None)
     monkeypatch.setattr(init_cmd_module, "emit_init_result", lambda **kwargs: None)
 
     runner = CliRunner()
@@ -147,7 +147,7 @@ def test_init_bootstraps_first_account_before_discover(
         calls["kwargs"] = kwargs
 
     monkeypatch.setattr(init_cmd_module, "run_init_action", fake_run_init_action)
-    monkeypatch.setattr(init_cmd_module, "_login_if_logged_out", lambda: None)
+    monkeypatch.setattr(init_cmd_module, "_login_if_logged_out", lambda *args: None)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -186,7 +186,7 @@ def test_init_bootstrap_reprompts_empty_account_alias(
         calls["func"] = func
 
     monkeypatch.setattr(init_cmd_module, "run_init_action", fake_run_init_action)
-    monkeypatch.setattr(init_cmd_module, "_login_if_logged_out", lambda: None)
+    monkeypatch.setattr(init_cmd_module, "_login_if_logged_out", lambda *args: None)
 
     runner = CliRunner()
     result = runner.invoke(

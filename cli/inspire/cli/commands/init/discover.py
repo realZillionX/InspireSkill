@@ -53,15 +53,15 @@ def _ensure_playwright_browser(*, non_interactive: bool = False) -> None:
         if "--with-deps" in install_args:
             click.echo(
                 "A local browser runtime and Linux system dependencies are required for "
-                "platform login (one-time setup)."
+                "notebook browser automation (one-time setup)."
             )
         else:
             click.echo(
-                "A local browser runtime is required for platform login "
+                "A local browser runtime is required for notebook browser automation "
                 "(one-time ~150 MB download)."
             )
         if not click.confirm("Install Chromium now?", default=True):
-            click.echo("Cannot proceed without a browser for platform login.")
+            click.echo("Cannot proceed without a browser for notebook browser automation.")
             raise SystemExit(1)
 
     result = subprocess.run(
@@ -138,6 +138,17 @@ def _usable_base_url(value: object) -> str:
     return text
 
 
+def _validate_cli_base_url(config: Config, cli_base_url: str | None) -> None:
+    if cli_base_url is not None and (
+        cli_base_url.strip().rstrip("/") != config.base_url.strip().rstrip("/")
+    ):
+        raise ValueError(
+            "--base-url only applies when init creates the first account. "
+            "Create an account for that platform with `inspire login --account NAME "
+            "--base-url URL`, or edit [api].base_url in the account config and run inspire login."
+        )
+
+
 def _resolve_discover_runtime(
     *,
     config: Config,
@@ -147,6 +158,7 @@ def _resolve_discover_runtime(
     non_interactive: bool = False,
     verbose: bool = False,
 ) -> tuple[object, str]:
+    _validate_cli_base_url(config, cli_base_url)
     session = web_session_module.get_web_session(require_workspace=True)
     account_key = _usable_username(getattr(session, "login_username", ""))
     if not account_key:

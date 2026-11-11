@@ -1139,7 +1139,7 @@ def fake_platform(client, monkeypatch, statuses):
 def test_read_renews_sso_and_persists(client, monkeypatch, renewal):
     auth, old, new = renewal
     persisted, closed = [], []
-    monkeypatch.setattr(auth, "refresh_session", lambda current: new if current is old else None)
+    monkeypatch.setattr(auth, "refresh_session", lambda current, **kwargs: new if current is old else None)
     client._transport._browser = SimpleNamespace(close=lambda: closed.append(True))
     calls = fake_platform(client, monkeypatch, [401, 200])
     assert client._transport.request("POST", "/read")["Result"]["id"] == "user"
@@ -1174,7 +1174,7 @@ def test_single_send_probes_only_when_idle(client, monkeypatch, idle):
 def test_single_send_probe_renews_before_only_write(client, monkeypatch, renewal):
     auth, _, new = renewal
     client._transport._last_success = None
-    monkeypatch.setattr(auth, "refresh_session", lambda _: new)
+    monkeypatch.setattr(auth, "refresh_session", lambda _, **kwargs: new)
     calls = fake_platform(client, monkeypatch, [401, 200, 200])
     with client._transport.single_send(create=True):
         client._transport.request("POST", "/write")
@@ -1190,7 +1190,7 @@ def test_refresh_adopts_only_newer_cache(client, monkeypatch, renewal, newer):
     cached = new if newer else replace(old, created_at=old.created_at - 1)
     monkeypatch.setattr(WebSession, "load", lambda **kw: cached)
     renewed = []
-    monkeypatch.setattr(auth, "refresh_session", lambda current: renewed.append(current) or new)
+    monkeypatch.setattr(auth, "refresh_session", lambda current, **kwargs: renewed.append(current) or new)
     client._transport._refresh()
     assert client._transport.session is new
     assert renewed == [old]
@@ -1199,7 +1199,7 @@ def test_refresh_adopts_only_newer_cache(client, monkeypatch, renewal, newer):
 def test_failed_probe_does_not_dispatch_write(client, monkeypatch, renewal):
     auth, _, _ = renewal
     client._transport._last_success = None
-    monkeypatch.setattr(auth, "refresh_session", lambda _: None)
+    monkeypatch.setattr(auth, "refresh_session", lambda _, **kwargs: None)
 
     def fail(*args, **kwargs):
         raise RuntimeError("login failed")

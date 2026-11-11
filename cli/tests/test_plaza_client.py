@@ -579,7 +579,7 @@ def test_check_deadline_preserves_discarded_remaining_error(monkeypatch, stage):
 
     monkeypatch.setattr(transport, "check_deadline", record_check)
     if stage.startswith("refresh_"):
-        monkeypatch.setattr(auth, "refresh_session", lambda s: expire(error=True))
+        monkeypatch.setattr(auth, "refresh_session", lambda s, **kwargs: expire(error=True))
         def action():
             Transport._refresh(transport)
     else:

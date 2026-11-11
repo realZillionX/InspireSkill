@@ -302,13 +302,21 @@ def test_notebook_route_preserves_other_origins(account, monkeypatch):
     handler = context.route.call_args.args[1]
     for url, platform in [("https://platform.test/api", True), ("https://notebook.test/api", False)]:
         headers = {"Authorization": "Basic application-auth", "X-Inspire-Client-Source": "own"}
-        route = SimpleNamespace(request=SimpleNamespace(url=url, headers=headers), continue_=Mock())
+        route = SimpleNamespace(
+            request=SimpleNamespace(url=url, headers=headers),
+            continue_=Mock(), fetch=Mock(), fulfill=Mock(),
+        )
         handler(route)
         if platform:
-            result = route.continue_.call_args.kwargs["headers"]
+            result = route.fetch.call_args.kwargs["headers"]
+            route.fetch.assert_called_once_with(headers=result, max_redirects=0)
+            route.fulfill.assert_called_once_with(response=route.fetch.return_value)
+            route.continue_.assert_not_called()
             assert result["Authorization"] == "Bearer old-access"
         else:
             route.continue_.assert_called_once_with()
+            route.fetch.assert_not_called()
+            route.fulfill.assert_not_called()
             assert headers["Authorization"] == "Basic application-auth"
 
 
@@ -332,3 +340,127 @@ def test_cached_catalog_skips_discovery(account, monkeypatch):
     cached.save()
     monkeypatch.setattr(auth, "_discover_identity", Mock(side_effect=AssertionError("discovered")))
     assert auth.get_web_session(require_workspace=True).workspace_id == "ws-real"
+
+
+@pytest.mark.parametrize("stage", ["login", "login_enrichment", "catalog", "refresh"])
+def test_removed_account_is_not_recreated(
+    account: str, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    import shutil
+
+    cached = session(account, expired=stage == "refresh")
+    cached.save()
+    account_path = accounts.account_dir(account)
+
+    def remove(*args: object) -> TokenResponse:
+        shutil.rmtree(account_path)
+        return TokenResponse("new-access", "new-refresh", time.time() + 3600, time.time() + 6000)
+
+    def discover(target: WebSession, base_url: str) -> None:
+        remove()
+        target.workspace_id = "ws-real"
+
+    monkeypatch.setattr(auth, "_discover_identity", discover)
+    monkeypatch.setattr(auth.DeviceAuthorization, "login", remove if stage == "login" else
+                        lambda *args: TokenResponse("new-access", "new-refresh",
+                                                    time.time() + 3600, time.time() + 6000))
+    monkeypatch.setattr(auth.DeviceAuthorization, "refresh", remove)
+    with pytest.raises(
+        AuthenticationError, match=f"Account {account} was removed; run inspire login --account {account}."
+    ):
+        if stage.startswith("login"):
+            auth.device_login(account, lambda *args: None)
+        else:
+            auth.get_web_session(account=account, require_workspace=stage == "catalog")
+    assert not account_path.exists()
+
+
+@pytest.mark.parametrize("cached", [True, False])
+def test_transport_refresh_lock_respects_deadline(account: str, cached: bool) -> None:
+    from inspire.platform.errors import WaitTimeoutError
+    from inspire.platform.web.transport import Transport
+    from inspire.platform.web.session.refresh_lock import exclusive_session_refresh
+
+    stale = session(account, expired=True)
+    stale.save()
+    transport = Transport(account, stale.base_url, username="")
+    if cached:
+        transport.adopt_session(stale)
+    started = time.monotonic()
+    with exclusive_session_refresh(account):
+        with transport.scope(timeout=0.1):
+            with pytest.raises(WaitTimeoutError, match="deadline"):
+                transport._refresh()
+        assert time.monotonic() - started < 0.5
+    transport.close()
+
+
+@pytest.mark.parametrize("positional", [True, False])
+def test_config_legacy_constructor_warns_and_ignores_credentials(positional: bool) -> None:
+    from inspire.config import Config, DEFAULT_BASE_URL
+
+    with pytest.warns(DeprecationWarning, match="Config username/password are ignored") as caught:
+        config = Config("u", "p") if positional else Config(username="u", password="p")
+    assert len(caught) == 1
+    assert config.base_url == DEFAULT_BASE_URL
+    assert config.username == config.password == ""
+
+
+def test_config_loader_does_not_warn_for_legacy_credentials(account: str) -> None:
+    import warnings
+    from inspire.config import Config
+
+    accounts.account_config_path(account).write_text('[auth]\nusername="u"\npassword="p"\n')
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        config, _ = Config.from_files_and_env(account=account)
+    assert config.username == config.password == ""
+
+
+@pytest.mark.parametrize("url, matches", [
+    ("https://other.test", False),
+    ("https://platform.test/", True),
+])
+def test_init_base_url_checked_before_login(
+    account: str, monkeypatch: pytest.MonkeyPatch, url: str, matches: bool
+) -> None:
+    import importlib
+    from inspire.cli.main import main
+    from inspire.cli.commands.init import init_cmd
+
+    login = Mock()
+    discovery = Mock()
+    monkeypatch.setattr(importlib.import_module("inspire.cli.commands.login"), "run_login", login)
+    monkeypatch.setattr(init_cmd, "_init_discover_mode", discovery)
+    result = CliRunner().invoke(main, ["init", "--force", "--base-url", url])
+    if matches:
+        assert result.exit_code == 0, result.output
+        login.assert_called_once_with(account)
+        discovery.assert_called_once()
+    else:
+        assert result.exit_code != 0
+        assert "--base-url only applies when init creates the first account" in result.output
+        login.assert_not_called()
+        discovery.assert_not_called()
+
+
+@pytest.mark.parametrize("url, matches", [
+    ("https://other.test", False),
+    ("https://platform.test/", True),
+])
+def test_discovery_validates_base_url_before_session(url: str, matches: bool) -> None:
+    from types import SimpleNamespace
+    from inspire.config import Config
+    from inspire.cli.commands.init.discover import _resolve_discover_runtime
+
+    web = Mock()
+    web.get_web_session.return_value = SimpleNamespace(login_username="alice", workspace_id="ws-real")
+    kwargs = dict(config=Config(base_url="https://platform.test"), web_session_module=web,
+                  default_workspace_id="default", cli_base_url=url)
+    if matches:
+        assert _resolve_discover_runtime(**kwargs)[1] == "alice"
+        web.get_web_session.assert_called_once()
+    else:
+        with pytest.raises(ValueError, match="--base-url only applies"):
+            _resolve_discover_runtime(**kwargs)
+        web.get_web_session.assert_not_called()

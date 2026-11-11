@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -31,6 +33,11 @@ SOURCE_ENV_FILE = "env-file"
 @dataclass
 class Config:
     """Inspire CLI configuration."""
+
+    # Deprecated: always empty. Login uses OAuth device tokens and the login
+    # name lives in the token session; kept so old attribute reads still work.
+    username: str = field(default="", repr=False)
+    password: str = field(default="", repr=False)
 
     # Optional with defaults
     base_url: str = DEFAULT_BASE_URL
@@ -62,10 +69,15 @@ class Config:
     # Remote environment variables (injected into notebook commands and jobs)
     remote_env: dict[str, str] = field(default_factory=dict)
 
-    # Deprecated: always empty. Login uses OAuth device tokens and the login
-    # name lives in the token session; kept so old attribute reads still work.
-    username: str = field(default="", repr=False)
-    password: str = field(default="", repr=False)
+    def __post_init__(self) -> None:
+        if self.username or self.password:
+            warnings.warn(
+                "Config username/password are ignored; login uses OAuth device tokens.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self.username = ""
+            self.password = ""
 
     @classmethod
     def writable_config_path(cls) -> Optional[Path]:

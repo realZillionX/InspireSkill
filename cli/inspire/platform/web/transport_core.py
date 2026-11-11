@@ -362,12 +362,16 @@ def refresh(self: Any, *, require_cas_ticket: bool = False) -> FlowProgram[Any]:
             if self._session is not None:
                 self._decisions.refresh_guard(self._session.created_at, True)
             refreshed = (
-                (yield call(refresh_session, self._session))
+                (yield call(refresh_session, self._session, lock_timeout=self.remaining()))
                 if self._session is not None
-                else (yield call(get_web_session, account=self.account))
+                else (yield call(
+                    get_web_session, account=self.account, lock_timeout=self.remaining()
+                ))
             )
             self._adopt_session(refreshed)
             self._decisions.rebuilt(refreshed.created_at)
+        except (AuthenticationError, WaitTimeoutError):
+            raise
         except Exception as error:
             self.check_deadline()
             raise AuthenticationError(str(error)) from error
@@ -402,7 +406,7 @@ def refresh_expired_session(self: Any, observed_created_at: float) -> FlowProgra
             return session
         from inspire.platform.web.session.auth import refresh_session
 
-        return (yield call(refresh_session, session))
+        return (yield call(refresh_session, session, lock_timeout=self.remaining()))
 
 
 @workflow
@@ -486,8 +490,12 @@ def acquire_session(self: Any) -> FlowProgram[None]:
 
     with self.scope(timeout=None):
         if self.cli_compat:
-            self._session = yield call(web_session.get_web_session, account=self.account)
+            self._session = yield call(
+                web_session.get_web_session, account=self.account, lock_timeout=self.remaining()
+            )
             return
         self._session = self._validate_session(
-            (yield call(web_session.get_web_session, account=self.account))
+            (yield call(
+                web_session.get_web_session, account=self.account, lock_timeout=self.remaining()
+            ))
         )
