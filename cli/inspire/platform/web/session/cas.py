@@ -9,10 +9,12 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
+from functools import wraps
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any
+from typing import Any, Concatenate, ParamSpec, TypeVar
 from urllib.parse import parse_qs, quote, urlsplit
+from uuid import uuid4
 
 import requests
 
@@ -54,6 +56,43 @@ def cache_path(account: str | None, filename: str) -> Path:
     return path.with_name(filename)
 
 
+P = ParamSpec("P")
+T = TypeVar("T")
+_account_generation: ContextVar[tuple[str, tuple[int, ...]] | None] = ContextVar(
+    "cas_account_generation", default=None
+)
+
+
+def _generation(account: str) -> tuple[int, ...]:
+    from inspire.accounts import account_dir, account_config_path
+
+    directory = account_dir(account).stat()
+    config = account_config_path(account).stat()
+    return directory.st_dev, directory.st_ino, config.st_ino, config.st_ctime_ns
+
+
+@contextmanager
+def account_login_flow(account: str) -> Iterator[None]:
+    """Pin the account generation across all publications of a login."""
+    current = _account_generation.get()
+    with existing_account_write(account):
+        generation = current if current and current[0] == account else (account, _generation(account))
+    token = _account_generation.set(generation)
+    try:
+        yield
+    finally:
+        _account_generation.reset(token)
+
+
+def login_flow(function: Callable[Concatenate[str, P], T]) -> Callable[Concatenate[str, P], T]:
+    @wraps(function)
+    def wrapped(account: str, *args: P.args, **kwargs: P.kwargs) -> T:
+        with account_login_flow(account):
+            return function(account, *args, **kwargs)
+
+    return wrapped
+
+
 @contextmanager
 def existing_account_write(account: str | None) -> Iterator[None]:
     """Serialize publication with logout without recreating a removed account."""
@@ -65,6 +104,9 @@ def existing_account_write(account: str | None) -> Iterator[None]:
     try:
         with exclusive_session_refresh(name):
             if not name or not account_exists(name):
+                raise AuthenticationError(message)
+            expected = _account_generation.get()
+            if expected and expected[0] == name and _generation(name) != expected[1]:
                 raise AuthenticationError(message)
             yield
     except FileNotFoundError:
@@ -226,9 +268,10 @@ class SmsPending:
     cookies: list[dict[str, Any]] = field(repr=False)
     fields: dict[str, str] = field(repr=False)
     created_at: float
+    flow_id: str = field(default_factory=lambda: uuid4().hex)
 
     @blocking_io
-    def save(self, account: str) -> None:
+    def save(self, account: str, *, update: bool = False) -> None:
         path = cache_path(account, "cas_pending.json")
         # Never serialize username, code, or arbitrary server controls.
         data = asdict(self)
@@ -236,7 +279,21 @@ class SmsPending:
             k: v for k, v in self.fields.items() if k in ("execution", "_eventId", "loginType")
         }
         with existing_account_write(account):
+            if update and not self._is_current(account):
+                raise CasError("A newer SMS flow exists; use the newest code.")
             atomic_write_text(path, json.dumps(data), private=True, create_parent=False)
+
+    def _is_current(self, account: str) -> bool:
+        try:
+            return self.load(account).flow_id == self.flow_id
+        except CasError:
+            return False
+
+    @blocking_io
+    def delete(self, account: str) -> None:
+        with existing_account_write(account):
+            if self._is_current(account):
+                cache_path(account, "cas_pending.json").unlink(missing_ok=True)
 
     @classmethod
     @blocking_io
@@ -248,6 +305,8 @@ class SmsPending:
                 or not _valid_cookies(data.get("cookies"))
                 or not _is_finite_number(data.get("created_at"))
                 or not 0 <= time.time() - data["created_at"] < 600
+                or not isinstance(data.get("flow_id"), str)
+                or not data["flow_id"]
             ):
                 raise ValueError
             fields = data.get("fields")
@@ -261,7 +320,7 @@ class SmsPending:
                 )
             ):
                 raise ValueError
-            return cls(data["cookies"], fields, data["created_at"])
+            return cls(data["cookies"], fields, data["created_at"], data["flow_id"])
         except (OSError, ValueError, KeyError, TypeError):
             raise CasError(
                 "SMS pending state missing or expired; send a new code with inspire login --cas sms --phone NUMBER."

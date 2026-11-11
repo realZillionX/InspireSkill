@@ -18,7 +18,10 @@ from .browser_launch import (
     is_playwright_browser_runtime_error,
     playwright_install_hint,
 )
-from .cas import CAS_HOST, LOGIN_URL, USER_AGENT, CasError, CasSession, cache_path, existing_account_write
+from .cas import (
+    CAS_HOST, LOGIN_URL, USER_AGENT, CasError, CasSession, account_login_flow,
+    cache_path, existing_account_write,
+)
 from .proxy import get_playwright_proxy
 from .models import AuthenticationError
 
@@ -109,6 +112,13 @@ def _publish_qr(account: str, path: Path | None, png: bytes) -> Path:
 
 def feishu_qr_login(
     show_qr: Callable[[Path], None], account: str, timeout: float = 300
+) -> CasSession:
+    with account_login_flow(account):
+        return _feishu_qr_login(show_qr, account, timeout)
+
+
+def _feishu_qr_login(
+    show_qr: Callable[[Path], None], account: str, timeout: float
 ) -> CasSession:
     path: Path | None = None
     deadline = time.monotonic() + timeout

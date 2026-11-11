@@ -737,3 +737,137 @@ def test_cas_writer_never_recreates_directory_after_existence_check(monkeypatch,
         else:
             cas.SmsPending([], {"execution": "e"}, time.time()).save("tester")
     assert not accounts.account_dir("tester").exists()
+
+
+@pytest.mark.parametrize("kind", ["session", "pending", "qr", "oauth", "oauth_enrichment"])
+def test_recreated_account_rejects_old_login_publications(monkeypatch, kind):
+    from inspire.platform.web.session import cas_qr
+    from inspire.services.account.lifecycle import delete_local_account
+
+    def recreate():
+        delete_local_account("tester")
+        accounts.create_account("tester", '[api]\nbase_url="https://new.test"\n')
+
+    tokens = SimpleNamespace(
+        access_token="old-flow", refresh_token="old-refresh",
+        access_expires_at=time.time() + 100, refresh_expires_at=time.time() + 200,
+    )
+
+    def authorize(*args):
+        if kind == "oauth":
+            recreate()
+        return tokens
+
+    monkeypatch.setattr(auth.DeviceAuthorization, "login", authorize)
+    monkeypatch.setattr(auth, "_discover_identity", lambda *args: recreate())
+    with pytest.raises(auth.AuthenticationError, match="Account tester was removed"):
+        if kind.startswith("oauth"):
+            auth.device_login("tester", lambda *args: None)
+        else:
+            with cas.account_login_flow("tester"):
+                recreate()
+                if kind == "session":
+                    cas.CasSession([COOKIE], time.time(), "sms").save("tester")
+                elif kind == "pending":
+                    cas.SmsPending([], {"execution": "old"}, time.time()).save("tester")
+                else:
+                    cas_qr._publish_qr("tester", None, b"old-qr")
+    assert {p.name for p in accounts.account_dir("tester").iterdir()} == {"config.toml"}
+    assert 'https://new.test' in accounts.account_config_path("tester").read_text()
+
+
+def test_cas_cli_pins_generation_before_authentication(monkeypatch):
+    from inspire.services.account.lifecycle import delete_local_account
+
+    def complete(*args):
+        delete_local_account("tester")
+        accounts.create_account("tester", "")
+        return cas.CasSession([COOKIE], time.time(), "feishu")
+
+    monkeypatch.setattr(cas, "feishu_qr_login", complete)
+    device = Mock()
+    monkeypatch.setattr(commands, "device_login", device)
+    result = CliRunner().invoke(main, ["login", "--account", "tester", "--cas", "feishu", "--json"])
+    assert result.exit_code == 11, result.output
+    assert "Account tester was removed" in result.output
+    device.assert_not_called()
+    assert {p.name for p in accounts.account_dir("tester").iterdir()} == {"config.toml"}
+
+
+@pytest.mark.parametrize("success", [True, False])
+def test_stale_sms_completion_preserves_newer_pending(monkeypatch, success):
+    old = cas.SmsPending([], {"execution": "old"}, time.time())
+    old.save("tester")
+    newer = cas.SmsPending([], {"execution": "new"}, time.time())
+    assert old.flow_id != newer.flow_id
+    published = []
+
+    def complete(phone, code, pending, http):
+        assert pending.flow_id == old.flow_id
+        newer.save("tester")
+        published.append(cas.cache_path("tester", "cas_pending.json").read_bytes())
+        if not success:
+            pending.fields["execution"] = "stale-rotation"
+            raise cas.SmsCodeRejected("wrong code")
+        return cas.CasSession([COOKIE], time.time(), "sms")
+
+    monkeypatch.setattr(cas, "sms_complete", complete)
+    if success:
+        assert commands._cas_login("tester", "sms", PHONE, CODE, False)
+        assert cas.CasSession.load("tester") is not None
+    else:
+        with pytest.raises(cas.CasError, match="newer SMS flow.*newest code"):
+            commands._cas_login("tester", "sms", PHONE, CODE, False)
+        assert cas.CasSession.load("tester") is None
+    assert cas.cache_path("tester", "cas_pending.json").read_bytes() == published[0]
+    assert cas.SmsPending.load("tester").flow_id == newer.flow_id
+
+
+def test_feishu_mask_appearing_during_capture_is_never_published(monkeypatch):
+    from inspire.platform.web.session import cas_qr
+
+    clock = [0.0]
+    monkeypatch.setattr(cas_qr.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(cas_qr, "get_playwright_proxy", lambda account: None)
+    playwright = Mock()
+    playwright.__enter__ = Mock(return_value=playwright)
+    playwright.__exit__ = Mock(return_value=False)
+    browser = playwright.chromium.launch.return_value
+    context = browser.new_context.return_value
+    page = context.new_page.return_value
+    element = page.wait_for_selector.return_value
+    frame = element.content_frame.return_value
+    expired = [False]
+    mask = Mock()
+    mask.click.side_effect = lambda **kwargs: expired.__setitem__(0, False)
+    frame.query_selector.side_effect = lambda selector: (
+        mask if selector == cas_qr.EXPIRED_QR_SELECTOR and expired[0] else None
+    )
+    captures = []
+
+    def screenshot(**kwargs):
+        png = b"expired" if not captures else b"fresh"
+        captures.append(png)
+        if png == b"expired":
+            expired[0] = True
+        return png
+
+    element.screenshot.side_effect = screenshot
+    page.wait_for_timeout.side_effect = lambda ms: clock.__setitem__(0, clock[0] + ms / 1000)
+    monkeypatch.setattr(cas_qr, "sync_playwright", lambda: playwright)
+    publish = Mock(wraps=cas_qr._publish_qr)
+    monkeypatch.setattr(cas_qr, "_publish_qr", publish)
+    shown = []
+
+    def show(path):
+        shown.append(path.read_bytes())
+        context.route.call_args.args[1](Mock())
+
+    context.cookies.return_value = [dict(COOKIE, expires=-1)]
+    assert cas_qr.feishu_qr_login(show, "tester", timeout=10).method == "feishu"
+    assert captures == [b"expired", b"fresh"]
+    assert shown == [b"fresh"]
+    publish.assert_called_once()
+    assert publish.call_args.args[2] == b"fresh"
+    mask.click.assert_called_once()
+    browser.close.assert_called_once()

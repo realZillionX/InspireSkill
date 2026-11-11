@@ -33,7 +33,7 @@ _HOME_FILES = frozenset(
 _HOME_DIRS = frozenset(
     {
         "accounts",
-        "locks",  # notebook bootstrap locks when no account is active
+        "locks",  # account lifecycle and global notebook bootstrap locks
         "metrics",  # plots written by `<workload> metrics --plot`
     }
 )

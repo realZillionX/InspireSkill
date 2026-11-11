@@ -22,7 +22,10 @@ from inspire.platform.web.flow import (
 )
 
 from . import models
-from .cas import CasSession, approve_device, cas_ticket_valid, renewal_deadline, request_timeout
+from .cas import (
+    CasSession, approve_device, cas_ticket_valid, existing_account_write, login_flow,
+    renewal_deadline, request_timeout,
+)
 from .envelope import _v2_result
 from .identity import token_login_username
 from .models import AuthenticationError, WebSession
@@ -263,6 +266,7 @@ def _discover_identity(
 
 
 @blocking_io
+@login_flow
 def device_login(account: str, notify: Callable[[str, str, float], None]) -> WebSession:
     """Authorize without holding the refresh lock, then enrich saved tokens."""
     config = _load_runtime_config(account)
@@ -278,10 +282,10 @@ def device_login(account: str, notify: Callable[[str, str, float], None]) -> Web
         base_url=config.base_url,
         login_username=token_login_username(tokens.access_token),
     )
-    with exclusive_session_refresh(account):
+    with existing_account_write(account):
         session.created_at = time.time()
         _save_existing_account(session, account)
     _discover_identity(session, config.base_url)
-    with exclusive_session_refresh(account):
+    with existing_account_write(account):
         _save_existing_account(session, account)
     return session

@@ -209,19 +209,27 @@ def clear_current_account() -> None:
     _clear_process_account_caches()
 
 
+def account_lifecycle_lock(name: str, *, timeout: float | None = None) -> AbstractContextManager[None]:
+    """Keep the lock alive across deletion and recreation of an account."""
+    directory = inspire_home() / "locks"
+    ensure_private_directory(directory)
+    return exclusive_cache_lock(directory / f"account-{validate_name(name)}", timeout=timeout)
+
+
 def create_account(name: str, config_content: str, *, overwrite: bool = False) -> Path:
     validated = validate_name(name)
     target = accounts_dir() / validated
-    if target.exists() and not overwrite:
-        raise AccountError(f"Account already exists: {validated}")
     ensure_inspire_home()
-    if target.exists() and overwrite:
-        shutil.rmtree(target)
-    ensure_private_directory(target)
-    _atomic_write_text(target / CONFIG_FILENAME, config_content, private=True)
-    if current_account() == validated:
-        _clear_process_account_caches()
-    return target
+    with account_lifecycle_lock(validated):
+        if target.exists() and not overwrite:
+            raise AccountError(f"Account already exists: {validated}")
+        if target.exists() and overwrite:
+            shutil.rmtree(target)
+        ensure_private_directory(target)
+        _atomic_write_text(target / CONFIG_FILENAME, config_content, private=True)
+        if current_account() == validated:
+            _clear_process_account_caches()
+        return target
 
 
 def remove_account(name: str) -> None:

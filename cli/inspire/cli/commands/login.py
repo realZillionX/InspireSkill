@@ -36,6 +36,7 @@ DEFAULT_ACCOUNT_NAME = "default"
 """Account a bare ``inspire login`` creates when no account exists."""
 
 
+@cas.login_flow
 def run_login(
     account: str, *, no_browser: bool = False, cas_metadata: dict | None = None
 ) -> WebSession:
@@ -147,11 +148,13 @@ def ensure_account_and_login(
         exit_with_error(ctx, "AccountError", str(error), EXIT_VALIDATION_ERROR)
     if no_login:
         return None
-    if login_runner is not None:
-        return login_runner(name)
-    return run_login(name, no_browser=no_browser)
+    with cas.account_login_flow(name):
+        if login_runner is not None:
+            return login_runner(name)
+        return run_login(name, no_browser=no_browser)
 
 
+@cas.login_flow
 def _cas_login(
     account: str, method: str, phone: str | None, sms_code: str | None, interactive: bool
 ) -> bool:
@@ -188,11 +191,11 @@ def _cas_login(
                     session = cas.sms_complete(phone, code, pending, http)
                     break
                 except cas.SmsCodeRejected:
-                    pending.save(account)
+                    pending.save(account, update=True)
                     if sms_code or not interactive or attempt == 2:
                         raise
                     click.echo("SMS code was not accepted; try again.", err=True)
-        cas.cache_path(account, "cas_pending.json").unlink(missing_ok=True)
+        pending.delete(account)
     session.save(account)
     return True
 
