@@ -25,12 +25,20 @@ commands = importlib.import_module("inspire.cli.commands.login")
 @pytest.fixture
 def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr("requests.sessions.Session.send", Mock(side_effect=AssertionError("HTTP forbidden")))
-    monkeypatch.setattr("httpx.AsyncClient.send", Mock(side_effect=AssertionError("HTTP forbidden")))
+    monkeypatch.setattr(
+        "requests.sessions.Session.send", Mock(side_effect=AssertionError("HTTP forbidden"))
+    )
+    monkeypatch.setattr(
+        "httpx.AsyncClient.send", Mock(side_effect=AssertionError("HTTP forbidden"))
+    )
     monkeypatch.setattr(commands, "stdin_is_interactive", lambda: False)
-    login = Mock(return_value=SimpleNamespace(
-        login_username="session-user", access_expires_at=1000, refresh_expires_at=2000,
-    ))
+    login = Mock(
+        return_value=SimpleNamespace(
+            login_username="session-user",
+            access_expires_at=1000,
+            refresh_expires_at=2000,
+        )
+    )
     monkeypatch.setattr(commands, "run_login", login)
     return login
 
@@ -44,7 +52,9 @@ def test_login_creates_account(isolated, root_option, custom):
         args += ["--base-url", "https://platform.test", "--proxy", "http://localhost:7897"]
     result = CliRunner().invoke(main, args)
     assert result.exit_code == 0, result.output
-    isolated.assert_called_once_with("new", no_browser=True)
+    isolated.assert_called_once_with(
+        "new", no_browser=True, cas_metadata={"cas": False, "cas_method": None}
+    )
     assert accounts.default_account() == "new"
     data = Config._load_toml(accounts.account_config_path("new"))
     assert data["api"]["base_url"] == ("https://platform.test" if custom else DEFAULT_BASE_URL)
@@ -55,7 +65,9 @@ def test_login_creates_account(isolated, root_option, custom):
         assert "proxy" not in data
 
 
-@pytest.mark.parametrize("use,expected", [(None, "active"), ("--use", "other"), ("--no-use", "active")])
+@pytest.mark.parametrize(
+    "use,expected", [(None, "active"), ("--use", "other"), ("--no-use", "active")]
+)
 def test_existing_login_preserves_config_and_default(isolated, use, expected, monkeypatch):
     accounts.create_account("active", render_account_config(base_url=DEFAULT_BASE_URL, proxy=""))
     accounts.create_account("other", '# keep formatting\n[api]\nbase_url="https://old.test"\n')
@@ -88,7 +100,10 @@ def test_login_and_add_share_creation(isolated, monkeypatch):
         result = runner.invoke(main, args + options)
         assert result.exit_code == 0, result.output
     assert shared.call_count == 2
-    assert accounts.account_config_path("one").read_bytes() == accounts.account_config_path("two").read_bytes()
+    assert (
+        accounts.account_config_path("one").read_bytes()
+        == accounts.account_config_path("two").read_bytes()
+    )
     result = runner.invoke(main, ["account", "add", "one"])
     assert result.exit_code != 0 and "Account already exists" in result.output
     assert isolated.call_count == 2
@@ -113,12 +128,21 @@ def test_bare_login_without_active_account_still_errors(isolated):
 
 @pytest.mark.parametrize("command", ["logout", "remove"])
 @pytest.mark.parametrize("active", [False, True])
-def test_deletion_requires_confirmation_and_clears_tokens_under_lock(isolated, monkeypatch, command, active):
+def test_deletion_requires_confirmation_and_clears_tokens_under_lock(
+    isolated, monkeypatch, command, active
+):
     accounts.create_account("keep", "")
     accounts.create_account("delete", "")
     accounts.set_current_account("delete" if active else "keep")
     directory = accounts.account_dir("delete")
-    for name in ("web_session.json", "bridges.json", "rtunnel-proxy-state.json"):
+    for name in (
+        "web_session.json",
+        "bridges.json",
+        "rtunnel-proxy-state.json",
+        "cas_session.json",
+        "cas_pending.json",
+        "cas_qr.png",
+    ):
         (directory / name).write_text("{}")
     locked = False
     events = []
@@ -140,7 +164,11 @@ def test_deletion_requires_confirmation_and_clears_tokens_under_lock(isolated, m
 
     monkeypatch.setattr(lifecycle, "exclusive_session_refresh", lock)
     monkeypatch.setattr(lifecycle, "clear_session_cache", clear)
-    args = ["logout", "--account", "delete"] if command == "logout" else ["account", "remove", "delete"]
+    args = (
+        ["logout", "--account", "delete"]
+        if command == "logout"
+        else ["account", "remove", "delete"]
+    )
     result = CliRunner().invoke(main, args)
     assert result.exit_code != 0 and "Pass --yes" in result.output
     assert directory.exists() and not events
@@ -156,7 +184,8 @@ def test_deletion_requires_confirmation_and_clears_tokens_under_lock(isolated, m
 
 def test_legacy_add_credentials_skip_device_login(isolated):
     result = CliRunner().invoke(
-        main, ["account", "add", "legacy", "--username", "u", "--password", "p", "--non-interactive"]
+        main,
+        ["account", "add", "legacy", "--username", "u", "--password", "p", "--non-interactive"],
     )
     assert result.exit_code == 0, result.output
     isolated.assert_not_called()
@@ -166,7 +195,10 @@ def test_legacy_add_credentials_skip_device_login(isolated):
 
 
 def test_config_writers_and_legacy_loading(isolated, monkeypatch):
-    for content in (ACCOUNT_CONFIG_TEMPLATE, render_account_config(base_url=DEFAULT_BASE_URL, proxy="")):
+    for content in (
+        ACCOUNT_CONFIG_TEMPLATE,
+        render_account_config(base_url=DEFAULT_BASE_URL, proxy=""),
+    ):
         assert "[auth]" not in content
         assert "username" not in content and "password" not in content
     raw = {"auth": {"username": "old", "password": "unused", "future": True}}

@@ -53,11 +53,17 @@ class DeviceAuthorization:
         self.clock = clock
         self.sleep = sleep
 
-    def _post(self, endpoint: str, payload: dict[str, str]) -> tuple[int, dict[str, Any]]:
+    def _post(
+        self, endpoint: str, payload: dict[str, str], *, deadline: float | None = None
+    ) -> tuple[int, dict[str, Any]]:
         from inspire.platform.web.runtime import active_transport
 
         owner = active_transport.get()
         timeout = min(30.0, owner.remaining()) if owner is not None else 30.0
+        if deadline is not None:
+            timeout = min(timeout, deadline - self.clock())
+        if timeout <= 0:
+            raise AuthenticationError("Device authorization expired; run inspire login.")
         response = self.http.post(
             f"{self.base_url}/api/v1/public/auth/{endpoint}",
             json=payload,
@@ -100,9 +106,19 @@ class DeviceAuthorization:
         except (KeyError, TypeError, ValueError, OverflowError):
             raise AuthenticationError("Invalid authentication tokens; run inspire login.") from None
 
-    def login(self, notify: Callable[[str, str, float], None]) -> TokenResponse:
+    def login(
+        self, notify: Callable[[str, str, float], None], *, deadline: float | None = None
+    ) -> TokenResponse:
         """Request a device code, notify the caller, and wait for authorization."""
-        status, body = self._post("device-code", {"scope": "openid profile email"})
+        from inspire.platform.web.runtime import active_transport
+
+        owner = active_transport.get()
+        if owner is not None:
+            transport_deadline = self.clock() + owner.remaining()
+            deadline = min(deadline, transport_deadline) if deadline is not None else transport_deadline
+        status, body = self._post(
+            "device-code", {"scope": "openid profile email"}, deadline=deadline
+        )
         if status != 200 or body.get("code") != 0:
             raise AuthenticationError("Device authorization failed; run inspire login.")
         try:
@@ -116,13 +132,16 @@ class DeviceAuthorization:
                 raise ValueError
         except (KeyError, TypeError, ValueError):
             raise AuthenticationError("Invalid device authorization response.") from None
-        deadline = self.clock() + expires
+        expires_at = self.clock() + expires
+        deadline = min(deadline, expires_at) if deadline is not None else expires_at
         notify(uri, user_code, expires)
         while self.clock() < deadline:
             self.sleep(min(interval, max(0, deadline - self.clock())))
             if self.clock() >= deadline:
                 break
-            status, body = self._post("token", {"device_code": code, "grant_type": DEVICE_GRANT})
+            status, body = self._post(
+                "token", {"device_code": code, "grant_type": DEVICE_GRANT}, deadline=deadline
+            )
             if status == 200 and body.get("code") == 0:
                 return self._tokens(body)
             error = body.get("error") or body.get("message")

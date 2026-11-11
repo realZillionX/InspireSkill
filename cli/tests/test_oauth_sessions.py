@@ -263,11 +263,13 @@ def test_device_login_saves_before_independent_enrichment(account, monkeypatch, 
         response._content = json.dumps(payload).encode()
         return response
 
-    monkeypatch.setattr(auth, "exclusive_session_refresh", lock)
+    from inspire.platform.web.session import cas
+
+    monkeypatch.setattr(cas, "exclusive_session_refresh", lock)
     monkeypatch.setattr(auth.DeviceAuthorization, "login", authorize)
     monkeypatch.setattr(requests.Session, "send", send)
     result = auth.device_login(account, lambda *args: None)
-    assert events == ["authorize", "lock", "detail", "workspaces", "lock"]
+    assert events == ["lock", "authorize", "lock", "detail", "workspaces", "lock"]
     expected = claim or (None if failed in {"detail", "both"} else "platform-user")
     assert result.login_username == expected
     assert WebSession.load(account=account).login_username == expected

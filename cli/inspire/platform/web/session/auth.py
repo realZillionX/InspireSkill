@@ -22,6 +22,10 @@ from inspire.platform.web.flow import (
 )
 
 from . import models
+from .cas import (
+    CasSession, approve_device, cas_ticket_valid, existing_account_write, login_flow,
+    renewal_deadline, request_timeout,
+)
 from .envelope import _v2_result
 from .identity import token_login_username
 from .models import AuthenticationError, WebSession
@@ -49,7 +53,6 @@ def _load_runtime_config(account: Optional[str] = None) -> Config:
     else:
         config, _ = Config.from_files_and_env(require_credentials=False)
     return config
-
 
 
 def login_required(account: str | None) -> AuthenticationError:
@@ -90,14 +93,14 @@ def refresh_cached(account: str | None, observed: float | None = None) -> WebSes
     if cached.is_valid() and (observed is None or cached.created_at > observed):
         return cached
     if cached.refresh_expires_at <= time.time():
-        raise login_required(account)
+        return _renew_with_cas(cached, account)
     try:
         with _http(account) as http:
             tokens = DeviceAuthorization(
                 cached.base_url or _load_runtime_config(account).base_url, http
             ).refresh(cached.refresh_token)
     except AuthenticationError:
-        raise login_required(account) from None
+        return _renew_with_cas(cached, account)
     refreshed = replace(
         cached,
         access_token=tokens.access_token,
@@ -111,12 +114,67 @@ def refresh_cached(account: str | None, observed: float | None = None) -> WebSes
     return refreshed
 
 
+def _renew_with_cas(cached: WebSession, account: str | None) -> WebSession:
+    """Caller owns the refresh lock; silent renewal never prompts or relocks."""
+    deadline = time.monotonic() + 60
+    token = renewal_deadline.set(deadline)
+    try:
+        return _renew_with_cas_before(cached, account, deadline)
+    finally:
+        renewal_deadline.reset(token)
+
+
+def _renew_with_cas_before(cached: WebSession, account: str | None, deadline: float) -> WebSession:
+    cas = CasSession.load(account)
+    if cas is None or not cas_ticket_valid(cas, account):
+        raise login_required(account)
+    base_url = cached.base_url or _load_runtime_config(account).base_url
+    with cas.http(account) as cas_http, _http(account) as http:
+
+        def notify(uri: str, code: str, expires: float) -> None:
+            if not approve_device(cas_http, uri, base_url):
+                raise login_required(account)
+
+        try:
+            tokens = DeviceAuthorization(base_url, http).login(notify, deadline=deadline)
+        except (AuthenticationError, requests.RequestException):
+            raise login_required(account) from None
+    principal = token_login_username(tokens.access_token)
+    if not principal:
+        discovered = WebSession(
+            access_token=tokens.access_token,
+            refresh_token=tokens.refresh_token,
+            access_expires_at=tokens.access_expires_at,
+            refresh_expires_at=tokens.refresh_expires_at,
+            created_at=time.time(),
+            account=account,
+            base_url=base_url,
+        )
+        _discover_identity(discovered, base_url, include_workspaces=False)
+        principal = discovered.login_username
+    if not principal or not cached.login_username or principal != cached.login_username:
+        raise login_required(account)
+    renewed = replace(
+        cached,
+        access_token=tokens.access_token,
+        refresh_token=tokens.refresh_token,
+        access_expires_at=tokens.access_expires_at,
+        refresh_expires_at=tokens.refresh_expires_at,
+        created_at=time.time(),
+    )
+    request_timeout()
+    _save_existing_account(renewed, account)
+    return renewed
+
+
 @workflow
 def get_web_session(
-    force_refresh: bool = False, require_workspace: bool = False, account: Optional[str] = None,
-    lock_timeout: float | None = None
+    force_refresh: bool = False,
+    require_workspace: bool = False,
+    account: Optional[str] = None,
+    lock_timeout: float | None = None,
 ) -> Program[WebSession]:
-    """Load or refresh cached tokens without starting device authorization."""
+    """Load or renew cached tokens without prompting or opening a browser."""
     account = models._resolve_account_for_storage(account)
     cached = yield call(WebSession.load, allow_expired=True, account=account)
     if cached is None:
@@ -163,7 +221,9 @@ def refresh_session(
         yield call(exit_context, context, *sys.exc_info())
 
 
-def _discover_identity(session: WebSession, base_url: str) -> None:
+def _discover_identity(
+    session: WebSession, base_url: str, *, include_workspaces: bool = True
+) -> None:
     """Fill user detail and the workspace catalog; failures leave the tokens usable."""
     try:
         with build_requests_session(session, base_url) as http:
@@ -171,7 +231,7 @@ def _discover_identity(session: WebSession, base_url: str) -> None:
                 detail = http.post(
                     base_url.rstrip("/") + USER_DETAIL_PATH,
                     json={},
-                    timeout=30,
+                    timeout=request_timeout(),
                     allow_redirects=False,
                 )
                 detail.raise_for_status()
@@ -183,11 +243,13 @@ def _discover_identity(session: WebSession, base_url: str) -> None:
                         session.login_username = login_name.strip()
             except Exception:
                 logger.warning("User detail discovery failed; tokens remain usable.")
+            if not include_workspaces:
+                return
             try:
                 workspaces = http.post(
                     base_url.rstrip("/") + ACCESSIBLE_WORKSPACES_PATH,
                     json={},
-                    timeout=30,
+                    timeout=request_timeout(),
                     allow_redirects=False,
                 )
                 workspaces.raise_for_status()
@@ -204,6 +266,7 @@ def _discover_identity(session: WebSession, base_url: str) -> None:
 
 
 @blocking_io
+@login_flow
 def device_login(account: str, notify: Callable[[str, str, float], None]) -> WebSession:
     """Authorize without holding the refresh lock, then enrich saved tokens."""
     config = _load_runtime_config(account)
@@ -219,10 +282,10 @@ def device_login(account: str, notify: Callable[[str, str, float], None]) -> Web
         base_url=config.base_url,
         login_username=token_login_username(tokens.access_token),
     )
-    with exclusive_session_refresh(account):
+    with existing_account_write(account):
         session.created_at = time.time()
         _save_existing_account(session, account)
     _discover_identity(session, config.base_url)
-    with exclusive_session_refresh(account):
+    with existing_account_write(account):
         _save_existing_account(session, account)
     return session

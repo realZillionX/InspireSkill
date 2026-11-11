@@ -73,7 +73,7 @@ Both successes and business errors return **HTTP 200** with an AWS-style JSON en
 
 ### OAuth session lifecycle
 
-`inspire login` explicitly runs device authorization. `get_web_session()` never starts login; it refreshes access tokens within 60 seconds of expiry. Refresh takes the per-account process lock, rereads disk, and persists both rotating tokens atomically. Missing or rejected refresh credentials require `inspire login`.
+`inspire login` explicitly runs device authorization. `get_web_session()` never prompts; it refreshes access tokens within 60 seconds of expiry. Refresh takes the per-account process lock, rereads disk, and persists both rotating tokens atomically. Expired or refused refresh credentials trigger silent device authorization only when a stored CAS session validates and auto-approval succeeds; otherwise explicit `inspire login` is required. The caller retains the refresh lock and saving uses `_save_existing_account`.
 
 Platform requests carry `Authorization: Bearer …` and `X-Inspire-Client-Source: inspire-cli/inspireskill-<version>` only for the configured platform origin. A 401 or authentication redirect refreshes once and retries once. Notebook automation obtains `jupyter_url` from `GetNotebookAccessUrl`, using the application's own cookies without forwarding platform tokens. Old cookie-only caches are logged out.
 
@@ -512,7 +512,7 @@ Called per service route (`POST /api/v2/{notebook|train|hpc|ray|inference_servin
 
 ## 11. Dataset Hub (`plaza/`)
 
-The CAS handshake is currently disabled (`CAS_SIGN_IN_ENABLED = False`) because OAuth device sessions have no CAS cookie. Dataset catalogue calls raise `PlazaUnavailable`; qz dataset mounts and `dataset validate` are unaffected. The protocol notes below are retained for a future interactive CAS sign-in.
+The CAS handshake is active with an account's `cas_session.json`, created by `inspire login --cas sms` or `inspire login --cas feishu`. OAuth tokens remain separate in `web_session.json` and all qz requests still use Bearer authorization. CAS cookies are restricted to `cas.sii.edu.cn`, saved atomically with private permissions, and treated as opaque credentials: asking CAS for a service ticket is the validity check. SMS pending state expires after ten minutes and never stores the phone number or SMS code. Feishu uses headless Chromium, a refreshed QR PNG, and a URL predicate to intercept the plaza navigation before its SPA can consume the ticket.
 
 The Dataset Hub (`PLAZA_BASE_URL` in [`plaza/core.py`](../../cli/inspire/platform/web/plaza/core.py)) is a separate service sharing CAS SSO (`CAS_BASE_URL`), implemented in [`plaza/`](../../cli/inspire/platform/web/plaza/).
 
@@ -521,9 +521,11 @@ The Dataset Hub (`PLAZA_BASE_URL` in [`plaza/core.py`](../../cli/inspire/platfor
 - **`datasetId` / `versionId`:** Internal numeric IDs used only inside `plaza/` calls (`findDatasets`); never expose them or pass them to mount APIs.
 
 ### Three-Step CAS Handshake (Pure HTTP)
-1. `GET {CAS_BASE_URL}/cas/login?service=<urlencode(PLAZA_BASE_URL + "/")>` with the session's `CASTGC` cookie (`allow_redirects=False`) → `302` with `?ticket=ST-…`.
+1. `GET {CAS_BASE_URL}/cas/login?service=<urlencode(PLAZA_BASE_URL + "/")>` with the account's stored CAS `CASTGC` cookie (`allow_redirects=False`) → `302` with `?ticket=ST-…`.
 2. `POST {PLAZA_BASE_URL}/api/base/login` with `{"ticket": "…", "service": PLAZA_BASE_URL + "/"}` → issues `datasets-session` cookie and `userInfo`.
-3. Subsequent requests send `datasets-session` (cached in memory per `(account, session_created_at)`).
+3. Subsequent requests send `datasets-session` (cached in memory per `(account, session_created_at)`). A rejected plaza cookie is re-minted once. If CAS refuses a ticket, raise `PlazaUnavailable` immediately with a `login --cas` hint; do not delete caches or refresh OAuth tokens.
+
+CAS also approves device authorization: follow the trusted verification URI to its Keycloak CAS broker, then submit the OAuth consent form (`code`, `accept=Yes`), supporting both embedded `kcContext` and HTML forms. Every redirect and form target is checked against the configured platform, the device endpoint's Keycloak origin, and CAS; loops are bounded. Unknown pages fall back to manual authorization for explicit login; silent renewal fails with `login_required`. No authentication URL query values or server error bodies are logged.
 
 ### Envelope & Wrapped Endpoints
 

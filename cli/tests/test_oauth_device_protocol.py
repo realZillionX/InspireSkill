@@ -69,3 +69,40 @@ def test_refresh_returns_rotated_token():
     result = DeviceAuthorization("https://platform.test", http).refresh("old-refresh")
     assert result.refresh_token == "new-refresh"
     assert http.post.call_args.kwargs["json"] == {"refresh_token": "old-refresh"}
+
+
+@pytest.mark.parametrize("budget,slow_down", [(1, False), (8, True), (60, True)])
+@pytest.mark.parametrize("transport_budget", [False, True])
+def test_device_deadline_clips_poll_sleeps(budget, slow_down, transport_budget):
+    from inspire.platform.web.runtime import active_transport
+
+    now = [0.0]
+    sleeps = []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    http = Mock()
+    device = response(200, {"code": 0, "data": {
+        "device_code": "private", "user_code": "code", "verification_uri": "https://test.invalid",
+        "expires_in": 600, "interval": 5,
+    }})
+    pending = response(400, {"message": "slow_down" if slow_down else "authorization_pending"})
+    http.post.side_effect = lambda *a, **kw: device if http.post.call_count == 1 else pending
+    owner = Mock()
+    owner.remaining.side_effect = lambda: budget - now[0]
+    token = active_transport.set(owner if transport_budget else None)
+    try:
+        flow = DeviceAuthorization("https://test.invalid", http, clock=lambda: now[0], sleep=sleep)
+        with pytest.raises(AuthenticationError, match="expired"):
+            flow.login(lambda *a: None, deadline=None if transport_budget else budget)
+    finally:
+        active_transport.reset(token)
+    assert sum(sleeps) == budget
+    assert now[0] == budget
+    if budget == 1:
+        assert sleeps == [1]
+        assert http.post.call_count == 1
+    for call in http.post.call_args_list:
+        assert call.kwargs["timeout"] <= budget

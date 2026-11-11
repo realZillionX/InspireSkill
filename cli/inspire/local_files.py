@@ -281,12 +281,15 @@ def replace_with_retry(source: Path, target: Path) -> None:
             time.sleep(0.05 * (attempt + 1))
 
 
-def atomic_write_text(target: Path, content: str, *, private: bool = False) -> None:
+def atomic_write_text(
+    target: Path, content: str, *, private: bool = False, create_parent: bool = True
+) -> None:
     """Publish a complete file; Windows temporaries inherit the directory ACL."""
     if private:
-        ensure_private_directory(target.parent)
+        if create_parent:
+            ensure_private_directory(target.parent)
         repair_inspire_path(target)
-    else:
+    elif create_parent:
         target.parent.mkdir(parents=True, exist_ok=True)
     # Exclusive unique names prevent concurrent writers from sharing a temporary
     # inode, even when the destination has no cooperating lock.

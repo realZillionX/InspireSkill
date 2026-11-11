@@ -12,5 +12,5 @@ def delete_local_account(name: str) -> None:
         raise AccountError(f"Account not found: {name}")
     with exclusive_session_refresh(name):
         clear_session_cache(name)
-    # Close the lock handle before removing its directory (required on Windows).
-    remove_account(name)
+        # The lifecycle lock lives outside the account directory.
+        remove_account(name)

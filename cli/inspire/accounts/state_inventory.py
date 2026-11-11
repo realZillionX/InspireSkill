@@ -33,7 +33,7 @@ _HOME_FILES = frozenset(
 _HOME_DIRS = frozenset(
     {
         "accounts",
-        "locks",  # notebook bootstrap locks when no account is active
+        "locks",  # account lifecycle and global notebook bootstrap locks
         "metrics",  # plots written by `<workload> metrics --plot`
     }
 )
@@ -43,6 +43,9 @@ _ACCOUNT_FILES = frozenset(
     {
         "config.toml",
         "web_session.json",
+        "cas_session.json",
+        "cas_pending.json",
+        "cas_qr.png",
         "resource-index.sqlite3",
         "notebook-ide-url.json",
         "bridges.json",
@@ -114,7 +117,9 @@ def _is_lock_for(name: str, owned: frozenset[str]) -> bool:
     return base in owned or base.rsplit(".", 1)[0] in owned
 
 
-def _scan(directory: Path, owned_files: frozenset[str], owned_dirs: frozenset[str]) -> list[OrphanEntry]:
+def _scan(
+    directory: Path, owned_files: frozenset[str], owned_dirs: frozenset[str]
+) -> list[OrphanEntry]:
     if not directory.is_dir():
         return []
 
@@ -126,6 +131,8 @@ def _scan(directory: Path, owned_files: frozenset[str], owned_dirs: frozenset[st
         if entry.is_dir():
             if name not in owned_dirs:
                 orphans.append(OrphanEntry(path=entry, is_dir=True))
+            continue
+        if "cas_qr.png" in owned_files and entry.match("cas_qr-*.png"):
             continue
         if name in owned_files or _is_lock_for(name, owned_files):
             continue

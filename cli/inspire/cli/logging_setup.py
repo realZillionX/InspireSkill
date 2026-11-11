@@ -60,6 +60,8 @@ _SENSITIVE_ARG_OPTIONS = frozenset(
         "--cookie",
         "--passwd",
         "--password",
+        "--phone",
+        "--sms-code",
         "--refresh-token",
         "--secret",
         "--set-cookie",

@@ -4,9 +4,14 @@
 
 ## Unreleased
 
+- Add `inspire login --cas` with SMS two-step and Feishu QR login, private per-account CAS sessions, and data plaza catalogue access.
+- Reuse valid CAS sessions for automatic OAuth device approval and silent renewal after refresh credentials expire; retain manual authorization fallback for explicit login.
+- Report missing or expired CAS sessions with an actionable login hint without attempting OAuth refresh for CAS ticket failures.
+
+
 - 登录改用官方 OAuth 设备授权，`inspire login --account NAME` 自动创建账号并登录（不带 `--account` 时登录当前活动账号；尚无任何账号时自动创建名为 `default` 的账号），`account add` 保留为兼容创建入口；访问令牌自动刷新，用户名和密码不再存储或读取（包括旧配置和环境变量），已有用户需为每个账号重新登录一次；`inspire init` 发现账号未登录时会直接发起设备授权。
 - `logout` 与 `account remove` 统一为删除本地账号（包含令牌、配置和 bridge/tunnel 状态），需确认；平台工作负载继续运行，删除活动账号会清除活动指针。可用 `account add --no-login` 暂缓授权；传入旧的 `--username` / `--password` 时同样跳过授权，避免旧脚本卡在等待确认。
-- 数据广场（`aip.sii.edu.cn`）只支持 CAS 登录，设备授权无法提供，因此 `dataset list / show / tags / applications` 暂不可用并直接给出明确错误（`PlazaUnavailable`）；`--dataset` 挂载和 `dataset validate` 不受影响。
+- 数据广场（`aip.sii.edu.cn`）只支持 CAS 登录：普通 OAuth 设备登录不提供目录访问，完成 `inspire login --cas` 后可使用 `dataset list / show / tags / applications`；`--dataset` 挂载和 `dataset validate` 不受影响。
 
 ## v7.1.16
 

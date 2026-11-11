@@ -94,7 +94,9 @@ def _patch_list(monkeypatch, pages: list[tuple[list[Any], int]]) -> list[dict[st
         return queue.pop(0) if queue else ([], 0)
 
     monkeypatch.setattr(plaza_module, "list_datasets", fake_list_datasets)
-    monkeypatch.setattr(plaza_module, "resolve_tag_ids", lambda names, **_kwargs: [47] if names else [])
+    monkeypatch.setattr(
+        plaza_module, "resolve_tag_ids", lambda names, **_kwargs: [47] if names else []
+    )
     return calls
 
 
@@ -240,7 +242,6 @@ def test_dataset_list_reports_an_unavailable_catalogue(monkeypatch) -> None:  # 
     assert "/Users/alice/private.log" not in result.output
 
 
-
 @pytest.mark.parametrize(
     "command",
     (["dataset", "list"], ["dataset", "show", "demo"], ["dataset", "tags"]),
@@ -249,7 +250,12 @@ def test_dataset_catalogue_reports_cas_only_plaza(monkeypatch, command) -> None:
     def _unavailable(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
         raise plaza_module.PlazaUnavailable()
 
-    for name in ("resolve_tag_ids", "list_datasets", "resolve_dataset_by_code", "list_dataset_tags"):
+    for name in (
+        "resolve_tag_ids",
+        "list_datasets",
+        "resolve_dataset_by_code",
+        "list_dataset_tags",
+    ):
         monkeypatch.setattr(plaza_module, name, _unavailable)
 
     result = CliRunner().invoke(cli_main, ["--json", *command])
@@ -257,7 +263,7 @@ def test_dataset_catalogue_reports_cas_only_plaza(monkeypatch, command) -> None:
     error = json.loads(result.output)["error"]
     assert result.exit_code == 13
     assert error["type"] == "PlazaUnavailable"
-    assert "only accepts CAS sign-in" in error["message"]
+    assert "needs a CAS login" in error["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -568,16 +574,11 @@ def test_job_and_hpc_status_projections_report_mounted_datasets() -> None:
     from inspire.services.job.job_output import public_job_status
 
     payload = {
-        "dataset_info": [
-            {"dataset_id": "pixabay-81k", "version_id": "v0", "path": "sftpgo/x"}
-        ]
+        "dataset_info": [{"dataset_id": "pixabay-81k", "version_id": "v0", "path": "sftpgo/x"}]
     }
-    expected = [
-        {"name": "pixabay-81k", "version": "v0", "path": "/inspire/dataset/pixabay-81k/v0"}
-    ]
+    expected = [{"name": "pixabay-81k", "version": "v0", "path": "/inspire/dataset/pixabay-81k/v0"}]
 
     assert public_job_status({"name": "j", "status": "RUNNING", **payload})["datasets"] == expected
     assert (
-        public_hpc_status({"job_name": "h", "status": "RUNNING", **payload})["datasets"]
-        == expected
+        public_hpc_status({"job_name": "h", "status": "RUNNING", **payload})["datasets"] == expected
     )

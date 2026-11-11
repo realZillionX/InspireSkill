@@ -5,8 +5,6 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from inspire.accounts.cache_lock import exclusive_cache_lock
-
 from .models import get_session_cache_file
 
 
@@ -14,10 +12,11 @@ from .models import get_session_cache_file
 def exclusive_session_refresh(account: str | None, *, timeout: float | None = None) -> Iterator[None]:
     """Serialize login refreshes for one account without locking API requests."""
     cache_file = get_session_cache_file(account)
-    if cache_file is None or not cache_file.parent.is_dir():
+    if cache_file is None:
         yield
         return
 
-    refresh_target = cache_file.with_name(f"{cache_file.name}.refresh")
-    with exclusive_cache_lock(refresh_target, timeout=timeout):
+    from inspire.accounts.storage import account_lifecycle_lock
+
+    with account_lifecycle_lock(cache_file.parent.name, timeout=timeout):
         yield
