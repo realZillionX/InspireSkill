@@ -8,6 +8,8 @@ from inspire.cli.utils.public_path import public_path_mode
 
 import click
 
+from inspire.cli.utils.workload_names import validate_create_name
+
 from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
@@ -83,6 +85,7 @@ def run_job_create(
     public_path_mount_mode: int | None = None,
 ) -> None:
     """Run the job creation flow."""
+    validate_create_name(ctx, name, "job")
     try:
         config, _ = Config.from_files_and_env()
 

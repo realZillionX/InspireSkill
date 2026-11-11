@@ -10,6 +10,8 @@ from typing import Any, Optional, Sequence
 
 import click
 
+from inspire.cli.utils.workload_names import validate_create_name
+
 from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
@@ -747,6 +749,8 @@ def run_notebook_create(
     public_path_mount_mode: int | None = None,
     project_path_readonly: Optional[bool] = None,
 ) -> None:
+    if name is not None:
+        validate_create_name(ctx, name, "notebook")
     del project_explicit
     json_output = resolve_json_output(ctx, json_output)
 
@@ -900,6 +904,7 @@ def run_notebook_create(
         click.echo(f"Using image: {scrub_raw_ids(selected_image.name)}")
 
     name = _resolve_notebook_name(name, json_output=json_output)
+    validate_create_name(ctx, name, "notebook")
     _reject_taken_notebook_name(
         ctx,
         name=name,

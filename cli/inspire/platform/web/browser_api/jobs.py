@@ -28,6 +28,7 @@ from inspire.platform.web.session import (
 
 __all__ = [
     "MAX_JOB_PAGE_SIZE",
+    "JOB_LIST_WINDOW",
     "JOB_LOG_MAX_WINDOW_MS",
     "JobInfo",
     "TrainScheduleCapabilities",
@@ -47,10 +48,10 @@ __all__ = [
 ]
 
 
-# `train.ListJobs` has an Action-specific ceiling: it accepts 999 rows and
-# rejects 1000 with `InvalidParameter: page or page_size too large`. The
-# transport-wide 5000 cap is therefore not sufficient for this Action.
+# Prefer 999 rows for history scans; all pages must remain in the console's
+# 5000-row window. ListJobs totals count platform rows, not the creator filter.
 MAX_JOB_PAGE_SIZE = 999
+JOB_LIST_WINDOW = 5000
 JOB_LOG_MAX_WINDOW_MS = 30 * 86400 * 1000
 
 
@@ -238,10 +239,12 @@ def list_jobs(
         if not created_by:
             raise ValueError("Current user could not be resolved for job listing.")
 
+    page_size = min(max(page_size, 1), JOB_LIST_WINDOW)
+    page_num = min(max(page_num, 1), JOB_LIST_WINDOW // page_size)
     body: dict[str, Any] = {
         "workspace_id": workspace_id,
         "page_num": page_num,
-        "page_size": min(page_size, MAX_JOB_PAGE_SIZE),
+        "page_size": page_size,
         "created_by": created_by,
     }
 

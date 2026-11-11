@@ -20,6 +20,8 @@ from inspire.services.job.job_status import (
     JOB_ACTIVE_STATUSES,
 )
 
+from inspire.platform.web.browser_api.jobs import JOB_LIST_WINDOW, MAX_JOB_PAGE_SIZE
+
 from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
@@ -382,7 +384,7 @@ def _fetch_job_instances(
 def _job_list_page_size(limit: Optional[int]) -> int:
     if limit is not None and limit > 0:
         return min(limit, 100)
-    return 100
+    return MAX_JOB_PAGE_SIZE
 
 
 def _job_list_limit_value(limit: Optional[int]) -> int | None:
@@ -391,23 +393,7 @@ def _job_list_limit_value(limit: Optional[int]) -> int | None:
     return limit
 
 
-def _limit_job_rows_per_workspace(rows: list[dict], limit: Optional[int]) -> list[dict]:
-    limit_value = _job_list_limit_value(limit)
-    if limit_value is None:
-        return rows
-    counts: dict[str, int] = {}
-    limited: list[dict] = []
-    for row in rows:
-        workspace_key = str(row.get("workspace_id") or row.get("workspace_name") or "")
-        current = counts.get(workspace_key, 0)
-        if current >= limit_value:
-            continue
-        counts[workspace_key] = current + 1
-        limited.append(row)
-    return limited
-
-
-def _scan_web_jobs_round_robin(
+def _scan_web_jobs(
     *,
     session,  # noqa: ANN001
     workspace_ids: list[str],
@@ -420,32 +406,19 @@ def _scan_web_jobs_round_robin(
     max_pages: int | None,
     limit: Optional[int],
 ) -> tuple[list[dict], list[dict]]:
-    """Scan all candidate workspaces one page at a time."""
-    rows: list[dict] = []
+    """Scan independent workspace slices with a bounded pool and paging window."""
+    page_size = min(max(page_size, 1), JOB_LIST_WINDOW)
+    last_page = JOB_LIST_WINDOW // page_size
     limit_value = _job_list_limit_value(limit)
-    workspace_states: list[dict] = [
-        {
-            "workspace_id": workspace_id,
-            "workspace_name": _workspace_name(session, workspace_id) if workspace_id else "",
-            "next_page": max(1, page_num),
-            "pages": 0,
-            "total": 0,
-            "matched": 0,
-            "done": False,
-            "seen": set(),
-        }
-        for workspace_id in workspace_ids
-    ]
 
-    while any(not state["done"] for state in workspace_states):
-        active_states = [state for state in workspace_states if not state["done"]]
-        if not active_states:
-            break
-
-        def fetch_page(state: dict) -> tuple[dict, list, int]:  # noqa: ANN001
-            workspace_id = str(state["workspace_id"] or "")
-            current_page = int(state["next_page"])
-            items, total = browser_api_module.list_jobs(
+    def scan_workspace(workspace_id: str) -> tuple[list[dict], dict]:
+        workspace_name = _workspace_name(session, workspace_id) if workspace_id else ""
+        rows: list[dict] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        pages = 0
+        reason = None
+        for current_page in range(max(1, page_num), last_page + 1):
+            items, _total = browser_api_module.list_jobs(
                 workspace_id=workspace_id or None,
                 created_by=creator_id,
                 status=api_status,
@@ -454,64 +427,77 @@ def _scan_web_jobs_round_robin(
                 page_size=page_size,
                 session=session,
             )
-            return state, items, total
-
-        max_workers = min(len(active_states), 8)
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_map = {executor.submit(fetch_page, state): state for state in active_states}
-            for future in as_completed(future_map):
-                state, items, total = future.result()
-                current_page = int(state["next_page"])
-                state["pages"] += 1
-                state["total"] = max(state["total"], total)
-                new_items = 0
-
-                for job in items:
-                    row = _job_info_to_row(job, workspace_name=state["workspace_name"])
-                    key = _job_row_key(row)
-                    if key in state["seen"]:
-                        continue
-                    state["seen"].add(key)
-                    new_items += 1
-                    if allowed_statuses and job.status not in allowed_statuses:
-                        continue
-                    if not _job_matches_name(job, name):
-                        continue
-                    if limit_value is not None and int(state["matched"]) >= limit_value:
-                        state["done"] = True
-                        break
-                    rows.append(row)
-                    state["matched"] = int(state["matched"]) + 1
-
-                if limit_value is not None and int(state["matched"]) >= limit_value:
-                    state["done"] = True
+            pages += 1
+            new_items = 0
+            for job in items:
+                row = _job_info_to_row(job, workspace_name=workspace_name)
+                key = _job_row_key(row)
+                if key in seen:
                     continue
-                if not items:
-                    state["done"] = True
+                seen.add(key)
+                new_items += 1
+                if allowed_statuses and job.status not in allowed_statuses:
                     continue
-                # Exhaustive scans use the empty page as their boundary: totals
-                # can be absent or change between requests during submissions.
-                if max_pages is None and not new_items:
-                    raise RuntimeError("Job listing made no pagination progress; retry the query.")
-                if max_pages is not None and current_page * page_size >= total:
-                    state["done"] = True
+                if not _job_matches_name(job, name):
                     continue
-                if max_pages is not None and int(state["pages"]) >= max_pages:
-                    state["done"] = True
-                    continue
-                state["next_page"] = current_page + 1
-
-    scanned = [
-        {
-            "workspace_id": state["workspace_id"],
-            "workspace_name": state["workspace_name"],
-            "total": state["total"],
-            "pages": state["pages"],
+                rows.append(row)
+            # The platform total is unfiltered; only page length establishes
+            # exhaustion for this caller and server-side filter.
+            if len(items) < page_size:
+                break
+            if not new_items:
+                reason = "no_progress"
+                break
+            if limit_value is not None and len(rows) >= limit_value:
+                reason = "limit"
+                break
+            if max_pages is not None and pages >= max_pages:
+                reason = "page_budget"
+                break
+        else:
+            reason = "paging_window"
+        return rows, {
+            "workspace_name": workspace_name,
+            "status": api_status,
+            "pages": pages,
+            "truncated": reason is not None,
+            "reason": reason,
         }
-        for state in workspace_states
-        if int(state["pages"]) > 0
-    ]
+
+    rows: list[dict] = []
+    scanned: list[dict] = []
+    if workspace_ids:
+        with ThreadPoolExecutor(max_workers=min(len(workspace_ids), 8)) as executor:
+            futures = [executor.submit(scan_workspace, ws) for ws in workspace_ids]
+            for future in as_completed(futures):
+                workspace_rows, state = future.result()
+                rows.extend(workspace_rows)
+                scanned.append(state)
     return rows, scanned
+
+
+def _job_scan_metadata(scanned: list[dict], *, shown: int, total: int, clipped: bool) -> dict:
+    incomplete = [item for item in scanned if item.get("truncated")]
+    return {
+        "shown": shown,
+        "truncated": bool(incomplete) or clipped,
+        "total": None if incomplete else total,
+        "incomplete_slices": incomplete,
+    }
+
+
+def _job_scan_notice(scanned: list[dict]) -> None:
+    incomplete = [item for item in scanned if item.get("truncated")]
+    if incomplete and all(item["reason"] == "limit" for item in incomplete):
+        click.echo("Job list truncated at --limit; use --all to scan the available history.", err=True)
+    elif incomplete:
+        reasons = ", ".join(sorted({str(item["reason"]) for item in incomplete}))
+        click.echo(
+            f"Job list truncated ({reasons}); {len(incomplete)} workspace/status "
+            "slice(s) incomplete. Narrow --workspace, --status or --keyword; "
+            "the platform paging window is 5000 rows per query.",
+            err=True,
+        )
 
 
 def _format_job_instances(instances: list[dict]) -> str:
@@ -939,7 +925,7 @@ def _list_web_jobs(
         rows: list[dict] = []
         scanned: list[dict] = []
         for query_status in query_statuses:
-            status_rows, status_scanned = _scan_web_jobs_round_robin(
+            status_rows, status_scanned = _scan_web_jobs(
                 session=session,
                 workspace_ids=workspace_ids,
                 creator_id=creator_id,
@@ -953,13 +939,14 @@ def _list_web_jobs(
             )
             rows.extend(status_rows)
             scanned.extend(status_scanned)
+        scanned.sort(key=lambda item: (item["workspace_name"], item["status"] or ""))
         rows = _dedupe_job_rows(rows)
         workspace_rank = {workspace_id: index for index, workspace_id in enumerate(workspace_ids)}
         rows.sort(key=lambda row: workspace_rank.get(
             str(row.get("workspace_id") or ""), len(workspace_rank),
         ))
         rows.sort(key=lambda row: row.get("created_at", ""), reverse=True)
-        return _limit_job_rows_per_workspace(rows, limit), scanned
+        return rows, scanned
     finally:
         _close_web_client()
 
@@ -1001,8 +988,9 @@ def _watch_jobs(
             page = bound_collection(
                 jobs,
                 limit=limit,
-                total=sum(int(item.get("total") or 0) for item in scanned),
+                total=len(jobs),
             )
+            _job_scan_notice(scanned)
             jobs = page.items
 
             click.clear()
@@ -1068,7 +1056,10 @@ def _watch_jobs(
     default=None,
     help="Maximum jobs to display across requested workspaces (default: 20).",
 )
-@click.option("--all", "show_all", is_flag=True, help="Show every matching job.")
+@click.option(
+    "--all", "show_all", is_flag=True,
+    help="Scan all matching jobs within each 5000-row platform window; report truncation.",
+)
 @pass_context
 def list_jobs(
     ctx: Context,
@@ -1156,8 +1147,9 @@ def list_jobs(
         page = bound_collection(
             rows,
             limit=effective_limit,
-            total=len(rows) if show_all else sum(int(item.get("total") or 0) for item in scanned),
+            total=len(rows),
         )
+        _job_scan_notice(scanned)
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(
@@ -1166,7 +1158,9 @@ def list_jobs(
                             public_job_list_item(item)
                             for item in page.items
                         ],
-                        **page.metadata(),
+                        **_job_scan_metadata(
+                            scanned, shown=page.shown, total=page.total, clipped=page.truncated,
+                        ),
                     }
                 )
             )
@@ -1176,6 +1170,8 @@ def list_jobs(
             if notice:
                 click.echo(notice)
 
+    except TimeoutError as e:
+        _handle_error(ctx, "TimeoutError", str(e), EXIT_TIMEOUT)
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
     except (SessionExpiredError, ValueError) as e:

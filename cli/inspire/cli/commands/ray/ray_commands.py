@@ -29,6 +29,9 @@ from inspire.cli.utils.public_path import public_path_mode
 
 import click
 
+from inspire.cli.utils.workload_names import validate_create_name
+from inspire.services.utils.workload_names import WorkloadNameError
+
 from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
@@ -923,6 +926,7 @@ def create_ray(
           --worker 'name=decode;image=<image>;group=HPC-可上网区资源-2;quota=0,20,80;min=1;max=8;shm-size=32'
 
     """
+    validate_create_name(ctx, name, "ray")
     public_path_mount_mode = public_path_mode(public_path_mount_mode, public_path_readonly)
     try:
         config, _ = Config.from_files_and_env()
@@ -1023,7 +1027,7 @@ def create_ray(
             )
         )
 
-    except TaskPriorityError as e:
+    except (TaskPriorityError, WorkloadNameError) as e:
         _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
@@ -1091,7 +1095,7 @@ def _assemble_create_body(
             public_path_readonly=public_path_readonly,
             public_path_mount_mode=public_path_mount_mode,
         )
-    except (TaskPriorityError, ConfigError):
+    except (TaskPriorityError, ConfigError, WorkloadNameError):
         raise
     except ValueError as exc:
         raise click.UsageError(str(exc)) from exc

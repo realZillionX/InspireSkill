@@ -421,7 +421,7 @@ def test_compute_job_plans_share_catalogs(client, catalog, kind):
         )
         if kind == "hpc"
         else RayJobCreateSpec(
-            "Example",
+            "example",
             "echo hello",
             "Workspace",
             "Project",

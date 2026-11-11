@@ -11,6 +11,8 @@ from typing import Any, Optional, cast
 from inspire.cli.utils.public_path import public_path_mode
 
 import click
+
+from inspire.cli.utils.workload_names import validate_create_name
 from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
@@ -1875,6 +1877,7 @@ def create_serving(
           --image <image> --command "python serve.py" --port 8000 --dry-run
         inspire serving metrics qwen-demo --workspace 分布式训练空间 --window 30m
     """
+    validate_create_name(ctx, name, "serving")
     public_path_mount_mode = public_path_mode(public_path_mount_mode, public_path_readonly)
     try:
         from inspire.cli.utils.quota_resolver import (

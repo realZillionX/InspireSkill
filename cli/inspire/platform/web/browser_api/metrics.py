@@ -23,7 +23,8 @@ from inspire.platform.web.browser_api.core import (
     _request_json,
     _v2_result,
 )
-from inspire.platform.web.session import WebSession, get_web_session
+from inspire.platform.web.session import SessionExpiredError, WebSession, get_web_session
+from inspire.services.utils.json_formatter import sanitize_text
 
 _log = logging.getLogger(__name__)
 
@@ -207,6 +208,7 @@ def get_resource_metrics_by_time(
     interval_second: int = 60,
     session: Optional[WebSession] = None,
     timeout: int = 30,
+    errors: dict[str, str] | None = None,
 ) -> list[MetricGroup]:
     """Query cluster-metric time series for a single task.
 
@@ -216,7 +218,9 @@ def get_resource_metrics_by_time(
     (a single multi-metric request silently returns data only for the first
     metric, confirmed by probe on 2026-04 and again on 2026-08-18 with two,
     four and eight types). Results are concatenated; if one metric errors the
-    whole call raises ``ValueError``.
+    whole call raises ``ValueError`` by default. Passing ``errors`` collects
+    per-metric failures instead, provided at least one request succeeds.
+    Authentication failures always propagate.
 
     **The fan-out is not an oversight, and ``GetTaskMetricBatch`` does not fix
     it.** That Action exists on every one of these routes and answers a
@@ -263,9 +267,11 @@ def get_resource_metrics_by_time(
         )
 
     all_groups: list[MetricGroup] = []
+    succeeded = 0
+    failures: dict[str, str] = {}
     for metric in metrics:
-        all_groups.extend(
-            _request_one_metric(
+        try:
+            groups = _request_one_metric(
                 session,
                 task_id=task_id,
                 task_type=task_type,
@@ -276,5 +282,19 @@ def get_resource_metrics_by_time(
                 interval_second=interval_second,
                 timeout=timeout,
             )
-        )
+        except SessionExpiredError:
+            raise
+        except ValueError as exc:
+            if errors is None:
+                raise
+            failures[metric] = sanitize_text(str(exc))
+        else:
+            succeeded += 1
+            all_groups.extend(groups)
+    if errors is not None:
+        errors.update(failures)
+    if not succeeded:
+        raise ValueError("All requested metrics failed: " + "; ".join(
+            f"{metric}: {message}" for metric, message in failures.items()
+        ))
     return all_groups

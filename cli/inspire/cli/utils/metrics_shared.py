@@ -609,6 +609,10 @@ def build_metrics_command(
                 )
                 return
 
+            metric_errors: dict[str, str] = {}
+            partial_kwargs: dict[str, Any] = {}
+            if metric_selector is None:
+                partial_kwargs["errors"] = metric_errors
             groups = get_resource_metrics_by_time(
                 task_id=task_id,
                 task_type=task_type,
@@ -618,6 +622,7 @@ def build_metrics_command(
                 end_timestamp=end_ts,
                 interval_second=interval_s,
                 session=session,
+                **partial_kwargs,
             )
         except ConfigError as exc:
             _handle_error(ctx, "ConfigError", str(exc), EXIT_CONFIG_ERROR)
@@ -646,10 +651,15 @@ def build_metrics_command(
                     for g in groups
                 ],
             }
+            if metric_errors:
+                payload["errors"] = metric_errors
             if compute_group_name:
                 payload["group"] = compute_group_name
             click.echo(json_formatter.format_json(payload))
             return
+
+        for metric, message in metric_errors.items():
+            click.echo(f"Warning: {metric}: {message}", err=True)
 
         chart_path: Optional[Path] = None
         if not no_plot:

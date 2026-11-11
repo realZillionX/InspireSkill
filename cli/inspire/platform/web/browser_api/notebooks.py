@@ -551,7 +551,20 @@ def create_notebook(
     if is_projectuserspath_readonly is not None:
         body["is_projectuserspath_readonly"] = bool(is_projectuserspath_readonly)
 
-    return _notebook_v2(session, "CreateNotebook", body)
+    result = _notebook_v2(session, "CreateNotebook", body)
+    # All CLI, batch and SDK submissions share this single-send boundary.
+    # Cache failures must never turn a successful write into a retryable failure.
+    from inspire.services.catalog.resource_index import ResourceIndex
+
+    try:
+        index = ResourceIndex.for_account(session.account)
+        if index is not None:
+            index.record_notebook_creation(workspace_id, name)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).debug("Notebook creation marker write failed", exc_info=True)
+    return result
 
 
 def stop_notebook(

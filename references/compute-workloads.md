@@ -111,6 +111,7 @@ Remove-Variable key
 
 To submit a sweep of `job`, `hpc`, `notebook`, `ray`, or `serving` workloads that vary by name, command, or arguments, use `<workload> batch <file.json|file.toml>` instead of shell loops:
 - Top-level `defaults` and `matrix` expand variants, while every expanded item must explicitly include `workspace`, `project`, `group`, `quota`, `image`, and workload-required fields (`profile` / `profiles` keys are rejected).
+- Malformed JSON/TOML or unreadable files fail as `ConfigError` (exit 10); parse errors name the file and position.
 - Batch items accept the fields listed by each `<workload> batch --help`; supported fields vary by workload and can differ from `<workload> create`.
 - Always run `<workload> batch <file> --dry-run` first to validate the expanded items and dataset mounts before creating anything.
 - Within a single `job`, `hpc`, or `notebook` batch invocation, live quota priority menus, project catalogs, image catalogs, and successful `(workspace, dataset, version)` validations are fetched once per Workspace and reused across items in that run.
@@ -135,11 +136,13 @@ To submit a sweep of `job`, `hpc`, `notebook`, `ray`, or `serving` workloads tha
 | `shell` | Interactive PTY inside a running container (`exit` to quit, `Ctrl+]` to detach). Defaults to `launcher` on HPC, `head` on Ray, first running replica on Serving, or `--instance <label>`. |
 | `tensorboard scalars` | Training loss and evaluation curves written to shared storage (see Section 9). |
 
+Default `metrics` queries on Notebook, Job, HPC, Ray and Serving preserve successful metrics if another metric fails, with an `errors` map in JSON or warnings on stderr. A successful empty metric response counts as success (no data); all failed requests return a non-zero error. Explicit `--metric` queries remain strict.
+
 ### Multi-Workload Queries & Waiting
 
 - **Batch status & events:** `job status`, `hpc status`, and `job events` accept multiple workload names in a single command (fetched in chunks of 20). Unresolved names (typos, deleted jobs, or ambiguous names) are listed under `Unresolved:` with a non-zero exit code without aborting the resolved items.
-- **Cross-workspace search:** When you do not know which Workspace a Job is in, run `inspire job list --workspace all` (queries up to 8 Workspaces concurrently in round-robin pages).
-- **Complete Job scans:** `job list --all` uses the same pagination for JSON and tables and continues until an empty page, without a fixed page ceiling. Reported totals are not a completion boundary. A failed or malformed page, or repeated pages with no new records, fails the command instead of returning a successful partial list. Lists reflect live data across requests; they are not atomic snapshots of concurrent submissions or deletions.
+- **Cross-workspace search:** When you do not know which Workspace a Job is in, run `inspire job list --workspace all` (queries up to 8 Workspaces concurrently, each advancing independently).
+- **Complete Job scans:** `job list --all` uses 999-row pages and up to eight concurrent workspace readers. Each workspace advances independently; short or empty pages establish completion, never the unfiltered platform-wide `total`. Paging stays within `page_size * page_num <= 5000` (five pages at size 999). A full window or repeated full page returns the available rows with `truncated: true`, `total: null`, public `incomplete_slices` (workspace name, status, pages, reason), and a stderr notice. Narrow `--status` or `--keyword` to reduce the slice. There is no default scan deadline or `--scan-timeout` option. Failed/malformed requests still fail rather than claim completeness. `--status`, `--keyword`, `--active`, bounded lists and `--watch` share this scanner. Lists span multiple live requests, not an atomic snapshot.
 - **Waiting for completion:** Only wait on workloads in non-terminal states (`PENDING`, `QUEUING`, `RUNNING`). Stopped Jobs (`CANCELLED`) and HPC jobs cannot be restarted; `start` exists on Notebook, Ray, Serving, and TensorBoard. `job wait` and `job logs --follow` exit automatically when the Job reaches a terminal state; `events --follow` and `job list --watch` stream indefinitely until interrupted — do not use them as completion barriers.
 
 ## 9. TensorBoard (`inspire tensorboard`)

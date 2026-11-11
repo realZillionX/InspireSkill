@@ -80,6 +80,8 @@ Always use CLI `--help` for command syntax. Load only the reference needed for t
 | Model Registry, model versions, deployment sizing (`deploy-config`), and Serving boundaries | [`references/model.md`](references/model.md) |
 | Python SDK (`InspireClient`, `InspireAsyncClient`, `Accounts`, typed models, remote exec, file transfer) | [`references/sdk.md`](references/sdk.md) |
 
+`inspire update --check` reports installation audit failure reasons in human and JSON output. A global uv tool pinned to a local source remains a failed audit; the source path is not exposed.
+
 ### CLI Maintenance
 
 Load only when maintaining the CLI's Browser API wrappers, auditing frontend request contracts, or inspecting raw protocol behavior:

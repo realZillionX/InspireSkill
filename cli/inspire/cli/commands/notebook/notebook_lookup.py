@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import time
 from typing import Any, Callable, TypeVar
 
 import click
@@ -543,9 +544,9 @@ def _resolve_notebook_target(
         )
         if scope is not None:
             cache_scopes[workspace_id] = scope
-    if cache_index is None and cache_scopes:
+    if cache_index is None:
         try:
-            cache_index = ResourceIndex.for_account()
+            cache_index = ResourceIndex.for_account(getattr(session, "account", None))
         except Exception:
             logger.debug("Notebook identity cache initialization failed", exc_info=True)
             cache_index = None
@@ -571,19 +572,7 @@ def _resolve_notebook_target(
             logger.debug("Notebook identity cache lookup failed", exc_info=True)
             matches = []
 
-    # Retry the listing a few times when the name doesn't show up: the
-    # platform list API has a small eventual-consistency window after a
-    # fresh `notebook create` (~5-10 s of "list call SUCCEEDED but the new
-    # notebook isn't in the page yet"). Without this, a `create` immediately
-    # followed by `stop` / `status` / `delete` by name would 404 on the
-    # user even though the notebook IS being created.
-    #
-    # Critically: only that "successful response, target not present" case
-    # is retryable. Network errors, malformed responses, and platform
-    # `code != 0` envelopes propagate immediately — otherwise we'd amplify
-    # a transient real failure into a misleading 12-second wall ending in
-    # "Notebook not found". The retry exists for eventual consistency on
-    # the *contents* of a successful response, not as a generic error loop.
+    # Only a recent successful submission justifies waiting for list visibility.
     if not matches:
         snapshot_tokens: dict[str, tuple[int, int]] = {}
         if cache_index is not None:
@@ -605,26 +594,36 @@ def _resolve_notebook_target(
                 EXIT_API_ERROR,
             )
 
-        import time as _time
-
-        attempts = 4  # 0s, 2s, 4s, 6s — covers ~12s of eventual consistency
-        for attempt in range(attempts):
+        deadline = time.monotonic() + 12.0
+        delay = 1.0
+        while True:
             workspace_items = _list_notebooks_for_workspaces(
                 session,
                 workspace_ids=workspace_ids,
                 user_ids=user_ids,
                 keyword=identifier,
             )
-            matches = []
-            for ws_id in workspace_ids:
-                for notebook_item in workspace_items.get(ws_id, []):
-                    if str(notebook_item.get("name") or "") == identifier:
-                        matches.append((ws_id, notebook_item))
-
-            if matches:
+            matches = [
+                (ws_id, item)
+                for ws_id in workspace_ids
+                for item in workspace_items.get(ws_id, [])
+                if str(item.get("name") or "") == identifier
+            ]
+            if matches or cache_index is None:
                 break
-            if attempt < attempts - 1:
-                _time.sleep(2 * (attempt + 1))
+            try:
+                remaining = max(
+                    cache_index.notebook_visibility_remaining(ws_id, identifier)
+                    for ws_id in workspace_ids
+                )
+            except Exception:
+                logger.debug("Notebook creation marker lookup failed", exc_info=True)
+                break
+            wait = min(delay, remaining, deadline - time.monotonic())
+            if wait <= 0:
+                break
+            time.sleep(wait)
+            delay = min(delay * 2, 4.0)
 
         if cache_index is not None and cache_scopes:
             stale_workspaces: set[str] = set()
@@ -703,9 +702,9 @@ def _resolve_notebook_target(
     if not matches:
         _handle_error(
             ctx,
-            "APIError",
+            "NotFound",
             f"Notebook not found: {identifier}",
-            EXIT_API_ERROR,
+            EXIT_VALIDATION_ERROR,
             hint="Run 'inspire notebook list --workspace all' to find the notebook name.",
         )
 

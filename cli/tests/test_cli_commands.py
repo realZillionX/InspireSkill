@@ -1078,7 +1078,7 @@ def test_job_list_web_name_search_scans_all_workspaces(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["success"] is True
     assert "source" not in payload["data"]
     assert "scanned" not in payload["data"]
@@ -1170,11 +1170,9 @@ def test_job_list_defaults_to_compact_limit_and_all_fetches_all_pages(
                 "page_size": page_size,
             }
         )
-        if page_num == 1:
-            return ([_job(index) for index in range(101, 1, -1)], 101)
-        if page_num == 2:
-            return ([_job(1)], 101)
-        return ([], 101)
+        rows = [_job(index) for index in range(101, 0, -1)]
+        offset = (page_num - 1) * page_size
+        return rows[offset:offset + page_size], 731545
 
     monkeypatch.setattr(browser_api_module, "list_jobs", fake_list_jobs)
 
@@ -1182,10 +1180,10 @@ def test_job_list_defaults_to_compact_limit_and_all_fetches_all_pages(
     result = runner.invoke(cli_main, ["--json", "job", "list", "--workspace", "Main Workspace"])
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert len(payload["data"]["items"]) == 20
     assert payload["data"]["shown"] == 20
-    assert payload["data"]["total"] == 101
+    assert payload["data"]["total"] is None
     assert payload["data"]["truncated"] is True
     assert [call["page_num"] for call in calls] == [1]
     assert all(call["page_size"] == 20 for call in calls)
@@ -1197,17 +1195,17 @@ def test_job_list_defaults_to_compact_limit_and_all_fetches_all_pages(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert len(payload["data"]["items"]) == 101
     assert {row["name"] for row in payload["data"]["items"]} >= {
         "train-101",
         "train-001",
     }
-    assert "shown" not in payload["data"]
-    assert "total" not in payload["data"]
-    assert "truncated" not in payload["data"]
-    assert [call["page_num"] for call in calls] == [1, 2, 3]
-    assert all(call["page_size"] == 100 for call in calls)
+    assert payload["data"]["shown"] == 101
+    assert payload["data"]["total"] == 101
+    assert payload["data"]["truncated"] is False
+    assert [call["page_num"] for call in calls] == [1]
+    assert all(call["page_size"] == jobs_module.MAX_JOB_PAGE_SIZE for call in calls)
 
 
 def test_job_list_limit_applies_across_requested_workspaces(
@@ -1300,10 +1298,10 @@ def test_job_list_limit_applies_across_requested_workspaces(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert [row["name"] for row in payload["data"]["items"]] == ["ws-main-job-1"]
     assert payload["data"]["shown"] == 1
-    assert payload["data"]["total"] == 4
+    assert payload["data"]["total"] is None
     assert payload["data"]["truncated"] is True
     assert sorted(call["workspace_id"] for call in calls) == ["ws-main", "ws-train"]
     assert all(call["page_num"] == 1 for call in calls)

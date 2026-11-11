@@ -741,3 +741,42 @@ def test_variants_emit_resource_tagged_json(
     assert f"{resource}_id" not in payload
     # --json branch must skip PNG rendering.
     assert render_captures == []
+
+
+@pytest.mark.parametrize("resource", ["notebook", "job", "hpc", "ray", "serving"])
+@pytest.mark.parametrize("structured", [False, True])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_shared_metrics_partial_output(
+    monkeypatch: pytest.MonkeyPatch, resource: str, structured: bool, explicit: bool,
+) -> None:
+    from inspire.cli.context import Context
+    from inspire.platform.web.browser_api import metrics as api
+
+    ctx = Context()
+    ctx.json_output = structured
+    command = metrics_shared.build_metrics_command(
+        resource_name=resource, resource_label=resource,
+        name_resolver=lambda *_: "task", lcg_resolver=lambda *_: "group",
+    )
+    monkeypatch.setattr(metrics_shared, "get_web_session", lambda: _FakeSession())
+    monkeypatch.setattr(metrics_shared, "get_resource_metrics_by_time", api.get_resource_metrics_by_time)
+
+    def request(*args: Any, **kwargs: Any) -> list[MetricGroup]:
+        metric = kwargs["metric_type"]
+        if metric.startswith("gpu"):
+            raise ValueError("metric unavailable")
+        return [MetricGroup("worker", metric, "CPU", [MetricSample(100, 0.5)])]
+
+    monkeypatch.setattr(api, "_request_one_metric", request)
+    options = ["--metric", "gpu"] if explicit else []
+    result = CliRunner().invoke(command, ["demo", "--workspace", "test", "--no-plot", *options], obj=ctx)
+    assert result.exit_code == (13 if explicit else 0), result.output
+    if explicit:
+        assert "unavailable" in result.output
+    elif structured:
+        data = json.loads(result.stdout)["data"]
+        assert set(data["errors"]) == {"gpu_usage_rate", "gpu_memory_usage_rate"}
+        assert len(data["series"]) == 2
+    else:
+        assert "Warning: gpu_usage_rate" in result.stderr
+        assert "cpu_usage_rate" in result.stdout

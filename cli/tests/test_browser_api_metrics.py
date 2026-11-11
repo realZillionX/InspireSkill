@@ -318,3 +318,66 @@ def test_metric_group_from_api_skips_malformed_samples() -> None:
         MetricSample(timestamp=100, value=0.25),
         MetricSample(timestamp=200, value=0.0),
     ]
+
+
+@pytest.mark.parametrize("task_type", list(TASK_TYPE_BY_RESOURCE.values()))
+def test_partial_metrics_preserve_success_and_report_sanitized_errors(
+    monkeypatch: pytest.MonkeyPatch, task_type: str,
+) -> None:
+    calls: list[dict] = []
+    _install_fake_request(monkeypatch, [
+        {"code": 1, "message": "unavailable token=private-value"},
+        _success_response("cpu_usage_rate", samples=[(100, 0.5)]),
+    ], calls)
+    errors: dict[str, str] = {}
+    groups = get_resource_metrics_by_time(
+        task_id="task", task_type=task_type, logic_compute_group_id="group",
+        metric_types=["gpu_usage_rate", "cpu_usage_rate"], start_timestamp=1,
+        end_timestamp=200, session=_FakeSession(), errors=errors,
+    )
+    assert len(calls) == 2
+    assert [g.metric_type for g in groups] == ["cpu_usage_rate"]
+    assert list(errors) == ["gpu_usage_rate"]
+    assert "private-value" not in errors["gpu_usage_rate"]
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_all_metrics_failed_remains_error(monkeypatch: pytest.MonkeyPatch, partial: bool) -> None:
+    calls: list[dict] = []
+    _install_fake_request(monkeypatch, [{"code": 1, "message": "unavailable"}] * 2, calls)
+    with pytest.raises(ValueError, match="unavailable"):
+        get_resource_metrics_by_time(
+            task_id="task", task_type="inference_serving", logic_compute_group_id="group",
+            metric_types=["gpu_usage_rate", "cpu_usage_rate"], start_timestamp=1,
+            end_timestamp=200, session=_FakeSession(), errors={} if partial else None,
+        )
+    assert len(calls) == (2 if partial else 1)
+
+
+def test_partial_metrics_do_not_hide_authentication_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    from inspire.platform.web.session import SessionExpiredError
+
+    def expired(*args: object, **kwargs: object) -> list[MetricGroup]:
+        raise SessionExpiredError("login required")
+
+    monkeypatch.setattr(metrics_module, "_request_one_metric", expired)
+    with pytest.raises(SessionExpiredError):
+        get_resource_metrics_by_time(
+            task_id="task", task_type="inference_serving", logic_compute_group_id="group",
+            metric_types=["gpu_usage_rate", "cpu_usage_rate"], start_timestamp=1,
+            end_timestamp=200, session=_FakeSession(), errors={},
+        )
+
+
+def test_partial_metrics_allow_successful_empty_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_request(monkeypatch, [
+        {"code": 1, "message": "unavailable"},
+        {"Result": {"time_seris_metric_groups": []}},
+    ], [])
+    errors: dict[str, str] = {}
+    assert get_resource_metrics_by_time(
+        task_id="task", task_type="inference_serving", logic_compute_group_id="group",
+        metric_types=["gpu_usage_rate", "cpu_usage_rate"], start_timestamp=1,
+        end_timestamp=200, session=_FakeSession(), errors=errors,
+    ) == []
+    assert list(errors) == ["gpu_usage_rate"]

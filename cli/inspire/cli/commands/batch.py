@@ -13,6 +13,8 @@ from inspire.services.public_path import public_path_mount_fields
 
 import click
 
+from inspire.services.utils.workload_names import WorkloadNameError, validate_workload_name
+
 try:  # pragma: no cover - Python 3.11 path
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
@@ -184,13 +186,27 @@ def _batch_public_path_mode(item: dict[str, Any]) -> int | None:
 
 
 def _load_config(path: Path) -> dict[str, Any]:
-    with path.open("rb") as f:
-        if path.suffix.lower() == ".json":
-            data = json.load(f)
-        elif path.suffix.lower() in {".toml", ".tml"}:
-            data = tomllib.load(f)
-        else:
-            raise ConfigError("Batch config must be JSON or TOML.")
+    try:
+        with path.open("rb") as f:
+            if path.suffix.lower() == ".json":
+                data = json.load(f)
+            elif path.suffix.lower() in {".toml", ".tml"}:
+                data = tomllib.load(f)
+            else:
+                raise ConfigError("Batch config must be JSON or TOML.")
+    except json.JSONDecodeError as exc:
+        raise ConfigError(
+            f"Invalid batch config {path.name}: JSON parse error at line {exc.lineno}, "
+            f"column {exc.colno}: {exc.msg}"
+        ) from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"Invalid batch config {path.name}: TOML parse error: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise ConfigError(
+            f"Invalid batch config {path.name}: invalid {exc.encoding} at byte {exc.start}."
+        ) from exc
+    except OSError as exc:
+        raise ConfigError(f"Cannot read batch config {path.name}: {exc.strerror}.") from exc
     if not isinstance(data, dict):
         raise ConfigError("Batch config must be an object at the top level.")
     return data
@@ -1425,7 +1441,7 @@ def _resolve_batch_output_limit(
 
 
 def _handle_batch_exception(ctx: Context, error: Exception) -> None:
-    if isinstance(error, TaskPriorityError):
+    if isinstance(error, (TaskPriorityError, WorkloadNameError)):
         _handle_error(ctx, "ValidationError", str(error), EXIT_VALIDATION_ERROR)
     if isinstance(error, (ConfigError, KeyError)):
         _handle_error(ctx, "ConfigError", str(error), EXIT_CONFIG_ERROR)
@@ -1503,6 +1519,8 @@ def job_batch(
         data = _load_config(config_path)
         _reject_batch_profiles(data)
         items = _expanded_items(data, item_key="jobs")
+        for item in items:
+            validate_workload_name(_require_str(item, "name"), "job")
         config, _ = Config.from_files_and_env()
         session = get_web_session()
         live_cache = _BatchLiveCache()
@@ -1632,6 +1650,8 @@ def hpc_batch(
         data = _load_config(config_path)
         _reject_batch_profiles(data)
         items = _expanded_items(data, item_key="jobs")
+        for item in items:
+            validate_workload_name(_require_str(item, "name"), "hpc")
         config, _ = Config.from_files_and_env()
         session = get_web_session()
         live_cache = _BatchLiveCache()
@@ -1741,6 +1761,8 @@ def notebook_batch(
         data = _load_config(config_path)
         _reject_batch_profiles(data)
         items = _expanded_items(data, item_key="notebooks")
+        for item in items:
+            validate_workload_name(_require_str(item, "name"), "notebook")
         config, _ = Config.from_files_and_env()
         session = get_web_session()
         live_cache = _BatchLiveCache()
@@ -1851,6 +1873,8 @@ def ray_batch(
         data = _load_config(config_path)
         _reject_batch_profiles(data)
         items = _expanded_items(data, item_key="jobs")
+        for item in items:
+            validate_workload_name(_require_str(item, "name"), "ray")
         config, _ = Config.from_files_and_env()
         session = get_web_session()
 
@@ -1949,6 +1973,8 @@ def serving_batch(
         data = _load_config(config_path)
         _reject_batch_profiles(data)
         items = _expanded_items(data, item_key="servings")
+        for item in items:
+            validate_workload_name(_require_str(item, "name"), "serving")
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
 

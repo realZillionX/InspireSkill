@@ -34,6 +34,7 @@ from inspire.services.utils.processes import process_is_alive
 SCHEMA_VERSION = 4
 RESOURCE_INDEX_FILENAME = "resource-index.sqlite3"
 CACHE_ERROR_MAX_CHARS = 500
+NOTEBOOK_VISIBILITY_WINDOW = 30.0
 
 
 def sanitize_cache_error(error: object) -> str:
@@ -346,6 +347,13 @@ class ResourceIndex:
         with self._connect() as connection:
             connection.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS recent_notebook_creation (
+                    workspace_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    submitted_at REAL NOT NULL,
+                    PRIMARY KEY (workspace_id, name)
+                );
+
                 CREATE TABLE IF NOT EXISTS metadata (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -595,6 +603,38 @@ class ResourceIndex:
                 else None
             ),
         )
+
+    @blocking_io
+    def record_notebook_creation(self, workspace_id: str, name: str) -> None:
+        """Persist a successful submission, independently of identity snapshots."""
+        now = time.time()
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM recent_notebook_creation WHERE submitted_at <= ?",
+                (now - NOTEBOOK_VISIBILITY_WINDOW,),
+            )
+            connection.execute(
+                "INSERT OR REPLACE INTO recent_notebook_creation VALUES (?, ?, ?)",
+                (workspace_id, name, now),
+            )
+
+    @blocking_io
+    def notebook_visibility_remaining(self, workspace_id: str, name: str) -> float:
+        """Return the remaining visibility window; expired markers never retry."""
+        now = time.time()
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM recent_notebook_creation WHERE submitted_at <= ?",
+                (now - NOTEBOOK_VISIBILITY_WINDOW,),
+            )
+            row = connection.execute(
+                "SELECT submitted_at FROM recent_notebook_creation "
+                "WHERE workspace_id = ? AND name = ?",
+                (workspace_id, name),
+            ).fetchone()
+        if row is None or row[0] > now:
+            return 0.0
+        return max(0.0, row[0] + NOTEBOOK_VISIBILITY_WINDOW - now)
 
     @blocking_io
     def lookup(

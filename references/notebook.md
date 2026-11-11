@@ -141,3 +141,20 @@ Before running large `mv`, `cp`, or `rm` operations on `/inspire/...`, inspect t
 - **Wide top-level fan-out:** Parallelize across top-level subdirectories with bounded concurrency.
 - **One or two massive subtrees:** Drill down a level before parallelizing so workers do not serialize on a single directory.
 - **Millions of tiny files:** Prefer low-fork commands such as `find <dir> -delete` or `rsync --delete-after`. Run operations taking over 20 minutes in the background with a sentinel file.
+
+
+### Name validation and missing names
+
+Notebook creation names contain 1–32 characters and match `[a-z][a-z0-9-]*`.
+Invalid names fail locally as `ValidationError` (exit 12), including names expanded
+by `notebook batch --dry-run`. Standalone `notebook create` has no `--dry-run` option.
+
+A missing name in the shared Notebook resolver returns `NotFound` (exit 12), matching
+HPC/Ray/Serving/TensorBoard name resolution. Ordinary misses perform one live name
+query without backoff sleeps; this applies to status, events, lifecycle, metrics and
+other commands using that resolver, including connection and lifecycle mutations.
+Successful single, batch and SDK creation records a private local marker scoped to
+the account, workspace and name. For 30 seconds after submission, a live name miss
+retries with bounded backoff (at most 12 seconds of waiting, limited by the remaining
+visibility window), including lifecycle commands that bypass cached identities.
+Expired markers do not trigger retries. API/network failures propagate immediately.

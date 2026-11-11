@@ -259,14 +259,7 @@ def test_resolve_notebook_id_allows_notebook_prefixed_human_name(
 def test_resolve_notebook_id_propagates_listing_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Real listing errors propagate immediately — no 12-second silent retry.
-
-    The eventual-consistency retry around `_list_notebooks_for_workspaces`
-    only handles "list call SUCCEEDED but the new notebook isn't visible
-    yet". A network error / platform `code != 0` envelope would otherwise
-    be amplified into a misleading "Notebook not found" 12s later, which
-    is what Codex flagged in its v4 post-cache-deletion review.
-    """
+    """A failed live query must never be converted into a missing-name verdict."""
     from inspire.cli.context import Context
 
     # Restore the real resolver (autouse fixture replaces it with passthrough).
@@ -302,52 +295,37 @@ def test_resolve_notebook_id_propagates_listing_errors(
     assert call_count["n"] == 1
 
 
-def test_resolve_notebook_id_retries_until_eventual_consistency_settles(
+def test_resolve_notebook_id_missing_name_queries_once_without_sleep(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Empty results retry; the new notebook appearing later wins."""
     from inspire.cli.context import Context
+    import time
 
     monkeypatch.setattr(_NBL_MOD, "_resolve_notebook_id", _REAL_RESOLVE_NOTEBOOK_ID)
-
-    class _FakeSession:
-        workspace_id = "ws-77777777-7777-7777-7777-777777777777"
-        all_workspace_ids = ["ws-77777777-7777-7777-7777-777777777777"]
-        all_workspace_names = {"ws-77777777-7777-7777-7777-777777777777": "cpu"}
-
-    call_log: list[int] = []
-
-    def _eventually_consistent_lister(*args, **kwargs):
-        call_log.append(len(call_log))
-        if len(call_log) < 2:
-            return {}
-        return {
-            "ws-77777777-7777-7777-7777-777777777777": [
-                {
-                    "name": "fresh-name",
-                    "notebook_id": "abcd1234-5678-90ab-cdef-1234567890ab",
-                }
-            ]
-        }
-
-    # Skip the real backoff sleep so the test runs in the test budget.
-    import time as _time
-
-    monkeypatch.setattr(_time, "sleep", lambda *_: None)
-    monkeypatch.setattr(_NBL_MOD, "_list_notebooks_for_workspaces", _eventually_consistent_lister)
-    monkeypatch.setattr(_NBL_MOD, "_try_get_current_user_ids", lambda *args, **kwargs: ["user-1"])
-
-    ctx = Context()
-    notebook_id, ws_id = _NBL_MOD._resolve_notebook_id(
-        ctx,
-        session=_FakeSession(),
-        base_url="https://example.invalid",
-        identifier="fresh-name",
-        json_output=False,
+    session = SimpleNamespace(
+        workspace_id="ws-test", all_workspace_ids=["ws-test"],
+        all_workspace_names={"ws-test": "cpu"},
     )
-    assert notebook_id == "abcd1234-5678-90ab-cdef-1234567890ab"
-    assert ws_id == "ws-77777777-7777-7777-7777-777777777777"
-    assert len(call_log) >= 2  # at least one retry past the initial empty result
+    calls = []
+    monkeypatch.setattr(_NBL_MOD, "_list_notebooks_for_workspaces",
+                        lambda *a, **kw: calls.append(kw) or {})
+    monkeypatch.setattr(_NBL_MOD, "_try_get_current_user_ids", lambda *a, **kw: ["user-1"])
+    monkeypatch.setattr(time, "sleep", lambda *_: pytest.fail("A name miss must not sleep"))
+    errors = []
+
+    def fail(ctx, kind, message, code, **kw):
+        errors.append((kind, code))
+        raise SystemExit(code)
+
+    monkeypatch.setattr(_NBL_MOD, "_handle_error", fail)
+    with pytest.raises(SystemExit) as exc:
+        _NBL_MOD._resolve_notebook_id(
+            Context(), session=session, base_url="https://example.invalid",
+            identifier="missing-name", json_output=True,
+        )
+    assert exc.value.code == 12
+    assert errors == [("NotFound", 12)]
+    assert len(calls) == 1
 
 
 def test_notebook_live_snapshot_cannot_overwrite_newer_write_through(
