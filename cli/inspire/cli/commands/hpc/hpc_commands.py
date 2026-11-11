@@ -31,6 +31,8 @@ from inspire.cli.utils.public_path import public_path_mode
 
 import click
 
+from inspire.cli.utils.workload_names import validate_create_name
+
 from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
@@ -855,6 +857,7 @@ def create_hpc(
           --max-time 4 --keep-after-finish 0.5 \\
           -c 'srun bash -lc "python index.py /inspire/dataset/pixabay-81k/v0"'
     """
+    validate_create_name(ctx, name, "hpc")
     public_path_mount_mode = public_path_mode(public_path_mount_mode, public_path_readonly)
     dataset_mounts = parse_dataset_specs_or_usage_error(datasets)
     try:

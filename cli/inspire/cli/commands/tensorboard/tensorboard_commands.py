@@ -13,6 +13,8 @@ from inspire.services.tensorboard.tensorboard_status import normalize_status
 import logging
 from typing import Any, Optional
 import click
+
+from inspire.cli.utils.workload_names import validate_create_name
 from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
@@ -432,6 +434,7 @@ def create_tensorboard_cmd(
         inspire tensorboard create -n glm-sft --workspace 分布式训练空间 --project 前沿课题探索 --group 训练区-H200-1号机房 --summary-path /inspire/hdd/project/<project>/<user>/runs/glm-sft
         inspire tensorboard create -n glm-sft --workspace 分布式训练空间 --project 前沿课题探索 --group 训练区-H200-1号机房 --summary-path /inspire/hdd/project/<project>/<user>/runs/glm-sft --job glm-sft-run3 --auto-stop-hours 6
     """
+    validate_create_name(ctx, name, "tensorboard")
     name = reject_tensorboard_id(ctx, name)
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)

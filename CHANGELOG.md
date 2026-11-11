@@ -5,7 +5,9 @@
 ## Unreleased
 
 - Report malformed JSON/TOML and unreadable batch files as ConfigError (exit 10), with the file name and parse location, across all five workloads.
-- Fetch exhaustive Job lists in 999-row pages and bound scans with `--scan-timeout` (60 seconds by default, plus in-flight requests). Timeout exits 14 without presenting partial results as complete; narrow the query or explicitly increase the budget for large histories.
+- Complete Job history scans with up to eight concurrent workspace readers, short-page termination independent of platform-wide totals, and the console's 5000-row paging window. Remove `--scan-timeout`; window-limited or stalled scans return rows with explicit JSON truncation metadata and a stderr notice.
+- Validate workload creation names locally before submission or dry-run, including every expanded Batch item: Notebook/Ray/Serving use their 32-character console limits and Job/HPC/TensorBoard their 255-character limits, with workload-specific character rules. Invalid names return ValidationError (exit 12).
+- Return NotFound (exit 12) after one successful Notebook name lookup instead of retrying every missing name with 12 seconds of sleeps. Creation keeps its submitted-handle/fallback lookup and identity-cache write-through.
 - Preserve successful default workload metrics when individual metrics fail; include per-metric JSON errors or stderr warnings. Explicit metric requests and wholly failed queries still fail.
 - Explain update-check failures in human and JSON output, including local uv sources, missing harness skills, and unavailable version lookups, without exposing local source paths.
 - Preserve optional platform error code, HTTP status, service/action, request ID, and retry hint on synchronous and asynchronous SDK exceptions, including uncertain submissions, without replaying writes.

@@ -6,6 +6,8 @@ from inspire.services.public_path import public_path_mount_fields
 from typing import Any, Optional, cast, Callable
 from inspire.config import ConfigError
 import logging
+
+from inspire.services.utils.workload_names import validate_workload_name
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.services.utils.raw_ids import scrub_raw_ids
 
@@ -72,6 +74,7 @@ def parse_worker_spec(raw: str) -> dict[str, Any]:
     else:
         out.pop("shm_size", None)
     out.pop("shm-size", None)
+    validate_workload_name(str(out["name"]), "ray")
     return out
 
 
@@ -82,6 +85,7 @@ def validate_create_inputs(
 ) -> None:
     if not name:
         raise ValueError("--name is required.")
+    validate_workload_name(name, "ray")
     if not command:
         raise ValueError("--command is required; it is the Ray driver startup command.")
     for field_name, value in (

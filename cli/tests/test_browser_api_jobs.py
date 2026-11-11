@@ -196,7 +196,11 @@ def test_list_jobs_passes_keyword(monkeypatch) -> None:  # noqa: ANN001
     assert "distributedTraining" in captured["referer"]
 
 
-def test_list_jobs_clamps_the_action_specific_page_ceiling(monkeypatch) -> None:  # noqa: ANN001
+@pytest.mark.parametrize("size,page,expected_size,expected_page", [
+    (6000, 99, 5000, 1), (999, 6, 999, 5), (500, 11, 500, 10),
+    (0, 0, 1, 1), (-1, -1, 1, 1),
+])
+def test_list_jobs_clamps_console_paging_window(monkeypatch, size, page, expected_size, expected_page) -> None:  # noqa: ANN001
     captured: dict[str, Any] = {}
 
     def fake_request_json(session, method, path, *, referer, body=None, timeout=30):  # noqa: ANN001
@@ -208,11 +212,13 @@ def test_list_jobs_clamps_the_action_specific_page_ceiling(monkeypatch) -> None:
     jobs_module.list_jobs(
         workspace_id="ws-x",
         created_by="user-x",
-        page_size=1000,
+        page_size=size,
+        page_num=page,
         session=_FakeSession(),
     )
 
-    assert captured["body"]["page_size"] == jobs_module.MAX_JOB_PAGE_SIZE == 999
+    assert captured["body"]["page_size"] == expected_size
+    assert captured["body"]["page_num"] == expected_page
 
 
 def test_get_job_detail_v2_uses_action_api(monkeypatch) -> None:  # noqa: ANN001

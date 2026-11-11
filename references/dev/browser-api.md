@@ -68,7 +68,7 @@ Both successes and business errors return **HTTP 200** with an AWS-style JSON en
 
 `request_json()` in [`session/__init__.py`](../../cli/inspire/platform/web/session/__init__.py) is the single entrypoint for both `requests` and Playwright channels:
 - **Retries:** HTTP `408/425/429/500/502/503/504` and transient envelope codes raise `TransientAPIError` (`ValueError` subclass) and retry up to 3 times (honoring `Retry-After` up to 8s, otherwise exponential backoff with jitter). Keep rate-limit retries in the transport layer, never in individual wrappers.
-- **`page_size` clamping:** `_clamped_page_size()` caps `page_size` at `5000` (preserving `-1` for "fetch all"). Exception: `train.ListJobs` rejects `page_size >= 1000` with `InvalidParameter: page or page_size too large`, so `jobs.list_jobs` clamps at `999`.
+- **`page_size` clamping:** `_clamped_page_size()` caps generic requests at `5000` (preserving `-1` for "fetch all"). `train.ListJobs` follows the console window: clamp size to `[1, 5000]`, page to `[1, floor(5000 / size)]`. Scanners must stop before requesting another page beyond that window; do not repeatedly fetch the clamped final page. Its `created_by` filters rows but its `total` is platform-wide, so short/empty pages establish exhaustion. CLI history scans prefer 999 rows and explicitly report truncation when a query fills the reachable window.
 - **Never conflate request failure with an empty result:** Only a successful response with zero items means "none exist". Wrappers must never swallow `TransientAPIError` or `SessionExpiredError` into `[]`, `None`, or `0`. Fan-out wrappers (such as per-group quota fetches) must track partial completion explicitly (`QuotaCatalog.complete`).
 
 ### OAuth session lifecycle
@@ -252,7 +252,7 @@ Referer: `/jobs/distributedTraining` (detail: `/jobs/distributedTrainingDetail/{
 - `GetJobLog` requires string epoch-ms timestamps and rejects windows wider than 30 days.
 - `DeleteJob` requires the job to be stopped first (`Conflict` if running) and returns `AccessForbidden` (not `ResourceNotFound`) when the job ID does not exist.
 - `node_infos[]` holds assigned runtime nodes (cleared once stopped), whereas `specified_nodes[]` and `exclude_nodes[]` echo creation constraints. Per-rank node mapping comes from `ListJobInstances`.
-- `job list --workspace all` fans out across visible Workspaces in 8-way concurrent round-robin pages.
+- `job list --workspace all` fans out across visible Workspaces with up to eight independent concurrent workspace readers.
 
 **TensorBoard notes:**
 - `CreateTensorboard` requires `auto_stop_time_ms` as a **string** (max 72h; missing field error misleadingly says `tensorboard_auto_stop_time_ms is required`). Its unmarshaller ignores unknown fields and returns `{}` on success, so the CLI resolves the newly created board by name via `ListTensorboards`.
@@ -632,3 +632,26 @@ Write endpoints (`datasetApply`, `datasetApprove`, `createDatasetUserRole`, data
 3. **Explicit credential/endpoint exceptions:** Only `notebook proxy-url` (`preserve_raw={"url"}`), `serving list/status/create/api` (validated HTTP(S) `endpoint`), and explicit `account api-key export --stdout` / `run` may cross the redaction boundary.
 4. **Distinguish errors from empty catalogs:** Never turn transport/auth failures into `[]` or `0`, and cover failure paths with unit tests.
 5. **Synchronize docs and tests:** Update Click `--help`, `cli/tests/test_browser_api_*.py`, and the tables in this file together.
+
+
+### Workload creation name rules
+
+Creation and all expanded Batch names are checked before platform resolution or submission,
+including existing dry-run commands. Violations are `ValidationError` / exit 12;
+no name is silently shortened or normalized. Notebook has a Batch dry-run, but no
+standalone `notebook create --dry-run`; TensorBoard has no Batch/dry-run command.
+
+The console form evidence below is from cached JavaScript bundles. Translation keys
+alone are not limits; these are the input rules and validators actually attached to names.
+
+| Workload | Limit | Full-match pattern | Console bundle / form evidence |
+| --- | --- | --- | --- |
+| Notebook | 32 | `[a-z][a-z0-9-]{0,31}` | `c29247e85686a6014321be3413df3d14.js` (interactiveModel import): `name:"name"`, `max:32`, `/^[a-z][a-z0-9-]{0,31}$/g`, `maxLength:32`; also `8df4de0aeed6daaefa6b9a2df6fb2120.js` |
+| Ray and worker groups | 32 | `[a-z][a-z0-9-]{0,31}` | `09793e9584a6ad261159fec7d805c1ee.js` (rayService import): task and Worker `name:"name"`, `max:32`, same pattern, `maxLength:32` |
+| Serving | 32 | `[a-z][a-z0-9.-]*` | `7c94a3096f933a7933471e2b9837a206.js`: `pt=n=>{const a=/^[a-z][a-z0-9-.]*$/`, name rule `M.length>32`, `maxLength:32` |
+| Job / HPC | 255 | `[a-zA-Z0-9\u4e00-\u9fa5._-]{1,255}` | `149b11d536782e3ee862879edb5c0dd3.js`: `hpc` and `distributed` pattern map both use this pattern; task-name input `maxLength:255` |
+| TensorBoard | 255 | `[a-zA-Z0-9\u4e00-\u9fa5._-]{1,255}` | `e384bc44ca666192780e1479287a408b.js`: TensorBoard create form `name:"name"`, same regex validator, `maxLength:255` |
+
+The 64-character input in `79630c3ad66fbd4c2914048fe8f81f8f.js` belongs to
+`create-sandbox-key-form`, despite reusing a TensorBoard translation key; it is not
+the TensorBoard workload limit.
