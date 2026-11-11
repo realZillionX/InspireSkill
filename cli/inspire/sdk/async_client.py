@@ -532,10 +532,12 @@ class AsyncJobs(AsyncFacade):
         refs: _m1.Sequence[str | _m1.JobRef],
         *,
         workspace: str | _m1.WorkspaceRef | None = None,
-    ) -> tuple[_m1.Job, ...]:
+        allow_partial: bool = False,
+    ) -> tuple[_m1.Job, ...] | tuple[_m1.StatusResult[_m1.Job], ...]:
         return await self._client._call('jobs', 'status',
             refs=refs,
-            workspace=workspace)
+            workspace=workspace,
+            allow_partial=allow_partial)
 
     async def stop(
         self,
@@ -827,13 +829,15 @@ class AsyncHPC(AsyncFacade):
 
     async def status(
         self,
-        refs: _m5.Sequence[str | _m2.HPCJobRef],
+        refs: _m4.Sequence[str | _m4.HPCJobRef],
         *,
-        workspace: str | _m5.WorkspaceRef | None = None,
-    ) -> tuple[_m2.HPCJob, ...]:
+        workspace: str | _m4.WorkspaceRef | None = None,
+        allow_partial: bool = False,
+    ) -> tuple[_m4.HPCJob, ...] | tuple[_m4.StatusResult[_m4.HPCJob], ...]:
         return await self._client._call('hpc', 'status',
             refs=refs,
-            workspace=workspace)
+            workspace=workspace,
+            allow_partial=allow_partial)
 
     async def stop(
         self,
@@ -1151,10 +1155,10 @@ class AsyncRay(AsyncFacade):
 
     async def status(
         self,
-        refs: _m5.Sequence[str | _m2.RayJobRef],
+        refs: _m7.Sequence[str | _m7.RayJobRef],
         *,
-        workspace: str | _m5.WorkspaceRef | None = None,
-    ) -> tuple[_m2.RayJob, ...]:
+        workspace: str | _m7.WorkspaceRef | None = None,
+    ) -> tuple[_m7.RayJob, ...]:
         return await self._client._call('ray', 'status',
             refs=refs,
             workspace=workspace)

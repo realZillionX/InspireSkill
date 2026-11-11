@@ -294,9 +294,50 @@ The catalogue methods below (`applications`, `get`, `list`, `tags`) require a st
 | `jobs.metrics(ref, *, workspace=None, metric='core', window='1h', start=None, end=None, interval='1m', group=None)` | `tuple[MetricGroup, ...]` | `job metrics` |
 | `jobs.plan(spec)` | `JobPlan` | `job create --dry-run` |
 | `jobs.quotas(workspace, *, group=None, include_empty=False, limit=20, cursor=None)` | `Page[QuotaOption]` | `job quota` |
-| `jobs.status(refs, *, workspace=None)` | `tuple[Job, ...]` | `job status` |
+| `jobs.status(refs, *, workspace=None, allow_partial=False)` | `tuple[Job, ...]` or opt-in `tuple[StatusResult[Job], ...]` | `job status` |
 | `jobs.stop(ref, *, workspace=None)` | `None` | `job stop` |
 | `jobs.wait(ref, *, workspace=None, timeout=3600, poll_interval=10, raise_on_failure=False)` | `Job` | `job wait` |
+
+### Partial batch status (jobs and HPC)
+
+By default, `client.jobs.status(refs)` and `client.hpc.status(refs)` remain strict:
+they return a tuple of `Job` / `HPCJob` snapshots, or raise
+`ResourceNotFoundError` when any resolved reference is absent from the batch response.
+
+Pass `allow_partial=True` to return one frozen `StatusResult[Job]` /
+`StatusResult[HPCJob]` per input, preserving input order and duplicate references.
+`StatusResult` is exported from both `inspire` and `inspire.sdk`:
+
+- `.ref` and `.name` identify the requested resource.
+- `.outcome == "status"`: `.value` is the normal resource snapshot; `.error` is `None`.
+- `.outcome == "missing"`: the batch response omitted the resource; both `.value`
+  and `.error` are `None`. This does not imply a successful or stopped workload.
+- `.outcome == "error"`: the returned detail failed workspace ownership validation;
+  `.error` is a `ValidationError` and `.value` is `None`. Strict mode still raises.
+- `.to_dict()` returns the public name, outcome, sanitized snapshot (or `None`),
+  and error message (or `None`), without serializing opaque reference IDs.
+
+```python
+results = client.jobs.status(refs, allow_partial=True)
+for result in results:
+    if result.outcome == "status":
+        print(result.name, result.value.status)
+    elif result.outcome == "missing":
+        print(result.name, "missing or no longer visible")
+    else:
+        print(result.name, result.error)
+
+# The same contract applies to native async polling and HPC:
+results = await async_client.hpc.status(hpc_refs, allow_partial=True)
+```
+
+Both modes use the existing workspace-grouped batch endpoints and their chunking;
+missing entries never trigger per-item detail requests. Empty input returns `()`.
+Reference account, base URL, type, explicit workspace, and name-resolution validation
+still run before the batch requests and raise on failure. Network, authentication,
+permission, rate-limit, and other whole-batch failures still raise, including when an
+earlier workspace batch succeeded; they are never converted to missing entries.
+Partial mode does not catch arbitrary response-conversion or programming errors.
 
 Like `HPCJob`, `RayJob`, and `Serving`, `Job` exposes `.view` (the sanitized public projection matching `inspire --json job status`, also returned by `.to_dict()`) and `.raw` (the full platform payload). `instances()` on `jobs`, `hpc`, `ray`, and `servings` returns frozen `Instance` objects where `.label` is the human-readable instance label and `.handle` is the opaque namespaced pod identifier (hidden from `repr()`); both `exec(instance=...)` and `logs(instance=...)` accept either `.label` or `.handle`.
 
@@ -346,7 +387,7 @@ Like `HPCJob`, `RayJob`, and `Serving`, `Job` exposes `.view` (the sanitized pub
 | `hpc.metrics(ref, *, workspace=None, metric='core', window='1h', start=None, end=None, interval=None, group=None)` | `tuple[MetricGroup, ...]` | `hpc metrics` |
 | `hpc.plan(spec)` | `HPCJobPlan` | `hpc create --dry-run` |
 | `hpc.quotas(workspace, *, group=None, include_empty=False, limit=20, cursor=None)` | `Page[QuotaOption]` | `hpc quota` |
-| `hpc.status(refs, *, workspace=None)` | `tuple[HPCJob, ...]` | `hpc status` |
+| `hpc.status(refs, *, workspace=None, allow_partial=False)` | `tuple[HPCJob, ...]` or opt-in `tuple[StatusResult[HPCJob], ...]` | `hpc status` |
 | `hpc.stop(ref, *, workspace=None)` | `None` | `hpc stop` |
 | `hpc.wait(ref, *, timeout=3600, poll_interval=10, raise_on_failure=False, workspace=None)` | `HPCJob` | `hpc status` (poll until terminal) |
 

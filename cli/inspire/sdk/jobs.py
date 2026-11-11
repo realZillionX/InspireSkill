@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from dataclasses import asdict
 from .resources import Service, operation, exact, positive, platform_page
 from .models import (
+    StatusResult,
     Job,
     JobRef,
     JobHandle,
@@ -580,7 +581,8 @@ class Jobs(Service):
         refs: Sequence[str | JobRef],
         *,
         workspace: str | WorkspaceRef | None = None,
-    ) -> tuple[Job, ...]:
+        allow_partial: bool = False,
+    ) -> tuple[Job, ...] | tuple[StatusResult[Job], ...]:
         if isinstance(refs, str):
             raise ValidationError("refs must be a sequence, not a string.")
         from inspire.platform.web.browser_api.jobs import list_jobs_by_ids
@@ -594,14 +596,25 @@ class Jobs(Service):
             for ws, keys in groups.items()
         }
         jobs = []
+        results: builtins.list[StatusResult[Job]] = []
         for ref in resolved:
             data = records[ref.workspace_id].get(ref.key)
             if not data:
+                if allow_partial:
+                    results.append(StatusResult(ref, "missing"))
+                    continue
                 raise ResourceNotFoundError("Job no longer exists or is not visible.")
             if data.get("workspace_id") and data["workspace_id"] != ref.workspace_id:
-                raise ValidationError("Job reference workspace does not match platform detail.")
-            jobs.append(self._job(data, ref.workspace_id, ref))
-        return tuple(jobs)
+                error = ValidationError("Job reference workspace does not match platform detail.")
+                if allow_partial:
+                    results.append(StatusResult(ref, "error", error=error))
+                    continue
+                raise error
+            job = self._job(data, ref.workspace_id, ref)
+            jobs.append(job)
+            if allow_partial:
+                results.append(StatusResult(ref, "status", value=job))
+        return tuple(results) if allow_partial else tuple(jobs)
 
     @operation
     def command(

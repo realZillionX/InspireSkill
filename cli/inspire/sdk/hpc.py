@@ -1,7 +1,7 @@
 """HPC Slurm submission and platform observations."""
 
 from __future__ import annotations
-from .models import Instance
+from .models import Instance, StatusResult
 from .instances import sdk_instances
 from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget
 from typing import Callable
@@ -43,6 +43,16 @@ def metric_group(detail: object) -> str | None:
 
 
 class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
+
+    @operation
+    def status(
+        self,
+        refs: Sequence[str | HPCJobRef],
+        *,
+        workspace: str | WorkspaceRef | None = None,
+        allow_partial: bool = False,
+    ) -> tuple[HPCJob, ...] | tuple[StatusResult[HPCJob], ...]:
+        return self._batch_status(refs, workspace=workspace, allow_partial=allow_partial)
 
     @operation
     def exec(

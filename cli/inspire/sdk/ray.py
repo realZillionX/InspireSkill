@@ -36,6 +36,17 @@ from .exceptions import ValidationError, RayJobFailedError, SubmissionUncertainE
 class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
 
     @operation
+    def status(
+        self,
+        refs: Sequence[str | RayJobRef],
+        *,
+        workspace: str | WorkspaceRef | None = None,
+    ) -> tuple[RayJob, ...]:
+        if isinstance(refs, str):
+            raise ValidationError("refs must be a sequence, not a string.")
+        return tuple(self.get(ref, workspace=workspace) for ref in refs)
+
+    @operation
     def exec(
         self,
         ref: str | RayJobRef,

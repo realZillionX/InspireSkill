@@ -7,6 +7,7 @@ import inspect
 from typing import get_args, get_origin, get_type_hints, TypeVar
 
 from inspire.platform.web.browser_api import CustomImageInfo
+from inspire import Job, HPCJob, StatusResult
 
 from test_sdk import client as client
 
@@ -85,10 +86,17 @@ def test_all_facade_signatures(client):
             hints = get_type_hints(bound)
             assert get_origin(hints["refs"]) is Sequence, label
             assert str in get_args(get_args(hints["refs"])[0]), label
-            assert get_origin(hints["return"]) is tuple, label
-            assert get_args(hints["return"])[1] is Ellipsis, label
+            returns = hints["return"]
+            if facade in {"jobs", "hpc"}:
+                model = Job if facade == "jobs" else HPCJob
+                assert returns == tuple[model, ...] | tuple[StatusResult[model], ...], label
+                partial = inspect.signature(bound).parameters["allow_partial"]
+                assert partial.default is False and hints["allow_partial"] is bool, label
+                returns = tuple[model, ...]
+            assert get_origin(returns) is tuple, label
+            assert get_args(returns)[1] is Ellipsis, label
             service = getattr(client, facade)
-            result_type = get_args(hints["return"])[0]
+            result_type = get_args(returns)[0]
             get_type = get_type_hints(service.get)["return"]
             if isinstance(result_type, TypeVar):
                 result_type = service._model
