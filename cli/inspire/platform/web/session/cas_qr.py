@@ -204,6 +204,10 @@ def feishu_qr_login(
                             element = fresh
                             frame = fresh.content_frame()
                             png = fresh.screenshot(timeout=remaining_ms(5))
+                        # The mask can appear between the check above and the
+                        # capture; never publish an expired code.
+                        if frame and frame.query_selector(EXPIRED_QR_SELECTOR) is not None:
+                            continue
                         if png != previous:
                             path = _publish_qr(account, path, png)
                             show_qr(path)
