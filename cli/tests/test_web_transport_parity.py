@@ -253,7 +253,7 @@ def test_drivers_have_identical_actions_and_outcome(monkeypatch, cli_compat, sce
 
 
 def test_core_can_be_driven_without_http_or_clock_patching():
-    from inspire.platform.web.transport_core import SharedState, Observe, Send, Sleep
+    from inspire.platform.web.transport_core import SharedState, Observe, Send
     from inspire.platform.web.session.models import TransientAPIError
 
     program = RequestCore(
@@ -263,9 +263,7 @@ def test_core_can_be_driven_without_http_or_clock_patching():
     send = program.send(Observation(4, 1, 0.5))
     assert isinstance(send, Send) and send.timeout == 1
     assert isinstance(program.throw(TransientAPIError("busy", status=429)), Observe)
-    assert program.send(Observation(4.95, 1, 0.5)) == Sleep(5 - 4.95)
-    assert isinstance(program.send(None), Observe)
-    action = program.send(Observation(5, 1, 0.5))
+    action = program.send(Observation(4.95, 1, 0.5))
     assert isinstance(action, Raise) and type(action.error).__name__ == "WaitTimeoutError"
     program.close()
 

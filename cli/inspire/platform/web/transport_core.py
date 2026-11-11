@@ -349,10 +349,19 @@ class RequestCore:
                     raise TransportError(str(error), **_error_metadata(error)) from error
                 if attempt == 2:
                     raise TransportError(str(error), **_error_metadata(error)) from error
+                transient = error if isinstance(error, TransientAPIError) else None
                 clock: Observation = yield Observe()
-                yield Sleep(
-                    min(0.1 * (2**attempt), remaining(self.timeout, self.deadline, clock.now))
+                delay = backoff_delay(
+                    attempt, transient or TransientAPIError(str(error)),
+                    jitter=clock.jitter, honor_retry_after=True,
                 )
+                if self.deadline is not None and delay >= self.deadline - clock.now:
+                    raise WaitTimeoutError(
+                        f"Retry wait of {delay:g}s exceeds the remaining operation deadline; "
+                        "request was not replayed.",
+                        **_error_metadata(error),
+                    ) from error
+                yield Sleep(delay)
                 attempt += 1
         raise AssertionError("unreachable")
 

@@ -109,6 +109,7 @@ def test_write_outcome_matches_http_and_envelope(
         sent.append(1)
         return SimpleNamespace(
             status_code=status,
+            headers={},
             json=lambda: {
                 "ResponseMetadata": {"Error": {"Code": code, "Message": "backend fault"}}
             },

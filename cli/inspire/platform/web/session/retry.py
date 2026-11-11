@@ -15,6 +15,7 @@ outage, and the caller is told so rather than handed an empty list.
 from __future__ import annotations
 
 import email.utils
+import math
 import random
 import time
 from typing import Any, Callable, Mapping, TypeVar
@@ -47,7 +48,8 @@ def retry_after_seconds(headers: Mapping[str, Any] | None) -> float | None:
         return None
 
     try:
-        return max(0.0, float(raw))
+        seconds = float(raw)
+        return seconds if math.isfinite(seconds) and seconds >= 0 else None
     except ValueError:
         pass
 
@@ -61,19 +63,24 @@ def retry_after_seconds(headers: Mapping[str, Any] | None) -> float | None:
 
 
 def backoff_delay(
-    attempt: int, error: TransientAPIError, *, jitter: float | None = None
+    attempt: int, error: TransientAPIError, *, jitter: float | None = None,
+    honor_retry_after: bool = False,
 ) -> float:
     """Seconds to wait before attempt ``attempt + 1`` (0-indexed attempts).
 
     The platform's own ``Retry-After`` wins when it asks for a wait this side
     is willing to sit through; otherwise it is exponential with jitter, so a
-    fan-out that tripped the limiter does not resume in lockstep.
+    fan-out that tripped the limiter does not resume in lockstep. SDK callers
+    set honor_retry_after=True and enforce their operation deadline separately.
     """
     requested = error.retry_after
-    if requested is not None and 0 <= requested <= MAX_BACKOFF_SECONDS:
+    if requested is not None and math.isfinite(requested) and requested >= 0 and (
+        honor_retry_after or requested <= MAX_BACKOFF_SECONDS
+    ):
         return float(requested)
     delay = min(BASE_BACKOFF_SECONDS * (2**attempt), MAX_BACKOFF_SECONDS)
-    return delay * (0.75 + (random.random() if jitter is None else jitter) * 0.5)  # noqa: S311 - jitter, not crypto
+    factor = 0.75 + (random.random() if jitter is None else jitter) * 0.5  # noqa: S311
+    return min(delay * factor, MAX_BACKOFF_SECONDS)
 
 
 def with_transient_retry(

@@ -587,7 +587,7 @@ def test_http_create_errors_do_not_replay(client, monkeypatch, status):
 
     def request(*a, **kw):
         calls.append(kw)
-        return SimpleNamespace(status_code=status)
+        return SimpleNamespace(status_code=status, headers={})
 
     client._transport._http = SimpleNamespace(request=request, close=lambda: None)
     monkeypatch.setattr("inspire.platform.web.session.requests._configure", lambda *a: None)
@@ -1261,6 +1261,7 @@ def test_write_outcome_classification(client, monkeypatch, create, outcome):
         return SimpleNamespace(
             status_code=outcome if isinstance(outcome, int) else 200,
             text="platform rejection detail",
+            headers={},
             json=decode,
         )
 

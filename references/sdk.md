@@ -546,6 +546,22 @@ Metadata and retry hints do not authorize automatic write replay.
 `SubmissionUncertainError.operation_id`, `.inspect`, and `retryable=False`
 retain their existing meaning; a server fault after dispatch remains uncertain.
 
+### Retry timing and operation deadlines
+
+Synchronous and asynchronous SDK safe reads make at most three attempts for transient
+failures. HTTP 429 and 5xx responses preserve `Retry-After` (seconds or HTTP-date).
+A valid server delay is honored in full, including delays longer than the local
+backoff cap. Missing or invalid headers use exponential backoff with jitter,
+starting at 0.5 seconds and capped at 8 seconds.
+
+If the next wait would exhaust the remaining operation deadline, the SDK raises
+`WaitTimeoutError` immediately without sleeping or resending early. This error and
+`TransportError` after exhausted retries expose `status` and `retry_after` (or
+`None` when unavailable), so callers can schedule a later query. A server refusal
+of a single-send write with HTTP 429 also preserves these fields. Submit, stop,
+and create operations remain single-send; ambiguous write outcomes still require
+inspection before any explicit retry.
+
 ### Public Exports (`inspire.sdk.__all__`)
 
 `inspire.sdk.__all__` exports **131 symbols** (all re-exported at top-level `inspire`):
