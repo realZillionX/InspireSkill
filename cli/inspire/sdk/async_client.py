@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from contextlib import aclosing
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Literal, overload
 from .accounts import Accounts, InitResult
 from .models_resources import AccountInfo
 from collections.abc import Awaitable, Callable
@@ -527,6 +527,18 @@ class AsyncJobs(AsyncFacade):
             limit=limit,
             cursor=cursor)
 
+    @overload
+    async def status(self, refs: _m1.Sequence[str | _m1.JobRef], *, workspace: str | _m1.WorkspaceRef | None=None, allow_partial: Literal[False]=False) -> tuple[_m1.Job, ...]:
+        ...
+
+    @overload
+    async def status(self, refs: _m1.Sequence[str | _m1.JobRef], *, workspace: str | _m1.WorkspaceRef | None=None, allow_partial: Literal[True]) -> tuple[_m1.StatusResult[_m1.Job], ...]:
+        ...
+
+    @overload
+    async def status(self, refs: _m1.Sequence[str | _m1.JobRef], *, workspace: str | _m1.WorkspaceRef | None=None, allow_partial: bool) -> tuple[_m1.Job, ...] | tuple[_m1.StatusResult[_m1.Job], ...]:
+        ...
+
     async def status(
         self,
         refs: _m1.Sequence[str | _m1.JobRef],
@@ -826,6 +838,18 @@ class AsyncHPC(AsyncFacade):
             include_empty=include_empty,
             limit=limit,
             cursor=cursor)
+
+    @overload
+    async def status(self, refs: _m4.Sequence[str | _m4.HPCJobRef], *, workspace: str | _m4.WorkspaceRef | None=None, allow_partial: Literal[False]=False) -> tuple[_m4.HPCJob, ...]:
+        ...
+
+    @overload
+    async def status(self, refs: _m4.Sequence[str | _m4.HPCJobRef], *, workspace: str | _m4.WorkspaceRef | None=None, allow_partial: Literal[True]) -> tuple[_m4.StatusResult[_m4.HPCJob], ...]:
+        ...
+
+    @overload
+    async def status(self, refs: _m4.Sequence[str | _m4.HPCJobRef], *, workspace: str | _m4.WorkspaceRef | None=None, allow_partial: bool) -> tuple[_m4.HPCJob, ...] | tuple[_m4.StatusResult[_m4.HPCJob], ...]:
+        ...
 
     async def status(
         self,

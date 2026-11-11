@@ -1,6 +1,8 @@
 """Notebook discovery, submission, lifecycle and image snapshots."""
 
 from __future__ import annotations
+
+from inspire.platform.web.session.envelope import _v2_error_metadata
 from .models import ImageSelector
 
 from pathlib import Path
@@ -718,7 +720,7 @@ class Notebooks(Service):
             user_ids_loader=self._current_user_ids,
         )
         if not key:
-            raise SubmissionUncertainError(identifier, inspect="notebooks")
+            raise SubmissionUncertainError(identifier, inspect="notebooks", **_v2_error_metadata(result))
         return NotebookHandle(
             plan.name,
             self._make_ref(NotebookRef, plan.name, key, plan.workspace.ref.key),

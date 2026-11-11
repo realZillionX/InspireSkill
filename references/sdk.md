@@ -562,14 +562,20 @@ All public SDK exceptions expose optional `code: str`, `status: int`,
 attributes (`retry_after` is in seconds). Missing fields are `None`.
 The synchronous and asynchronous clients preserve the same context through
 validation, transport, authentication, and uncertain-outcome conversions.
-Existing exception catch relationships and readable messages are preserved.
+Requests and browser responses use the same v2 metadata fields. Wrapping errors
+fill missing fields from their causes without replacing existing values. Non-JSON
+responses retain observed HTTP status and retry hints; missing-ID submissions
+retain available envelope context. Existing exception catch relationships are preserved.
 
 `code`, `service`, `action`, and `request_id` come from the v2 response envelope;
 `status` comes from an observed HTTP response, including HTTP 200 business errors.
 Unwrapping a standalone envelope without HTTP context leaves `status=None`:
 no status or invalid-field diagnosis is inferred from an error code or message.
 Only these scalar fields are copied; request bodies, credentials, cookies, and
-request/response objects are not attached as structured metadata.
+request/response objects are not attached as structured metadata. Server error
+messages pass through the shared text redactor before truncation; sensitive JSON
+fields, Authorization headers, and cookie echoes are masked, and browser errors
+do not retain raw response bodies. Ordinary diagnostic text stays readable.
 
 ```python
 from inspire.sdk import InspireError, SubmissionUncertainError
@@ -605,7 +611,7 @@ inspection before any explicit retry.
 
 ### Public Exports (`inspire.sdk.__all__`)
 
-`inspire.sdk.__all__` exports **131 symbols** (all re-exported at top-level `inspire`):
+`inspire.sdk.__all__` defines the public exports (also available at top-level `inspire`):
 - **Entrypoints & Accounts (3):** `Accounts`, `InspireAsyncClient`, `InspireClient`
 - **Typed References (19):** `APIKeyRef`, `ComputeGroupRef`, `DatasetApplicationRef`, `DatasetRef`, `DatasetTagRef`, `DatasetVersionRef`, `HPCJobRef`, `ImageRef`, `JobRef`, `ModelRef`, `NotebookRef`, `ProjectOwnerRef`, `ProjectRef`, `QuotaRef`, `RayJobRef`, `ResourceRef`, `ServingRef`, `TensorboardRef`, `WorkspaceRef`
 - **Creation Specs (6):** `HPCJobCreateSpec`, `JobCreateSpec`, `NotebookCreateSpec`, `RayJobCreateSpec`, `ServingCreateSpec`, `TensorboardCreateSpec`

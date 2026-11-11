@@ -6,6 +6,8 @@
 
 - Preserve optional platform error code, HTTP status, service/action, request ID, and retry hint on synchronous and asynchronous SDK exceptions, including uncertain submissions, without replaying writes.
 - Fix SDK safe-read retries to honor Retry-After seconds and HTTP dates, use bounded jittered backoff otherwise, and preserve status/retry_after on final errors. Insufficient operation deadlines fail without an early resend; single-send writes remain unreplayed.
+- Redact sensitive server error echoes with the shared sanitizer and discard raw browser error bodies; preserve browser, wrapped catalog, non-JSON, and missing-ID response context.
+- Preserve strict default status return types with literal overloads for sync/async jobs and HPC, while typing partial and dynamic-bool calls explicitly.
 - Add opt-in partial batch status results to synchronous and asynchronous SDK jobs/HPC polling: preserve input order and duplicates, distinguish missing references and workspace validation errors, and keep strict defaults and whole-batch failure propagation.
 - Add `inspire login --cas` with SMS two-step and Feishu QR login, private per-account CAS sessions, and data plaza catalogue access.
 - Reuse valid CAS sessions for automatic OAuth device approval and silent renewal after refresh credentials expire; retain manual authorization fallback for explicit login.

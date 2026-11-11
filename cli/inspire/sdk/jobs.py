@@ -1,6 +1,10 @@
 """Training-job discovery, submission and observation."""
 
 from __future__ import annotations
+
+from typing import Literal, overload
+
+from inspire.platform.web.session.envelope import _v2_error_metadata
 from .models import Instance
 from .instances import sdk_instances, label_selectors
 from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget
@@ -523,7 +527,7 @@ class Jobs(Service):
             data = create_training_job(payload=plan.create_kwargs, session=session)
         key = data.get("job_id") or data.get("id")
         if not isinstance(key, str) or not key:
-            raise SubmissionUncertainError(identifier, inspect="jobs")
+            raise SubmissionUncertainError(identifier, inspect="jobs", **_v2_error_metadata(data))
         return JobHandle(
             spec.name, self._make_ref(JobRef, spec.name, key, public.workspace.ref.key), identifier
         )
@@ -574,6 +578,33 @@ class Jobs(Service):
         session = self.session
         with self.client._transport.single_send():
             delete_job(resolved.key, session=session)
+
+    @overload
+    def status(
+        self,
+        refs: Sequence[str | JobRef],
+        *,
+        workspace: str | WorkspaceRef | None = None,
+        allow_partial: Literal[False] = False,
+    ) -> tuple[Job, ...]: ...
+
+    @overload
+    def status(
+        self,
+        refs: Sequence[str | JobRef],
+        *,
+        workspace: str | WorkspaceRef | None = None,
+        allow_partial: Literal[True],
+    ) -> tuple[StatusResult[Job], ...]: ...
+
+    @overload
+    def status(
+        self,
+        refs: Sequence[str | JobRef],
+        *,
+        workspace: str | WorkspaceRef | None = None,
+        allow_partial: bool,
+    ) -> tuple[Job, ...] | tuple[StatusResult[Job], ...]: ...
 
     @operation
     def status(

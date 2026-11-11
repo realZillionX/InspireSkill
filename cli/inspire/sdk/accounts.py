@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from inspire.platform.errors import _error_metadata
+
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,7 +29,7 @@ def _account_errors() -> Iterator[None]:
     try:
         yield
     except storage.AccountError as error:
-        raise ValidationError(str(error)) from error
+        raise ValidationError(str(error), **_error_metadata(error)) from error
 
 
 def _create(

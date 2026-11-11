@@ -1,6 +1,8 @@
 """Ray cluster submission and platform observations."""
 
 from __future__ import annotations
+
+from inspire.platform.web.session.envelope import _v2_error_metadata
 from .models import Instance
 from .instances import sdk_instances
 from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget
@@ -207,7 +209,7 @@ class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
             result = self._binding.create(plan.create_kwargs, session=session)
         key = self._binding.created_id(result)
         if not key:
-            raise SubmissionUncertainError(identifier, inspect="Ray jobs")
+            raise SubmissionUncertainError(identifier, inspect="Ray jobs", **_v2_error_metadata(result))
         return RayJobHandle(
             plan.name, self._make_ref(RayJobRef, plan.name, key, plan.workspace.ref.key), identifier
         )

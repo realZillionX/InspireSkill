@@ -1,6 +1,8 @@
 """SDK operation helpers for browser-free remote execution."""
 
 from __future__ import annotations
+
+from inspire.platform.errors import _error_metadata
 from dataclasses import replace
 from inspire.platform.web.flow import call, perform_sync
 from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget, validate_capture
@@ -58,7 +60,7 @@ def authenticated_exec(
             return perform_sync(call(run, session=session, timeout=min(timeout, transport.remaining()), **kwargs))
         except SessionExpiredError as error:
             if attempt or output_received:
-                raise AuthenticationError(str(error)) from error
+                raise AuthenticationError(str(error), **_error_metadata(error)) from error
             transport._refresh()
     raise AssertionError("unreachable")
 
@@ -80,7 +82,7 @@ def workload_exec(
     try:
         selected = core.select_exec_instance(workload, rows, instance)
     except JobShellError as error:
-        raise ValidationError(str(error)) from error
+        raise ValidationError(str(error), **_error_metadata(error)) from error
     url = build_remote_cmd_ws_url(
         key, selected, workload=workload, base_url=service.client.base_url
     )

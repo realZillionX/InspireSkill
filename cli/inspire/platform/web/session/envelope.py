@@ -14,6 +14,7 @@ from typing import Any
 
 from inspire.platform.web.session.models import TransientAPIError
 from inspire.platform.errors import APIError
+from inspire.services.utils.json_formatter import sanitize_text
 
 # v2 carries throttling and server faults in the envelope, under HTTP 200.
 # An error announced this way is still the platform declining to answer, and
@@ -68,6 +69,16 @@ def _v2_error_metadata(data: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _response_metadata(status: int, headers: Any, data: Any) -> dict[str, Any]:
+    """Extract the same scalar context for HTTP and browser responses."""
+    from inspire.platform.web.session.retry import retry_after_seconds
+
+    context: dict[str, Any] = {"status": status, "retry_after": retry_after_seconds(headers)}
+    if isinstance(data, dict):
+        context.update(_v2_error_metadata(data))
+    return context
+
+
 def _v2_result(data: dict[str, Any]) -> dict[str, Any]:
     """Unwrap the `/api/v2` AWS-style envelope.
 
@@ -88,18 +99,18 @@ def _v2_result(data: dict[str, Any]) -> dict[str, Any]:
         if isinstance(error, dict):
             code = error.get("Code") or "Error"
             message = error.get("Message") or "unknown error"
-            text = f"API error: {code}: {message}"
+            text = f"API error: {sanitize_text(code)}: {sanitize_text(message)}"
             if _is_transient_v2_error_code(code):
                 raise TransientAPIError(text, **_v2_error_metadata(data))
             raise APIError(text, **_v2_error_metadata(data))
     elif data.get("code") not in (None, 0):
-        raise APIError(f"API error: {data.get('message')}", **_v2_error_metadata(data))
+        raise APIError(f"API error: {sanitize_text(data.get('message'))}", **_v2_error_metadata(data))
 
     payload = data.get("Result")
     if isinstance(payload, dict):
-        return payload
+        return _ResponseEnvelope(payload, **_v2_error_metadata(data))
     if payload is None:
         nested_payload = data.get("data")
         if isinstance(nested_payload, dict):
-            return nested_payload
-    return {}
+            return _ResponseEnvelope(nested_payload, **_v2_error_metadata(data))
+    return _ResponseEnvelope({}, **_v2_error_metadata(data))

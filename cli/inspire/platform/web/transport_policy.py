@@ -1,22 +1,10 @@
 """Response mapping shared by the requests and httpx adapters."""
 
-import json
-
 from typing import Any, NoReturn
 from dataclasses import dataclass
-from inspire.platform.errors import AuthenticationError, ValidationError
-from inspire.platform.web.session.envelope import _ResponseEnvelope, _v2_error_metadata
-
-
-def _response_metadata(response: Any, data: Any) -> dict[str, Any]:
-    from inspire.platform.web.session.retry import retry_after_seconds
-
-    context: dict[str, Any] = {"status": response.status_code}
-    headers = getattr(response, "headers", {})
-    context["retry_after"] = retry_after_seconds(headers)
-    if isinstance(data, dict):
-        context.update(_v2_error_metadata(data))
-    return context
+from inspire.platform.errors import APIError, AuthenticationError, ValidationError, _error_metadata
+from inspire.services.utils.json_formatter import sanitize_text
+from inspire.platform.web.session.envelope import _ResponseEnvelope, _response_metadata
 
 
 class _NonJSONResponse(ValueError):
@@ -30,10 +18,11 @@ class _SDKResponsePolicy:
         try:
             data = response.json()
         except (ValueError, AttributeError):
-            if response.status_code < 300:
-                raise
             data = None
-        context = _response_metadata(response, data)
+            failed_json = True
+        else:
+            failed_json = False
+        context = _response_metadata(response.status_code, getattr(response, "headers", {}), data)
         if response.status_code == 401 or 300 <= response.status_code < 400:
             raise SessionExpiredError("Authentication expired.", **context)
         if response.status_code == 429 or response.status_code >= 500:
@@ -41,7 +30,9 @@ class _SDKResponsePolicy:
         if response.status_code == 403:
             raise AuthenticationError("Platform access denied.", **context)
         if response.status_code >= 400:
-            raise ValidationError(f"HTTP {response.status_code}: {response.text[:500]}", **context)
+            raise ValidationError(f"HTTP {response.status_code}: {sanitize_text(response.text)[:500]}", **context)
+        if failed_json:
+            raise APIError("Response was not valid JSON.", **context)
         return _ResponseEnvelope(data, **context) if isinstance(data, dict) else data
 
     def browser_error(self, error: Exception) -> NoReturn:
@@ -49,18 +40,12 @@ class _SDKResponsePolicy:
         from inspire.platform.web.session.models import TransientAPIError
 
         if isinstance(error, _BrowserHTTPError):
-            context: dict[str, Any] = {"status": error.status}
-            try:
-                data = json.loads(error.body)
-            except ValueError:
-                data = None
-            if isinstance(data, dict):
-                context.update(_v2_error_metadata(data))
+            context = _error_metadata(error)
             if error.status == 403:
                 raise AuthenticationError(str(error), **context) from error
             if error.status == 429 or error.status >= 500:
                 raise TransientAPIError(str(error), **context) from error
-            raise ValidationError(f"HTTP {error.status}: {error.body[:500]}", **context) from error
+            raise ValidationError(f"HTTP {error.status}: {str(error)[:500]}", **context) from error
         raise error
 
 
@@ -152,4 +137,4 @@ def classify_application_response(response: Any) -> None:
     if response.status_code == 403:
         raise AuthenticationError("Application access denied.")
     if response.status_code >= 400:
-        raise ValidationError(f"HTTP {response.status_code}: {response.text[:500]}")
+        raise ValidationError(f"HTTP {response.status_code}: {sanitize_text(response.text)[:500]}")

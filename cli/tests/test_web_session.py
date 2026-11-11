@@ -83,6 +83,7 @@ class DummyBrowserClient:
 class DummyAPIResponse:
     def __init__(self, status: int = 200, payload=None) -> None:
         self.status = status
+        self.headers = {}
         self._payload = payload or {}
 
     def json(self):

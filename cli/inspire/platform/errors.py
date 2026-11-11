@@ -11,7 +11,9 @@ class _ErrorMetadata(Exception):
         service: str | None = None, action: str | None = None,
         request_id: str | None = None, retry_after: float | None = None,
     ) -> None:
-        super().__init__(*args)
+        from inspire.services.utils.json_formatter import sanitize_text
+
+        super().__init__(*(sanitize_text(arg) if isinstance(arg, str) else arg for arg in args))
         self.code = code
         self.status = status
         self.service = service
