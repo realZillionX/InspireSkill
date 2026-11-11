@@ -153,5 +153,8 @@ A missing name in the shared Notebook resolver returns `NotFound` (exit 12), mat
 HPC/Ray/Serving/TensorBoard name resolution. Ordinary misses perform one live name
 query without backoff sleeps; this applies to status, events, lifecycle, metrics and
 other commands using that resolver, including connection and lifecycle mutations.
-Creation uses the submitted handle or its dedicated fallback lookup and writes
-the created identity into the cache. API/network failures remain errors, not a missing-name verdict.
+Successful single, batch and SDK creation records a private local marker scoped to
+the account, workspace and name. For 30 seconds after submission, a live name miss
+retries with bounded backoff (at most 12 seconds of waiting, limited by the remaining
+visibility window), including lifecycle commands that bypass cached identities.
+Expired markers do not trigger retries. API/network failures propagate immediately.

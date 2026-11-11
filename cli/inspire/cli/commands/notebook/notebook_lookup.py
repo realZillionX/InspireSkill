@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import time
 from typing import Any, Callable, TypeVar
 
 import click
@@ -543,9 +544,9 @@ def _resolve_notebook_target(
         )
         if scope is not None:
             cache_scopes[workspace_id] = scope
-    if cache_index is None and cache_scopes:
+    if cache_index is None:
         try:
-            cache_index = ResourceIndex.for_account()
+            cache_index = ResourceIndex.for_account(getattr(session, "account", None))
         except Exception:
             logger.debug("Notebook identity cache initialization failed", exc_info=True)
             cache_index = None
@@ -571,8 +572,7 @@ def _resolve_notebook_target(
             logger.debug("Notebook identity cache lookup failed", exc_info=True)
             matches = []
 
-    # Creation records the submitted handle (or performs its own fallback
-    # lookup). Ordinary name misses need only one successful live query.
+    # Only a recent successful submission justifies waiting for list visibility.
     if not matches:
         snapshot_tokens: dict[str, tuple[int, int]] = {}
         if cache_index is not None:
@@ -594,18 +594,36 @@ def _resolve_notebook_target(
                 EXIT_API_ERROR,
             )
 
-        workspace_items = _list_notebooks_for_workspaces(
-            session,
-            workspace_ids=workspace_ids,
-            user_ids=user_ids,
-            keyword=identifier,
-        )
-        matches = [
-            (ws_id, item)
-            for ws_id in workspace_ids
-            for item in workspace_items.get(ws_id, [])
-            if str(item.get("name") or "") == identifier
-        ]
+        deadline = time.monotonic() + 12.0
+        delay = 1.0
+        while True:
+            workspace_items = _list_notebooks_for_workspaces(
+                session,
+                workspace_ids=workspace_ids,
+                user_ids=user_ids,
+                keyword=identifier,
+            )
+            matches = [
+                (ws_id, item)
+                for ws_id in workspace_ids
+                for item in workspace_items.get(ws_id, [])
+                if str(item.get("name") or "") == identifier
+            ]
+            if matches or cache_index is None:
+                break
+            try:
+                remaining = max(
+                    cache_index.notebook_visibility_remaining(ws_id, identifier)
+                    for ws_id in workspace_ids
+                )
+            except Exception:
+                logger.debug("Notebook creation marker lookup failed", exc_info=True)
+                break
+            wait = min(delay, remaining, deadline - time.monotonic())
+            if wait <= 0:
+                break
+            time.sleep(wait)
+            delay = min(delay * 2, 4.0)
 
         if cache_index is not None and cache_scopes:
             stale_workspaces: set[str] = set()
