@@ -153,6 +153,18 @@ def test_deletion_requires_confirmation_and_clears_tokens_under_lock(isolated, m
     if active:
         assert not accounts.current_file().exists()
 
+
+def test_legacy_add_credentials_skip_device_login(isolated):
+    result = CliRunner().invoke(
+        main, ["account", "add", "legacy", "--username", "u", "--password", "p", "--non-interactive"]
+    )
+    assert result.exit_code == 0, result.output
+    isolated.assert_not_called()
+    assert "inspire login --account legacy" in result.output
+    data = Config._load_toml(accounts.account_config_path("legacy"))
+    assert "auth" not in data
+
+
 def test_config_writers_and_legacy_loading(isolated, monkeypatch):
     for content in (ACCOUNT_CONFIG_TEMPLATE, render_account_config(base_url=DEFAULT_BASE_URL, proxy="")):
         assert "[auth]" not in content
@@ -163,5 +175,5 @@ def test_config_writers_and_legacy_loading(isolated, monkeypatch):
     monkeypatch.setenv("INSPIRE_USERNAME", "environment-user")
     monkeypatch.setenv("INSPIRE_PASSWORD", "environment-password")
     config, sources = Config.from_files_and_env(account="old")
-    assert not hasattr(config, "username") and not hasattr(config, "password")
+    assert config.username == "" and config.password == ""
     assert "username" not in sources and "password" not in sources

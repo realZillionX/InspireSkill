@@ -27,6 +27,7 @@ from .core import (
     CAS_BASE_URL,
     PLAZA_BASE_URL,
     PlazaError,
+    PlazaUnavailable,
     plaza_request,
     reset_plaza_client,
 )
@@ -51,6 +52,7 @@ __all__ = [
     "CAS_BASE_URL",
     "PLAZA_BASE_URL",
     "PlazaError",
+    "PlazaUnavailable",
     "plaza_request",
     "reset_plaza_client",
     # Dataset catalogue

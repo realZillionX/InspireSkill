@@ -105,6 +105,12 @@ class _Script:
 
 
 @pytest.fixture(autouse=True)
+def _enable_cas_sign_in(monkeypatch):
+    # These tests cover the retained CAS handshake; production keeps it disabled.
+    monkeypatch.setattr(plaza_core, "CAS_SIGN_IN_ENABLED", True)
+
+
+@pytest.fixture(autouse=True)
 def _reset_plaza_client(monkeypatch):
     transport = Transport("tester", "https://qz.sii.edu.cn", username="", cli_compat=True)
     transport.adopt_session(_FakeWebSession())
@@ -701,3 +707,13 @@ def test_concurrent_plaza_calls_exclusively_borrow_one_cookie_jar(monkeypatch):
         assert first.result(timeout=5) == second.result(timeout=5) == {"ok": True}
     assert script.sign_ins == 1
     assert len(script.sessions) == 1
+
+
+def test_disabled_cas_sign_in_fails_clearly_without_network(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(plaza_core, "CAS_SIGN_IN_ENABLED", False)
+    script = _install(monkeypatch, _Script())
+
+    with pytest.raises(plaza_core.PlazaUnavailable, match="only accepts CAS sign-in"):
+        plaza_core.plaza_request("GET", "/api/datasets/getDatasetsList")
+
+    assert script.sessions == []

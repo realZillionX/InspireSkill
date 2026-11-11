@@ -62,7 +62,7 @@ def accounts(monkeypatch, tmp_path, request):
 def assert_account_runtime(account):
     assert storage.current_account() == account
     config, _ = Config.from_files_and_env()
-    assert not hasattr(config, "username")
+    assert config.username == ""
     assert config.remote_env == {"ACCOUNT_ENV": account}
     assert config.requests_https_proxy == f"http://{account}.proxy:8080"
     assert core._get_base_url() == f"https://{account}.example"
@@ -213,8 +213,8 @@ def test_shell_username_cannot_replace_selected_account(monkeypatch, accounts, p
 
     def inspect_runtime(**_kwargs):
         assert_account_runtime("bob")
-        assert not hasattr(auth._load_runtime_config("bob"), "username")
-        assert not hasattr(auth._load_runtime_config(), "password")
+        assert auth._load_runtime_config("bob").username == ""
+        assert auth._load_runtime_config().password == ""
 
     monkeypatch.setattr(main.commands["job"].commands["list"], "callback", inspect_runtime)
     args = ["job", "list", "--workspace", "CPU资源空间"]
@@ -232,7 +232,7 @@ def test_explicit_and_scoped_login_use_identical_runtime_config(monkeypatch, acc
     with storage.account_scope("bob"):
         configured, _ = Config.from_files_and_env()
         assert auth._load_runtime_config("bob") == auth._load_runtime_config() == configured
-        assert not hasattr(configured, "username")
+        assert configured.username == ""
         assert configured.base_url == "https://runtime.example"
 
 

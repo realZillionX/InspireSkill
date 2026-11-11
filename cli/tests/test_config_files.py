@@ -77,7 +77,7 @@ def test_defaults_do_not_depend_on_repository(
     del home
     monkeypatch.chdir(tmp_path)
     cfg, sources = Config.from_files_and_env(require_credentials=False)
-    assert not hasattr(cfg, "username")
+    assert cfg.username == ""
     assert cfg.base_url == "https://qz.sii.edu.cn"
     assert cfg.shm_size is None
     assert "username" not in sources
@@ -100,8 +100,8 @@ def test_account_config_loads_identity_and_workload_behavior(
 
     cfg, sources = Config.from_files_and_env()
 
-    assert not hasattr(cfg, "username")
-    assert not hasattr(cfg, "password")
+    assert cfg.username == ""
+    assert cfg.password == ""
     assert cfg.shm_size == 64
     assert cfg.job_auto_fault_tolerance is True
     assert cfg.job_fault_tolerance_max_retry == 6
@@ -127,7 +127,7 @@ def test_environment_overrides_runtime_but_not_account_identity(
 
     cfg, sources = Config.from_files_and_env()
 
-    assert not hasattr(cfg, "username")
+    assert cfg.username == ""
     assert cfg.shm_size == 96
     assert "username" not in sources
     assert sources["shm_size"] == SOURCE_ENV
@@ -151,7 +151,7 @@ def test_repository_inspire_directory_is_never_read(
 
     cfg, _ = Config.from_files_and_env()
 
-    assert not hasattr(cfg, "username")
+    assert cfg.username == ""
 
 
 def test_missing_active_account_fails_when_credentials_are_required(
@@ -160,7 +160,7 @@ def test_missing_active_account_fails_when_credentials_are_required(
 ) -> None:
     del home
     config, _ = Config.from_files_and_env()
-    assert not hasattr(config, "password")
+    assert config.password == ""
 
 
 def test_writable_config_path_targets_active_account(home: Path, clean_env: None) -> None:

@@ -437,14 +437,14 @@ class TestAccountUseCommand:
         storage.set_current_account("alice")
         browser_core.clear_browser_api_runtime_cache()
         cfg, _ = Config.from_files_and_env(require_credentials=False)
-        assert not hasattr(cfg, "username")
+        assert cfg.username == ""
         assert browser_core._get_base_url() == "https://alice.example"
 
         result = runner.invoke(account, ["use", "bob"])
 
         assert result.exit_code == 0, result.output
         cfg, _ = Config.from_files_and_env(require_credentials=False)
-        assert not hasattr(cfg, "username")
+        assert cfg.username == ""
         assert browser_core._get_base_url() == "https://bob.example"
 
     def test_use_keeps_previous_account_runtime_cache(

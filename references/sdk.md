@@ -223,6 +223,8 @@ For external images, call `images.register`, push the image to the returned regi
 
 ### datasets
 
+The catalogue methods below (`applications`, `get`, `list`, `tags`) currently raise because the Dataset Hub accepts only CAS sign-in, which OAuth device login does not provide; mount validation is unaffected.
+
 | Method | Return Type | Equivalent CLI Command |
 | --- | --- | --- |
 | `datasets.applications(name=None, *, to_approve=False, keyword=None, limit=20, cursor=None)` | `Page[DatasetApplication]` | `dataset applications` |

@@ -68,7 +68,14 @@ def add(
     from inspire.cli.commands.login import ensure_account_and_login
 
     if username is not None or password is not None:
-        click.echo("Deprecated: --username and --password are ignored; use device login.", err=True)
+        # Legacy scripts expect add to return at once; do not block them on a
+        # device approval nobody is watching for.
+        no_login = True
+        click.echo(
+            "Deprecated: --username and --password are ignored; device login skipped. "
+            f"Run `inspire login --account {name.strip()}` to authorize.",
+            err=True,
+        )
     ensure_account_and_login(
         ctx, name, base_url=base_url, proxy=proxy, make_active=make_active,
         non_interactive=non_interactive, no_login=no_login, creating_only=True,

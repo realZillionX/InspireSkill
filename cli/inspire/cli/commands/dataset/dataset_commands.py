@@ -253,6 +253,9 @@ def list_datasets_cmd(
             hint=_tag_hint(e),
         )
         return
+    except plaza_module.PlazaUnavailable as e:
+        _handle_error(ctx, "PlazaUnavailable", str(e), EXIT_API_ERROR)
+        return
     except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
         return
@@ -305,6 +308,9 @@ def show_dataset_cmd(ctx: Context, name: str) -> None:
         detail = plaza_module.get_dataset_detail(summary.dataset_id, session=session)
     except plaza_module.UnknownDatasetError as e:
         _exit_for_unknown_dataset(ctx, name, scrub_raw_ids(e))
+        return
+    except plaza_module.PlazaUnavailable as e:
+        _handle_error(ctx, "PlazaUnavailable", str(e), EXIT_API_ERROR)
         return
     except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
@@ -593,6 +599,9 @@ def dataset_applications_cmd(
             ),
         )
         return
+    except plaza_module.PlazaUnavailable as e:
+        _handle_error(ctx, "PlazaUnavailable", str(e), EXIT_API_ERROR)
+        return
     except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
         return
@@ -647,6 +656,9 @@ def list_dataset_tags_cmd(ctx: Context) -> None:
 
     try:
         tags = plaza_module.list_dataset_tags(session=session)
+    except plaza_module.PlazaUnavailable as e:
+        _handle_error(ctx, "PlazaUnavailable", str(e), EXIT_API_ERROR)
+        return
     except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
         return

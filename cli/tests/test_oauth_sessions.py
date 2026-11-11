@@ -161,7 +161,7 @@ def test_cli_login_mock_http_discovers_and_persists(account, monkeypatch):
     assert cached.user_detail == {"extra_info": {"login_name": "login-user"}}
 
 
-def test_account_add_authorizes_without_password(account, monkeypatch):
+def test_account_add_with_legacy_credentials_skips_login(account, monkeypatch):
     from inspire.cli.main import main
     import importlib
     commands = importlib.import_module("inspire.cli.commands.login")
@@ -170,7 +170,7 @@ def test_account_add_authorizes_without_password(account, monkeypatch):
     result = CliRunner().invoke(main, ["account", "add", "second", "--non-interactive",
                                      "--username", "ignored", "--password", "secret-password"])
     assert result.exit_code == 0, result.output
-    assert calls == ["second"]
+    assert calls == []
     assert "Deprecated" in result.stderr
     assert "secret-password" not in result.output
     config = accounts.account_config_path("second").read_text()
