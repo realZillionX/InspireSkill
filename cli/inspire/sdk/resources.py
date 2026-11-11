@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from inspire.platform.errors import _error_metadata
+
 import base64
 import json
 from functools import wraps
@@ -52,16 +54,16 @@ def operation(fn: F) -> F:
                 )
 
                 if isinstance(error, (SessionAuthenticationError, SessionExpiredError)):
-                    raise AuthenticationError(str(error)) from error
+                    raise AuthenticationError(str(error), **_error_metadata(error)) from error
                 cause = error.__cause__
                 while cause is not None:
                     if isinstance(cause, InspireError):
                         raise cause from None
                     cause = cause.__cause__
                 if isinstance(error, TransientAPIError):
-                    raise TransportError(str(error)) from error
+                    raise TransportError(str(error), **_error_metadata(error)) from error
                 if isinstance(error, ValueError):
-                    raise ValidationError(str(error)) from None
+                    raise ValidationError(str(error), **_error_metadata(error)) from None
                 if type(error).__module__.startswith("inspire.platform"):
                     raise ResolutionIncompleteError(str(error)) from None
                 raise
@@ -825,7 +827,7 @@ class Images(Service):
             except TimeoutError as exc:
                 raise WaitTimeoutError(str(exc)) from exc
             except ValueError as exc:
-                raise ValidationError(str(exc)) from exc
+                raise ValidationError(str(exc), **_error_metadata(exc)) from exc
 
     @operation
     @image_mutation

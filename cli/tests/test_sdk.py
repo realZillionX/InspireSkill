@@ -1244,6 +1244,8 @@ def test_write_outcome_classification(client, monkeypatch, create, outcome):
     http = requests.Session()
 
     def decode():
+        if isinstance(outcome, int):
+            raise ValueError("Non-JSON rejection detail")
         if outcome == "bad-json":
             raise requests.exceptions.JSONDecodeError("Invalid JSON", "<html>", 0)
         if outcome == "invalid-response":

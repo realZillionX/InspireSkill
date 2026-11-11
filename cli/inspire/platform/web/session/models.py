@@ -8,6 +8,7 @@ switches session cache in lockstep.
 from __future__ import annotations
 
 from inspire.local_files import atomic_write_text
+from inspire.platform.errors import APIError, _ErrorMetadata
 
 from inspire.platform.web.flow import blocking_io
 
@@ -25,11 +26,11 @@ from .identity import token_login_username
 SESSION_TTL = 3600  # 1 hour
 
 
-class SessionExpiredError(Exception):
+class SessionExpiredError(_ErrorMetadata):
     """Raised when the web session has expired (401 from server)."""
 
 
-class AuthenticationError(ValueError):
+class AuthenticationError(APIError):
     """Authentication requires an explicit device login."""
 
 
@@ -40,7 +41,7 @@ class AuthenticationError(ValueError):
 TRANSIENT_HTTP_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 
-class TransientAPIError(ValueError):
+class TransientAPIError(APIError):
     """A request the platform refused for a reason that will pass.
 
     Rate limiting, request timeouts and server faults carry no information
@@ -62,11 +63,14 @@ class TransientAPIError(ValueError):
         status: int | None = None,
         retry_after: float | None = None,
         code: str | None = None,
+        service: str | None = None,
+        action: str | None = None,
+        request_id: str | None = None,
     ) -> None:
-        super().__init__(message)
-        self.status = status
-        self.retry_after = retry_after
-        self.code = code
+        super().__init__(
+            message, status=status, retry_after=retry_after, code=code,
+            service=service, action=action, request_id=request_id,
+        )
 
 
 _API_STATUS_RE = re.compile(r"\bAPI returned (\d{3})\b")

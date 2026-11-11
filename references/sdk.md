@@ -514,6 +514,38 @@ All SDK JSON mutation calls execute inside `single_send`: each write is sent at 
 | Rate-limited or transient server refusal (`TransientAPIError` / HTTP 429) | `TransportError(retryable=True)` | Safe for the caller to retry explicitly |
 | Ambiguous outcome after send (post-send HTTP 401/3xx/5xx, network drop, timeout, or missing ID) | `SubmissionUncertainError` (creates) / `MutationUncertainError` (mutations), `retryable=False` | Inspect the target catalog (`err.inspect`) before retrying to avoid duplicate creation |
 
+### Structured Error Context
+
+All public SDK exceptions expose optional `code: str`, `status: int`,
+`service: str`, `action: str`, `request_id: str`, and `retry_after: float`
+attributes (`retry_after` is in seconds). Missing fields are `None`.
+The synchronous and asynchronous clients preserve the same context through
+validation, transport, authentication, and uncertain-outcome conversions.
+Existing exception catch relationships and readable messages are preserved.
+
+`code`, `service`, `action`, and `request_id` come from the v2 response envelope;
+`status` comes from an observed HTTP response, including HTTP 200 business errors.
+Unwrapping a standalone envelope without HTTP context leaves `status=None`:
+no status or invalid-field diagnosis is inferred from an error code or message.
+Only these scalar fields are copied; request bodies, credentials, cookies, and
+request/response objects are not attached as structured metadata.
+
+```python
+from inspire.sdk import InspireError, SubmissionUncertainError
+
+try:
+    handle = client.jobs.create(spec, operation_id="example-operation")
+except SubmissionUncertainError as error:
+    # Inspect the catalog before deciding whether to submit again.
+    print(error.operation_id, error.inspect, error.request_id)
+except InspireError as error:
+    print(error.code, error.status, error.service, error.action, error.request_id)
+```
+
+Metadata and retry hints do not authorize automatic write replay.
+`SubmissionUncertainError.operation_id`, `.inspect`, and `retryable=False`
+retain their existing meaning; a server fault after dispatch remains uncertain.
+
 ### Public Exports (`inspire.sdk.__all__`)
 
 `inspire.sdk.__all__` exports **131 symbols** (all re-exported at top-level `inspire`):

@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- Preserve optional platform error code, HTTP status, service/action, request ID, and retry hint on synchronous and asynchronous SDK exceptions, including uncertain submissions, without replaying writes.
+
 - Add `inspire login --cas` with SMS two-step and Feishu QR login, private per-account CAS sessions, and data plaza catalogue access.
 - Reuse valid CAS sessions for automatic OAuth device approval and silent renewal after refresh credentials expire; retain manual authorization fallback for explicit login.
 - Report missing or expired CAS sessions with an actionable login hint without attempting OAuth refresh for CAS ticket failures.
