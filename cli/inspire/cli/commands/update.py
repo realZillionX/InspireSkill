@@ -260,28 +260,46 @@ def _emit_stage(message: str, *, silent: bool) -> None:
     click.secho(f"› {message}", fg="blue")
 
 
-def _emit_update_failure(*, silent: bool, check_only: bool = False) -> None:
+def _record_audit_failure(reason: str) -> None:
+    reason = _scrub_debug_text(reason)
+    logger.debug("Installation audit failed: %s", reason)
+    context = click.get_current_context(silent=True)
+    if context is not None:
+        context.meta.setdefault("update_audit_failures", []).append(reason)
+
+
+def _emit_update_failure(
+    *, silent: bool, check_only: bool = False, reason: str | None = None,
+) -> None:
     if silent:
         return
     action = "check" if check_only else "update"
+    context = click.get_current_context(silent=True)
+    reasons = list(context.meta.get("update_audit_failures", [])) if context else []
+    if reason:
+        reasons.append(_scrub_debug_text(reason))
+    message = f"InspireSkill {action} failed."
+    if reasons:
+        message += " " + "; ".join(item.rstrip(".") for item in reasons) + "."
     ctx = _current_output_context()
+    hint = (
+        "Additional diagnostics were written to the local debug log."
+        if ctx.debug
+        else f"Retry with `inspire --debug update{' --check' if check_only else ''}` for diagnostics."
+    )
     if ctx.json_output:
         click.echo(
             json_formatter.format_json_error(
                 "UpdateError",
-                f"InspireSkill {action} failed.",
+                message,
                 EXIT_GENERAL_ERROR,
-                hint=(
-                    f"Retry with `inspire --debug update"
-                    f"{' --check' if check_only else ''}` for diagnostics."
-                ),
+                hint=hint,
             ),
             err=True,
         )
         return
     click.secho(
-        f"✗ InspireSkill {action} failed. Retry with `inspire --debug update"
-        f"{' --check' if check_only else ''}` for diagnostics.",
+        f"✗ {message} {hint}",
         fg="red",
         err=True,
     )
@@ -1186,9 +1204,10 @@ def _audit_global_cli(expected_version: str | None, silent: bool) -> tuple[bool,
     ok = True
     if executable is None:
         ok = False
-        logger.debug("Global inspire executable is not on PATH after update")
+        _record_audit_failure("Global inspire executable is not on PATH.")
     elif actual_version is None:
         ok = False
+        _record_audit_failure("Could not determine the installed CLI version: " + detail)
         logger.debug(
             "Could not parse updated InspireSkill version: executable=%s detail=%s",
             executable,
@@ -1196,6 +1215,7 @@ def _audit_global_cli(expected_version: str | None, silent: bool) -> tuple[bool,
         )
     elif expected_version and _is_newer(expected_version, actual_version):
         ok = False
+        _record_audit_failure(f"Installed CLI version {actual_version} is older than {expected_version}.")
         logger.debug(
             "Updated executable is stale: executable=%s actual=%s expected=%s",
             executable,
@@ -1207,7 +1227,7 @@ def _audit_global_cli(expected_version: str | None, silent: bool) -> tuple[bool,
 
     if uv_info and _is_local_requirement(uv_info.required):
         ok = False
-        logger.debug("Global uv tool still points at local source: %s", uv_info.required)
+        _record_audit_failure("Global uv tool is pinned to a local source (local path).")
     return ok, actual_version
 
 
@@ -1218,7 +1238,7 @@ def _audit_installed_skills(silent: bool) -> bool:
         target = HARNESS_SKILL_DIRS[harness]
         if not (target / "SKILL.md").is_file():
             ok = False
-            logger.debug("%s skill is missing from %s", harness, target)
+            _record_audit_failure(f"SKILL.md is missing for {harness}.")
             continue
         logger.debug("%s skill verified at %s", harness, target)
     return ok
@@ -1467,7 +1487,10 @@ def update(
         if actual_version:
             run_check(write=True, current_version=actual_version)
         if not result.get("latest"):
-            _emit_update_failure(silent=silent, check_only=True)
+            _emit_update_failure(
+                silent=silent, check_only=True,
+                reason="Latest-version lookup failed: neither PyPI nor GitHub returned a usable version.",
+            )
             sys.exit(1)
         if not audit_ok:
             _emit_update_failure(silent=silent, check_only=True)

@@ -2,6 +2,7 @@
 
 import json
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from click.testing import CliRunner
@@ -114,3 +115,40 @@ def test_all_deduplicates_shifted_pages_without_collapsing_distinct_same_named_j
     assert [row["name"] for row in json.loads(result.output)["data"]["items"]] == [
         "wave-001", "wave-001",
     ]
+
+
+def test_all_uses_larger_pages_and_stops_at_deadline(job_list, monkeypatch: pytest.MonkeyPatch) -> None:
+    now = [0.0]
+    calls: list[int] = []
+    monkeypatch.setattr(job_commands.time, "monotonic", lambda: now[0])
+
+    def fetch(
+        session: Any, method: str, path: str, *, body: dict[str, Any], **kw: Any,
+    ) -> dict[str, Any]:
+        assert body["page_size"] == 999
+        calls.append(body["page_num"])
+        now[0] += 31
+        return {"Result": {"jobs": [job(body["page_num"])], "total": 100000}}
+
+    result = job_list(fetch)
+    assert result.exit_code == 14, result.output
+    payload = json.loads(result.output)
+    assert payload["error"]["type"] == "TimeoutError"
+    assert "--scan-timeout" in payload["error"]["message"]
+    assert "data" not in payload
+    assert calls == [1, 2]
+
+
+def test_all_can_extend_scan_budget(job_list, monkeypatch: pytest.MonkeyPatch) -> None:
+    now = [0.0]
+    monkeypatch.setattr(job_commands.time, "monotonic", lambda: now[0])
+
+    def fetch(
+        session: Any, method: str, path: str, *, body: dict[str, Any], **kw: Any,
+    ) -> dict[str, Any]:
+        now[0] += 31
+        return {"Result": {"jobs": [job(1)] if body["page_num"] == 1 else [], "total": 1}}
+
+    result = job_list(fetch, options=("--all", "--scan-timeout", "120"))
+    assert result.exit_code == 0, result.output
+    assert len(json.loads(result.output)["data"]["items"]) == 1

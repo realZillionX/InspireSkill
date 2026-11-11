@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+- Report malformed JSON/TOML and unreadable batch files as ConfigError (exit 10), with the file name and parse location, across all five workloads.
+- Fetch exhaustive Job lists in 999-row pages and bound scans with `--scan-timeout` (60 seconds by default, plus in-flight requests). Timeout exits 14 without presenting partial results as complete; narrow the query or explicitly increase the budget for large histories.
+- Preserve successful default workload metrics when individual metrics fail; include per-metric JSON errors or stderr warnings. Explicit metric requests and wholly failed queries still fail.
+- Explain update-check failures in human and JSON output, including local uv sources, missing harness skills, and unavailable version lookups, without exposing local source paths.
 - Preserve optional platform error code, HTTP status, service/action, request ID, and retry hint on synchronous and asynchronous SDK exceptions, including uncertain submissions, without replaying writes.
 - Fix SDK safe-read retries to honor Retry-After seconds and HTTP dates, use bounded jittered backoff otherwise, and preserve status/retry_after on final errors. Insufficient operation deadlines fail without an early resend; single-send writes remain unreplayed.
 - Redact sensitive server error echoes with the shared sanitizer and discard raw browser error bodies; preserve browser, wrapped catalog, non-JSON, and missing-ID response context.

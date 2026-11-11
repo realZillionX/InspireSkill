@@ -184,13 +184,27 @@ def _batch_public_path_mode(item: dict[str, Any]) -> int | None:
 
 
 def _load_config(path: Path) -> dict[str, Any]:
-    with path.open("rb") as f:
-        if path.suffix.lower() == ".json":
-            data = json.load(f)
-        elif path.suffix.lower() in {".toml", ".tml"}:
-            data = tomllib.load(f)
-        else:
-            raise ConfigError("Batch config must be JSON or TOML.")
+    try:
+        with path.open("rb") as f:
+            if path.suffix.lower() == ".json":
+                data = json.load(f)
+            elif path.suffix.lower() in {".toml", ".tml"}:
+                data = tomllib.load(f)
+            else:
+                raise ConfigError("Batch config must be JSON or TOML.")
+    except json.JSONDecodeError as exc:
+        raise ConfigError(
+            f"Invalid batch config {path.name}: JSON parse error at line {exc.lineno}, "
+            f"column {exc.colno}: {exc.msg}"
+        ) from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"Invalid batch config {path.name}: TOML parse error: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise ConfigError(
+            f"Invalid batch config {path.name}: invalid {exc.encoding} at byte {exc.start}."
+        ) from exc
+    except OSError as exc:
+        raise ConfigError(f"Cannot read batch config {path.name}: {exc.strerror}.") from exc
     if not isinstance(data, dict):
         raise ConfigError("Batch config must be an object at the top level.")
     return data

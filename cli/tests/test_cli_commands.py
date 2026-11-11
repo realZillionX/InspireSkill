@@ -1207,7 +1207,7 @@ def test_job_list_defaults_to_compact_limit_and_all_fetches_all_pages(
     assert "total" not in payload["data"]
     assert "truncated" not in payload["data"]
     assert [call["page_num"] for call in calls] == [1, 2, 3]
-    assert all(call["page_size"] == 100 for call in calls)
+    assert all(call["page_size"] == jobs_module.MAX_JOB_PAGE_SIZE for call in calls)
 
 
 def test_job_list_limit_applies_across_requested_workspaces(

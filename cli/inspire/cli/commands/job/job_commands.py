@@ -20,6 +20,8 @@ from inspire.services.job.job_status import (
     JOB_ACTIVE_STATUSES,
 )
 
+from inspire.platform.web.browser_api.jobs import MAX_JOB_PAGE_SIZE
+
 from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
@@ -382,7 +384,7 @@ def _fetch_job_instances(
 def _job_list_page_size(limit: Optional[int]) -> int:
     if limit is not None and limit > 0:
         return min(limit, 100)
-    return 100
+    return MAX_JOB_PAGE_SIZE
 
 
 def _job_list_limit_value(limit: Optional[int]) -> int | None:
@@ -419,6 +421,7 @@ def _scan_web_jobs_round_robin(
     page_size: int,
     max_pages: int | None,
     limit: Optional[int],
+    deadline: float | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Scan all candidate workspaces one page at a time."""
     rows: list[dict] = []
@@ -437,12 +440,22 @@ def _scan_web_jobs_round_robin(
         for workspace_id in workspace_ids
     ]
 
+    def check_deadline() -> None:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError(
+                "Job listing exceeded its scan time budget; no partial results returned. "
+                "Narrow --workspace, --keyword or --status, use --limit, "
+                "or increase --scan-timeout for a large history."
+            )
+
     while any(not state["done"] for state in workspace_states):
+        check_deadline()
         active_states = [state for state in workspace_states if not state["done"]]
         if not active_states:
             break
 
         def fetch_page(state: dict) -> tuple[dict, list, int]:  # noqa: ANN001
+            check_deadline()
             workspace_id = str(state["workspace_id"] or "")
             current_page = int(state["next_page"])
             items, total = browser_api_module.list_jobs(
@@ -461,6 +474,7 @@ def _scan_web_jobs_round_robin(
             future_map = {executor.submit(fetch_page, state): state for state in active_states}
             for future in as_completed(future_map):
                 state, items, total = future.result()
+                check_deadline()
                 current_page = int(state["next_page"])
                 state["pages"] += 1
                 state["total"] = max(state["total"], total)
@@ -929,6 +943,7 @@ def _list_web_jobs(
     max_pages: int | None,
     limit: Optional[int],
     api_statuses: tuple[str, ...] | None = None,
+    scan_timeout: int | None = None,
 ) -> tuple[list[dict], list[dict]]:
     try:
         session = get_web_session()
@@ -938,6 +953,7 @@ def _list_web_jobs(
         workspace_ids = _list_workspace_ids(session, workspace=workspace)
         rows: list[dict] = []
         scanned: list[dict] = []
+        deadline = time.monotonic() + scan_timeout if scan_timeout is not None else None
         for query_status in query_statuses:
             status_rows, status_scanned = _scan_web_jobs_round_robin(
                 session=session,
@@ -950,6 +966,7 @@ def _list_web_jobs(
                 page_size=page_size,
                 max_pages=max_pages,
                 limit=limit,
+                deadline=deadline,
             )
             rows.extend(status_rows)
             scanned.extend(status_scanned)
@@ -1069,6 +1086,10 @@ def _watch_jobs(
     help="Maximum jobs to display across requested workspaces (default: 20).",
 )
 @click.option("--all", "show_all", is_flag=True, help="Show every matching job.")
+@click.option(
+    "--scan-timeout", type=click.IntRange(1), default=60, show_default=True,
+    help="Seconds allowed to scan --all; in-flight requests finish before exit.",
+)
 @pass_context
 def list_jobs(
     ctx: Context,
@@ -1080,6 +1101,7 @@ def list_jobs(
     interval: int,
     limit: Optional[int],
     show_all: bool,
+    scan_timeout: int,
 ) -> None:
     """List training jobs from the platform.
 
@@ -1148,6 +1170,7 @@ def list_jobs(
             max_pages=None if show_all else 50,
             limit=effective_limit,
             api_statuses=JOB_ACTIVE_API_STATUSES if active and not status else None,
+            scan_timeout=scan_timeout if show_all else None,
         )
 
         if active:
@@ -1176,6 +1199,8 @@ def list_jobs(
             if notice:
                 click.echo(notice)
 
+    except TimeoutError as e:
+        _handle_error(ctx, "TimeoutError", str(e), EXIT_TIMEOUT)
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
     except (SessionExpiredError, ValueError) as e:

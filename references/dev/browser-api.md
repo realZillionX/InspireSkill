@@ -523,6 +523,7 @@ Called per service route (`POST /api/v2/{notebook|train|hpc|ray|inference_servin
 ```
 
 - `task_type` values: `interactive_modeling` (`notebook`), `distributed_training` (`job`), `hpc_job` (`hpc`), `ray_job` (`ray`), `inference_serving` (`serving`).
+- **Partial defaults:** CLI default metric queries pass an `errors` collector to the shared wrapper and retain successful responses. Explicit metric selectors and SDK calls remain strict; authentication errors and all-metric failures always propagate.
 - **One metric per request:** Passing multiple `metric_types` only returns the first metric, so the wrapper fans out per metric (`gpu_usage_rate`, `gpu_memory_usage_rate`, `cpu_usage_rate`, `memory_usage_rate`, `disk_io_read`, `disk_io_write`, `network_tcp_ip_io_read`, `network_tcp_ip_io_write`).
 - **Platform typo:** Response key is spelled `time_seris_metric_groups` (wrapper also accepts `time_series_metric_groups`).
 - **Do not use `GetTaskMetricBatch`:** It drops per-Pod `group_name` labels, returns empty disk I/O and `InternalError` on network I/O, and disagrees with single-task aggregation values.

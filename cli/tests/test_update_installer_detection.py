@@ -1126,3 +1126,31 @@ def test_global_audit_prefers_uv_tool_executable_over_repo_venv_path(
     assert ok is True
     assert actual == "4.1.1"
     assert calls == [["/Users/zillionx/.local/bin/inspire", "--version"]]
+
+
+@pytest.mark.parametrize("structured", [False, True])
+@pytest.mark.parametrize("debug", [False, True])
+@pytest.mark.parametrize("failure", ["local", "skill", "lookup"])
+def test_check_reports_actionable_failure_reason(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, structured: bool, debug: bool, failure: str,
+) -> None:
+    monkeypatch.setenv("INSPIRE_DEBUG_LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setattr(update_module, "run_check", lambda **_: {
+        "current": "7.1.16", "latest": None if failure == "lookup" else "7.1.16",
+    })
+    monkeypatch.setattr(update_module, "_read_inspire_version", lambda *_: ("inspire", "7.1.16", ""))
+    monkeypatch.setattr(update_module, "_uv_tool_info", lambda: update_module.UvToolInfo(
+        version="7.1.16", required="file:///private/local-checkout" if failure == "local" else None,
+        env_path="", executable_path="inspire",
+    ))
+    monkeypatch.setattr(update_module, "_detect_harnesses", lambda: ["codex"] if failure == "skill" else [])
+    monkeypatch.setitem(update_module.HARNESS_SKILL_DIRS, "codex", tmp_path / "missing")
+    options = (["--json"] if structured else []) + (["--debug"] if debug else [])
+    result = CliRunner().invoke(cli_main, [*options, "update", "--check"])
+    assert result.exit_code == 1, result.output
+    text = json.loads(result.output)["error"]["message"] if structured else result.output
+    assert {"local": "local source", "skill": "SKILL.md is missing for codex", "lookup": "Latest-version lookup failed"}[failure] in text
+    assert "private/local-checkout" not in result.output
+    if debug:
+        assert "local debug log" in result.output
+        assert "Retry with" not in result.output

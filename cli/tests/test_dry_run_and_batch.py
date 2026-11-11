@@ -1773,3 +1773,31 @@ workers = ["name=w;image=registry.batch/notebook:latest;group=H200 Room;quota=0,
 
     assert result.exit_code == 0, result.output
     assert bodies and "is_publicpath_readonly" not in bodies[0]
+
+
+@pytest.mark.parametrize("kind", ["notebook", "job", "hpc", "ray", "serving"])
+@pytest.mark.parametrize("suffix,content", [("json", b"{bad"), ("toml", b"key = [")])
+def test_batch_parse_errors_are_config_errors(tmp_path: Path, kind: str, suffix: str, content: bytes) -> None:
+    path = tmp_path / f"bad.{suffix}"
+    path.write_bytes(content)
+    result = CliRunner().invoke(cli_main, ["--json", kind, "batch", str(path), "--dry-run"])
+    assert result.exit_code == 10, result.output
+    error = json.loads(result.output)["error"]
+    assert error["type"] == "ConfigError"
+    assert path.name in error["message"]
+    assert "line" in error["message"] or "end of document" in error["message"]
+
+
+@pytest.mark.parametrize("failure", ["encoding", "permission"])
+def test_batch_unreadable_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    from inspire.cli.commands.batch import _load_config
+    from inspire.config import ConfigError
+
+    path = tmp_path / "bad.toml"
+    path.write_bytes(b"\xff")
+    if failure == "permission":
+        def denied(*args: Any, **kwargs: Any) -> None:
+            raise PermissionError(13, "Permission denied")
+        monkeypatch.setattr(Path, "open", denied)
+    with pytest.raises(ConfigError, match="bad.toml"):
+        _load_config(path)
