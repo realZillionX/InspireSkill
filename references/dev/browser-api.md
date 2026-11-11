@@ -480,11 +480,22 @@ Called per service route (`POST /api/v2/{notebook|train|hpc|ray|inference_servin
 | `dataset_info` | Accepted | Accepted | Accepted | **Rejected** | **Rejected** |
 | `envs` (`[{name, value}]`) | **Rejected** | Accepted (not echoed by `GetJob`) | **Rejected** | **Rejected** | **Rejected** |
 | `description` | **Rejected** | Accepted | Accepted | Accepted | Accepted |
-| `is_publicpath_readonly` | Accepted | Accepted | Accepted | Accepted | Accepted |
+| `publicpath_mount_mode` (`0`, `1`, `2`) | Accepted | Accepted | Accepted | Accepted | Accepted |
 | `is_projectuserspath_readonly` | Accepted (Maintainer only) | **Rejected** | **Rejected** | — | — |
 
+**Public-path contract (console bundle inspected offline on 2026-11-11):**
+`publicpath_mount_mode` is an integer: `0` read-write (`xiangMuPublicGuaZaiDuXie`),
+`1` read-only (`ZhiDu`), `2` not mounted (`BuGuaZai`). The Notebook, training, HPC,
+Ray, and Serving forms submit it at the top level to the Actions above. Forms default
+to `0`; the CLI/SDK intentionally omit it when neither public option was specified.
+Legacy data uses `publicpath_mount_mode ?? (is_publicpath_readonly ? 1 : 0)`.
+Creation must not send `is_publicpath_readonly` (HPC rejects it as an unknown field).
+Do not retry a write after removing the rejected field. The independent fixture
+[`public_path_mount_contract.json`](../../cli/tests/fixtures/public_path_mount_contract.json)
+records the observation date, form/API bundle identifiers, Actions, and expected cases.
+
 **Key payload rules:**
-- **Omit unset optional fields:** Optional flags (such as `is_publicpath_readonly` or `is_projectuserspath_readonly`) must be omitted from the JSON body when not explicitly set.
+- **Omit unset optional fields:** Optional fields (such as `publicpath_mount_mode` or `is_projectuserspath_readonly`) must be omitted from the JSON body when not explicitly set.
 - **HPC runtime limits & priority:** `job_max_time` (`"D-HH:MM:SS"`) and `max_running_time_days`/`_hours`/`_minutes` live inside `sbatch_script`. Top-level `priority` is required (missing `priority` triggers `InternalError`). Never send `sbatch_script.memory_per_node` (broken in the platform script generator); always send `memory_per_cpu`.
 - **Durations as strings:** `train.CreateJobConsole` expects `max_running_time_ms`, `reserve_on_fail_ms`, and `reserve_on_success_ms` as **string** integers.
 - **Images:** Pass registry URLs (`image` / `mirror_url`) or `mirror_id` as required by each Action, never display names.

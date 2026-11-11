@@ -537,14 +537,29 @@ finished = client.jobs.wait(handle.ref, raise_on_failure=True)
 
 | Spec Class | Required Fields | Optional Fields (with defaults) |
 | --- | --- | --- |
-| `JobCreateSpec` | `name`, `workspace`, `project`, `group`, `quota`, `image`, `command` | `nodes=1`, `shm_gib=None`, `priority=None`, `max_time_hours=None`, `description=None`, `framework='pytorch'`, `auto_fault_tolerance=None`, `fault_tolerance_max_retry=None`, `fault_tolerance_retry_interval_sec=None`, `datasets=[]`, `envs={}`, `keep_after_success_hours=None`, `keep_after_failure_hours=None`, `public_path_readonly=None`, `enable_notification=None`, `exclude_nodes=[]`, `specified_nodes=[]` |
-| `NotebookCreateSpec` | `name`, `workspace`, `project`, `group`, `quota`, `image` | `shm_gib=None`, `auto_stop=False`, `auto_stop_after=None`, `datasets=[]`, `enable_notification=None`, `public_path_readonly=None`, `project_path_readonly=None`, `priority=None`, `node=None` |
-| `HPCJobCreateSpec` | `name`, `entrypoint`, `workspace`, `project`, `group`, `quota`, `image` | `image_type='SOURCE_PRIVATE'`, `instance_count=1`, `priority=None`, `number_of_tasks=1`, `cpus_per_task=None`, `memory_per_cpu=None`, `enable_hyper_threading=False`, `max_time_hours=None`, `keep_after_finish_hours=None`, `datasets=[]`, `description=None`, `enable_notification=False`, `public_path_readonly=None` |
-| `RayJobCreateSpec` | `name`, `command`, `workspace`, `project`, `group`, `quota`, `image` | `image_type='SOURCE_PUBLIC'`, `description=''`, `priority=None`, `shm_gib=None`, `workers=[]`, `public_path_readonly=None` |
-| `ServingCreateSpec` | `name`, `model`, `command`, `port`, `workspace`, `project`, `group`, `quota`, `image` | `model_version=None`, `replicas=1`, `nodes_per_replica=1`, `shm_gib=None`, `priority=None`, `custom_domain=None`, `description=''`, `auto_scaling=None`, `public_path_readonly=None` |
+| `JobCreateSpec` | `name`, `workspace`, `project`, `group`, `quota`, `image`, `command` | `nodes=1`, `shm_gib=None`, `priority=None`, `max_time_hours=None`, `description=None`, `framework='pytorch'`, `auto_fault_tolerance=None`, `fault_tolerance_max_retry=None`, `fault_tolerance_retry_interval_sec=None`, `datasets=[]`, `envs={}`, `keep_after_success_hours=None`, `keep_after_failure_hours=None`, `public_path_mount_mode=None`, `public_path_readonly=None`, `enable_notification=None`, `exclude_nodes=[]`, `specified_nodes=[]` |
+| `NotebookCreateSpec` | `name`, `workspace`, `project`, `group`, `quota`, `image` | `shm_gib=None`, `auto_stop=False`, `auto_stop_after=None`, `datasets=[]`, `enable_notification=None`, `public_path_mount_mode=None`, `public_path_readonly=None`, `project_path_readonly=None`, `priority=None`, `node=None` |
+| `HPCJobCreateSpec` | `name`, `entrypoint`, `workspace`, `project`, `group`, `quota`, `image` | `image_type='SOURCE_PRIVATE'`, `instance_count=1`, `priority=None`, `number_of_tasks=1`, `cpus_per_task=None`, `memory_per_cpu=None`, `enable_hyper_threading=False`, `max_time_hours=None`, `keep_after_finish_hours=None`, `datasets=[]`, `description=None`, `enable_notification=False`, `public_path_mount_mode=None`, `public_path_readonly=None` |
+| `RayJobCreateSpec` | `name`, `command`, `workspace`, `project`, `group`, `quota`, `image` | `image_type='SOURCE_PUBLIC'`, `description=''`, `priority=None`, `shm_gib=None`, `workers=[]`, `public_path_mount_mode=None`, `public_path_readonly=None` |
+| `ServingCreateSpec` | `name`, `model`, `command`, `port`, `workspace`, `project`, `group`, `quota`, `image` | `model_version=None`, `replicas=1`, `nodes_per_replica=1`, `shm_gib=None`, `priority=None`, `custom_domain=None`, `description=''`, `auto_scaling=None`, `public_path_mount_mode=None`, `public_path_readonly=None` |
 | `TensorboardCreateSpec` | `name`, `workspace`, `project`, `group` | `summary_path=None` (required non-empty at creation), `job=None`, `auto_stop_hours=None` |
 
 ## 9. Write Semantics (`single_send`), Errors & Timeouts
+
+Project public-path mounts use `PublicPathMountMode`, exported from both `inspire` and
+`inspire.sdk`: `READ_WRITE=0`, `READ_ONLY=1`, and `NOT_MOUNTED=2`. All five workload
+create specs accept `public_path_mount_mode` as an enum member or an integer. For example,
+`replace(spec, public_path_mount_mode=PublicPathMountMode.NOT_MOUNTED)` disables this mount.
+The synchronous and asynchronous clients share the same specs and validation.
+
+Omitting both mount options leaves `publicpath_mount_mode` out of the create request,
+allowing the platform default (read-write, `0`). The legacy `public_path_readonly` option
+remains accepted with a `DeprecationWarning`: `True` maps to `1`, and `False` maps to `0`.
+Supplying both options is allowed only when they agree; conflicts raise `ValidationError`.
+No create request includes `is_publicpath_readonly`, and a rejected write is never retried
+with fields removed. Notebook, Job, and Serving detail projections expose
+`public_path_mount_mode` when either response field is present, preferring the new field
+and otherwise converting the legacy boolean with the same mapping.
 
 All SDK JSON mutation calls execute inside `single_send`: each write is sent at most once and is never automatically retried or replayed across session refreshes or transport fallbacks. (If a client has not received a platform response within the last 60 seconds, it runs a read-only `GetUserDetail` preflight before sending the write.)
 

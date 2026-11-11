@@ -42,6 +42,12 @@ Official datasets mounted with `--dataset` appear at `/inspire/dataset/<dataset-
 
 ## Mount Isolation
 
+Project public-directory mounting is configurable when creating Notebook, training, HPC,
+Ray, and Serving workloads. `public_path_mount_mode` in SDK/batch specs (or the CLI's
+`--public-path-mount-mode`) selects `0` read-write, `1` read-only, or `2` not mounted.
+Omission lets the platform apply its default of `0`. This setting concerns the project's
+public directory; the Notebook project-user-path option remains separate.
+
 Each workload instance only mounts the fileset of its own Project. Paths belonging to other projects (`/inspire/{hdd,ssd,qb-ilm,qb-ilm2}/project/<other-project>/`) are not mounted and will return `No such file or directory`.
 
 To copy small files between projects, start a Notebook in each project and stage the files through `/inspire/<tier>/global_user/<path-user>/...`. For large datasets or full checkpoints that exceed personal quota, contact a project administrator.

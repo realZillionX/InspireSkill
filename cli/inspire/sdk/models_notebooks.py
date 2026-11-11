@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from inspire.services.public_path import PublicPathMountMode
+
 from ._sync_handle import SyncHandle
 from dataclasses import dataclass, field, asdict
 from typing import Any
@@ -46,13 +48,16 @@ class Notebook:
     created_at: str = ""
     updated_at: str = ""
     sub_status: str = ""
+    public_path_mount_mode: int | None = None
 
     @property
     def quota(self) -> dict[str, Any]:
         return dict(self.resource)
 
     def to_dict(self) -> dict[str, Any]:
-        return {k: v for k, v in asdict(self).items() if k not in {"ref", "raw_status"}}
+        return {k: v for k, v in asdict(self).items()
+                if k not in {"ref", "raw_status"}
+                and (k != "public_path_mount_mode" or v is not None)}
 
 
 @dataclass(frozen=True)
@@ -72,6 +77,7 @@ class NotebookCreateSpec:
     project_path_readonly: bool | None = None
     priority: int | None = None
     node: str | None = None
+    public_path_mount_mode: PublicPathMountMode | int | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +104,8 @@ class NotebookPlan:
             "shm_gib": self.shm_gib, "auto_stop": self.auto_stop,
             "auto_stop_after": self.auto_stop_after,
             "datasets": [f"{item.dataset}:{item.version}" for item in self.datasets],
+            **({"public_path_mount_mode": self.create_kwargs["publicpath_mount_mode"]}
+               if "publicpath_mount_mode" in self.create_kwargs else {}),
         }
 
     @property

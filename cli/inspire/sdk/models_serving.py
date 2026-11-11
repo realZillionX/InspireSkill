@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from inspire.services.public_path import PublicPathMountMode
+
 from ._sync_handle import SyncHandle
 from dataclasses import dataclass, field
 from .models import (
@@ -52,6 +54,7 @@ class ServingCreateSpec:
     description: str = ""
     auto_scaling: bool | None = None
     public_path_readonly: bool | None = None
+    public_path_mount_mode: PublicPathMountMode | int | None = None
 
 
 @dataclass(frozen=True)

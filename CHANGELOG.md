@@ -9,6 +9,10 @@
 - Redact sensitive server error echoes with the shared sanitizer and discard raw browser error bodies; preserve browser, wrapped catalog, non-JSON, and missing-ID response context.
 - Preserve strict default status return types with literal overloads for sync/async jobs and HPC, while typing partial and dynamic-bool calls explicitly.
 - Add opt-in partial batch status results to synchronous and asynchronous SDK jobs/HPC polling: preserve input order and duplicates, distinguish missing references and workspace validation errors, and keep strict defaults and whole-batch failure propagation.
+- Fix project public-path mounts for Notebook, training, HPC, Ray, and Serving creation: expose `PublicPathMountMode` and `public_path_mount_mode` in the sync/async SDK, `--public-path-mount-mode` in the CLI, and the same field in batch configs. Send only the current integer wire field; preserve omission, deprecate legacy booleans, and reject conflicting values without retrying writes.
+- Prefer the current mount mode in detail views, including the not-mounted state, with legacy response fallback.
+- Fix Notebook batch passing an unsupported `gpu_type` argument so public-path mount modes reach the Notebook creator.
+
 - Add `inspire login --cas` with SMS two-step and Feishu QR login, private per-account CAS sessions, and data plaza catalogue access.
 - Reuse valid CAS sessions for automatic OAuth device approval and silent renewal after refresh credentials expire; retain manual authorization fallback for explicit login.
 - Report missing or expired CAS sessions with an actionable login hint without attempting OAuth refresh for CAS ticket failures.

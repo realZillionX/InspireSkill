@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from inspire.services.public_path import public_path_mount_mode_from_detail
+
 import re
 from typing import Any
 
@@ -259,6 +261,11 @@ def public_job_status(item: object, *, fallback_name: str = "") -> dict[str, Any
             "priority": priority,
             "priority_level": priority_level,
             "sub_status": _text(_value(item, "sub_status")),
+            "public_path_mount_mode": (
+                public_path_mount_mode_from_detail(item)
+                if isinstance(item, dict) and ("publicpath_mount_mode" in item or "is_publicpath_readonly" in item)
+                else None
+            ),
             "datasets": mounted_dataset_views(_value(item, "dataset_info")),
             "created_at": _timestamp(item, ("created_at", "create_time")),
             "updated_at": _timestamp(item, ("updated_at", "update_time")),

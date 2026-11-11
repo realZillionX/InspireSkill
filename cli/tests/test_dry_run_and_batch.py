@@ -1549,7 +1549,7 @@ fault_tolerance_retry_interval = 30
     assert payload["description"] == "batch smoke"
     assert payload["reserve_on_success_ms"] == str(1 * 3600 * 1000)
     assert payload["reserve_on_fail_ms"] == str(2 * 3600 * 1000)
-    assert payload["is_publicpath_readonly"] is True
+    assert payload["publicpath_mount_mode"] == 1
     assert payload["fault_tolerance_retry_interval_sec"] == 30
     # The workspace the mounts were validated against is the item's own.
     assert [spec.dataset for spec, _ in [(m, w) for mounts, w in seen for m in mounts]] == [
@@ -1623,7 +1623,7 @@ enable_notification = true
     ]
     assert payload["description"] == "hpc smoke"
     assert payload["ttl_after_job_finish_seconds"] == 1800
-    assert payload["is_publicpath_readonly"] is True
+    assert payload["publicpath_mount_mode"] == 1
     assert payload["enable_notification"] is True
     assert payload["sbatch_script"]["job_max_time"] == "0-03:00:00"
 
@@ -1716,7 +1716,7 @@ workers = ["name=w;image=registry.batch/notebook:latest;group=H200 Room;quota=0,
     result = CliRunner().invoke(cli_main, ["--json", "ray", "batch", str(batch_path)])
 
     assert result.exit_code == 0, result.output
-    assert bodies and bodies[0]["is_publicpath_readonly"] is True
+    assert bodies and bodies[0]["publicpath_mount_mode"] == 1
 
 
 def test_ray_batch_entry_without_the_guard_omits_it(

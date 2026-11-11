@@ -1,6 +1,8 @@
 """Pure training submission plan; image must already be a resolved registry URL."""
 
 from __future__ import annotations
+from inspire.services.public_path import public_path_mount_fields
+
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 from inspire.config import Config, build_env_exports
@@ -178,6 +180,7 @@ def build_training_job_plan(
     keep_after_success_hours: Optional[float] = None,
     keep_after_failure_hours: Optional[float] = None,
     public_path_readonly: Optional[bool] = None,
+    public_path_mount_mode: int | None = None,
     fault_tolerance_retry_interval_sec: Optional[int] = None,
     specified_nodes: Iterable[str] | None = None,
     session: Any = None,
@@ -279,8 +282,7 @@ def build_training_job_plan(
     if reserve_on_fail_ms is not None:
         create_kwargs["reserve_on_fail_ms"] = reserve_on_fail_ms
 
-    if public_path_readonly is not None:
-        create_kwargs["is_publicpath_readonly"] = bool(public_path_readonly)
+    create_kwargs.update(public_path_mount_fields(public_path_mount_mode, public_path_readonly))
 
     return JobSubmissionPlan(
         create_kwargs=create_kwargs,

@@ -5,7 +5,11 @@ from __future__ import annotations
 import sys
 import logging
 import re
+from inspire.services.public_path import public_path_mount_fields
+
 from typing import Any, Optional, cast
+from inspire.cli.utils.public_path import public_path_mode
+
 import click
 from inspire.cli.context import (
     Context,
@@ -1818,9 +1822,16 @@ def configs_serving(
     ),
 )
 @click.option(
+    "--public-path-mount-mode",
+    type=click.IntRange(0, 2),
+    default=None,
+    help="Project public path: 0=read-write, 1=read-only, 2=not mounted. Omit for platform default.",
+)
+@click.option(
     "--public-path-readonly/--no-public-path-readonly",
     default=None,
     help=(
+        "Deprecated: use --public-path-mount-mode. "
         "Mount the project's public path read-only inside the serving container "
         "(平台 高级设置·项目Public只读挂载). Omit to leave the platform default."
     ),
@@ -1847,6 +1858,7 @@ def create_serving(
     description: str,
     auto_scaling: Optional[bool],
     public_path_readonly: Optional[bool],
+    public_path_mount_mode: int | None,
     dry_run: bool,
 ) -> None:
     """Create an inference serving from a registered model.
@@ -1863,6 +1875,7 @@ def create_serving(
           --image <image> --command "python serve.py" --port 8000 --dry-run
         inspire serving metrics qwen-demo --workspace 分布式训练空间 --window 30m
     """
+    public_path_mount_mode = public_path_mode(public_path_mount_mode, public_path_readonly)
     try:
         from inspire.cli.utils.quota_resolver import (
             QuotaMatchError,
@@ -1979,8 +1992,7 @@ def create_serving(
         # default so an untouched create stays byte-for-byte what it was.
         if auto_scaling is not None:
             payload["enable_auto_scaling"] = bool(auto_scaling)
-        if public_path_readonly is not None:
-            payload["is_publicpath_readonly"] = bool(public_path_readonly)
+        payload.update(public_path_mount_fields(public_path_mount_mode, public_path_readonly))
 
         if dry_run:
             plan = sanitize_public_data(
@@ -2008,6 +2020,7 @@ def create_serving(
                     "custom_domain": custom_domain,
                     "auto_scaling": auto_scaling,
                     "public_path_readonly": public_path_readonly,
+                    "public_path_mount_mode": public_path_mount_mode,
                 },
                 omit_urls=True,
             )
@@ -2044,11 +2057,10 @@ def create_serving(
                     click.echo(
                         "Auto scaling: enabled" if auto_scaling else "Auto scaling: disabled"
                     )
-                if public_path_readonly is not None:
+                if public_path_mount_mode is not None:
                     click.echo(
-                        "Public path: read-only"
-                        if public_path_readonly
-                        else "Public path: writable"
+                        "Public path: "
+                        + ("writable", "read-only", "not mounted")[public_path_mount_mode]
                     )
             return
 
@@ -2069,7 +2081,7 @@ def create_serving(
             task_priority=final_priority,
             custom_domain=custom_domain,
             resource_spec_price=resource_spec_price,
-            is_publicpath_readonly=public_path_readonly,
+            publicpath_mount_mode=public_path_mount_mode,
             enable_auto_scaling=auto_scaling,
             session=session,
         )

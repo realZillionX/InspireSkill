@@ -353,6 +353,7 @@ def test_detail_fields_match_cli_projection(client, ref, monkeypatch):
 
     row = {
         "name": "Example",
+        "publicpath_mount_mode": 2,
         "status": "RUNNING",
         "project": {"name": "Project", "priority_name": "4", "priority_level": "high"},
         "logic_compute_group": {"name": "Group"},

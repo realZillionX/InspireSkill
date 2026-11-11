@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from inspire.services.public_path import PublicPathMountMode
+
 from ._sync_handle import SyncHandle
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
@@ -79,6 +81,7 @@ class HPCJobCreateSpec:
     description: str | None = None
     enable_notification: bool = False
     public_path_readonly: bool | None = None
+    public_path_mount_mode: PublicPathMountMode | int | None = None
 
 
 @dataclass(frozen=True)
@@ -96,6 +99,7 @@ class RayJobCreateSpec:
     shm_gib: int | None = None
     workers: list[str] = field(default_factory=list)
     public_path_readonly: bool | None = None
+    public_path_mount_mode: PublicPathMountMode | int | None = None
 
 
 @dataclass(frozen=True)

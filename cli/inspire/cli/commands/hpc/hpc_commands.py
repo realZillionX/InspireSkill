@@ -27,6 +27,8 @@ import re
 import sys
 from typing import Any, Optional, cast
 
+from inspire.cli.utils.public_path import public_path_mode
+
 import click
 
 from inspire.cli.context import (
@@ -774,9 +776,16 @@ def list_hpc(
     ),
 )
 @click.option(
+    "--public-path-mount-mode",
+    type=click.IntRange(0, 2),
+    default=None,
+    help="Project public path: 0=read-write, 1=read-only, 2=not mounted. Omit for platform default.",
+)
+@click.option(
     "--public-path-readonly/--no-public-path-readonly",
     default=None,
     help=(
+        "Deprecated: use --public-path-mount-mode. "
         "Mount the project's public path read-only inside the containers "
         "(平台 高级设置·项目Public只读挂载). Omit to leave the platform default."
     ),
@@ -812,6 +821,7 @@ def create_hpc(
     description: Optional[str],
     enable_notification: bool,
     public_path_readonly: Optional[bool],
+    public_path_mount_mode: int | None,
     dry_run: bool,
 ) -> None:
     """Create a CPU Slurm / HPC batch job.
@@ -845,6 +855,7 @@ def create_hpc(
           --max-time 4 --keep-after-finish 0.5 \\
           -c 'srun bash -lc "python index.py /inspire/dataset/pixabay-81k/v0"'
     """
+    public_path_mount_mode = public_path_mode(public_path_mount_mode, public_path_readonly)
     dataset_mounts = parse_dataset_specs_or_usage_error(datasets)
     try:
         from inspire.cli.utils.quota_resolver import (
@@ -981,6 +992,7 @@ def create_hpc(
             description=description,
             keep_after_finish_hours=keep_after_finish,
             public_path_readonly=public_path_readonly,
+            public_path_mount_mode=public_path_mount_mode,
             session=session,
         )
 
@@ -1024,9 +1036,10 @@ def create_hpc(
                 click.echo(f"Description: {scrub_raw_ids(description)}")
             if enable_notification:
                 click.echo("Notifications: enabled")
-            if public_path_readonly is not None:
+            if public_path_mount_mode is not None:
                 click.echo(
-                    "Public path: read-only" if public_path_readonly else "Public path: writable"
+                    "Public path: "
+                    + ("writable", "read-only", "not mounted")[public_path_mount_mode]
                 )
             click.echo(f"Command: {scrub_raw_ids(entrypoint)}")
             srun_warning = _missing_srun_warning(entrypoint)

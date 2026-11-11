@@ -9,6 +9,8 @@ the output formatter.
 
 from __future__ import annotations
 
+from inspire.services.public_path import public_path_mount_mode_from_detail
+
 import re
 from typing import Any
 
@@ -310,6 +312,11 @@ def public_notebook(
             # What `--auto-stop-after` actually bought: the web shows this as
             # 剩余运行时长 and it is the only readback for that timer.
             "auto_stop_in_seconds": item.get("left_time"),
+            "public_path_mount_mode": (
+                public_path_mount_mode_from_detail(item)
+                if isinstance(item, dict) and ("publicpath_mount_mode" in item or "is_publicpath_readonly" in item)
+                else None
+            ),
             "datasets": mounted_dataset_views(item.get("dataset_info")),
             "created_at": sanitize_public_text(item.get("created_at") or ""),
             "updated_at": sanitize_public_text(item.get("updated_at") or ""),

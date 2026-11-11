@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import time
+from inspire.services.public_path import public_path_mount_fields
+
 from inspire.platform.web.flow import call, perform_sync
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
@@ -473,6 +475,7 @@ def create_notebook(
     stop_minute: Optional[int] = None,
     is_publicpath_readonly: Optional[bool] = None,
     is_projectuserspath_readonly: Optional[bool] = None,
+    publicpath_mount_mode: int | None = None,
 ) -> dict:
     """Create a new notebook instance.
 
@@ -483,8 +486,8 @@ def create_notebook(
     Every optional argument stays out of the body unless the caller asks for
     it: an omitted argument must leave the request byte-for-byte identical to
     one built without it, so the platform keeps applying its own default. That
-    holds for the two read-only guards as well, even though read-only is the
-    safer value.
+    holds for the public-path mount mode and project-user-path guard as well.
+    The deprecated public-path boolean is converted to the integer wire field.
     """
     session, workspace_id = _get_session_and_workspace_id(
         workspace_id=workspace_id, session=session
@@ -544,8 +547,7 @@ def create_notebook(
     if stop_minute is not None:
         body["stop_minute"] = int(stop_minute)
 
-    if is_publicpath_readonly is not None:
-        body["is_publicpath_readonly"] = bool(is_publicpath_readonly)
+    body.update(public_path_mount_fields(publicpath_mount_mode, is_publicpath_readonly))
     if is_projectuserspath_readonly is not None:
         body["is_projectuserspath_readonly"] = bool(is_projectuserspath_readonly)
 

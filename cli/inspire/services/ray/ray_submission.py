@@ -1,6 +1,8 @@
 """Ray create parsing and assembly shared by CLI and SDK."""
 
 from __future__ import annotations
+from inspire.services.public_path import public_path_mount_fields
+
 from typing import Any, Optional, cast, Callable
 from inspire.config import ConfigError
 import logging
@@ -122,6 +124,7 @@ def assemble_create_body(
     shm_size: Optional[int],
     workers: tuple[str, ...],
     public_path_readonly: Optional[bool] = None,
+    public_path_mount_mode: int | None = None,
 ) -> dict[str, Any]:
     validate_create_inputs(
         name=name, command=command, image=image, group=group, quota=quota,
@@ -169,9 +172,8 @@ def assemble_create_body(
         "worker_groups": worker_groups,
     }
     # Only an explicit flag reaches the wire: the platform owns the default and
-    # sending `false` would change every create that never asked.
-    if public_path_readonly is not None:
-        body["is_publicpath_readonly"] = bool(public_path_readonly)
+    # explicit 0 (read-write) must remain distinct from omission.
+    body.update(public_path_mount_fields(public_path_mount_mode, public_path_readonly))
     body["task_priority"] = resolve_priority(priority)
     return body
 
@@ -271,6 +273,8 @@ def ray_plan_payload(
         plan["shared_memory_gib"] = shm_size
     if public_path_readonly is not None:
         plan["public_path_readonly"] = bool(public_path_readonly)
+    if "publicpath_mount_mode" in body:
+        plan["public_path_mount_mode"] = body["publicpath_mount_mode"]
     return plan
 
 

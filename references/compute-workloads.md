@@ -19,7 +19,7 @@ Before submitting any workload:
 1. **Workspace:** Use `CPU资源空间` for CPU HPC and CPU Ray; use `分布式训练空间` for GPU Jobs and Serving.
 2. **Quota & Capacity:** Pick a valid `gpu,cpu,mem` row from `<workload> quota` and verify live capacity with `inspire resources availability` (if full, the workload stays `PENDING` with `FailedScheduling` events).
 3. **Image:** Confirm the image is `READY` and already contains all required dependencies (do not run public internet downloads in offline GPU workspaces).
-4. **Storage & Datasets:** Verify shared storage paths (`/inspire/...`). `job create` and `hpc create` can mount read-only official datasets via `--dataset <name>:<version>` (unsupported on `ray` and `serving`). `job`, `hpc`, `ray`, and `serving` can also mount the project public directory read-only (`--public-path-readonly`) to prevent accidental writes.
+4. **Storage & Datasets:** Verify shared storage paths (`/inspire/...`). `job create` and `hpc create` can mount read-only official datasets via `--dataset <name>:<version>` (unsupported on `ray` and `serving`). Notebook, Job, HPC, Ray, and Serving support three project public-directory mount modes: read-write (`0`), read-only (`1`), and not mounted (`2`). Select a mode with `--public-path-mount-mode`; omitting it preserves the platform default. Legacy `--public-path-readonly` / `--no-public-path-readonly` remain accepted with a deprecation note and map to `1` / `0`; conflicting old/new options fail validation. Batch JSON and TOML use `public_path_mount_mode` with the same values and compatibility rules.
 5. **Dry-run:** Run `<workload> create --dry-run` (or `<workload> batch <file> --dry-run`) to inspect the resolved plan before submitting.
 
 ## 3. GPU Job (`inspire job`)

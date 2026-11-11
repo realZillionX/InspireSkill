@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Optional, Sequence
 
+from inspire.cli.utils.public_path import public_path_mode
+
 import click
 
 from inspire.cli.context import (
@@ -78,6 +80,7 @@ def run_job_create(
     keep_after_success: Optional[float] = None,
     keep_after_failure: Optional[float] = None,
     public_path_readonly: Optional[bool] = None,
+    public_path_mount_mode: int | None = None,
 ) -> None:
     """Run the job creation flow."""
     try:
@@ -253,6 +256,7 @@ def run_job_create(
                 keep_after_success_hours=keep_after_success,
                 keep_after_failure_hours=keep_after_failure,
                 public_path_readonly=public_path_readonly,
+                public_path_mount_mode=public_path_mount_mode,
                 fault_tolerance_retry_interval_sec=fault_tolerance_retry_interval,
                 session=session,
             )
@@ -321,6 +325,8 @@ def run_job_create(
                     dry_run_payload["keep_after_success_hours"] = keep_after_success
                 if keep_after_failure is not None:
                     dry_run_payload["keep_after_failure_hours"] = keep_after_failure
+                if public_path_mount_mode is not None:
+                    dry_run_payload["public_path_mount_mode"] = public_path_mount_mode
                 if public_path_readonly is not None:
                     dry_run_payload["public_path_readonly"] = bool(public_path_readonly)
                 click.echo(json_formatter.format_json(dry_run_payload))
@@ -362,9 +368,10 @@ def run_job_create(
                 click.echo(f"Keep after success: {keep_after_success} h")
             if keep_after_failure is not None:
                 click.echo(f"Keep after failure: {keep_after_failure} h")
-            if public_path_readonly is not None:
+            if public_path_mount_mode is not None:
                 click.echo(
-                    "Public path: read-only" if public_path_readonly else "Public path: writable"
+                    "Public path: "
+                    + ("writable", "read-only", "not mounted")[public_path_mount_mode]
                 )
             click.echo(f"Image: {scrub_raw_ids(image)}")
             click.echo(f"Command: {scrub_raw_ids(plan.wrapped_command)}")
@@ -396,6 +403,7 @@ def run_job_create(
             keep_after_success_hours=keep_after_success,
             keep_after_failure_hours=keep_after_failure,
             public_path_readonly=public_path_readonly,
+            public_path_mount_mode=public_path_mount_mode,
             fault_tolerance_retry_interval_sec=fault_tolerance_retry_interval,
         )
 
@@ -556,9 +564,16 @@ def run_job_create(
     ),
 )
 @click.option(
+    "--public-path-mount-mode",
+    type=click.IntRange(0, 2),
+    default=None,
+    help="Project public path: 0=read-write, 1=read-only, 2=not mounted. Omit for platform default.",
+)
+@click.option(
     "--public-path-readonly/--no-public-path-readonly",
     default=None,
     help=(
+        "Deprecated: use --public-path-mount-mode. "
         "Mount the project's public path read-only inside the containers "
         "(平台 高级设置·项目Public只读挂载). Omit to leave the platform default."
     ),
@@ -656,6 +671,7 @@ def create(
     keep_after_success: Optional[float],
     keep_after_failure: Optional[float],
     public_path_readonly: Optional[bool],
+    public_path_mount_mode: int | None,
     dry_run: bool,
 ) -> None:
     """Create a GPU batch job.
@@ -689,6 +705,7 @@ def create(
         Use `inspire job status <name> --workspace <workspace>` to inspect the platform-assigned
         priority_level.
     """
+    public_path_mount_mode = public_path_mode(public_path_mount_mode, public_path_readonly)
     dataset_mounts = parse_dataset_specs_or_usage_error(datasets)
     try:
         envs = job_submit.parse_env_assignments(env_values)
@@ -722,4 +739,5 @@ def create(
         keep_after_success=keep_after_success,
         keep_after_failure=keep_after_failure,
         public_path_readonly=public_path_readonly,
+        public_path_mount_mode=public_path_mount_mode,
     )

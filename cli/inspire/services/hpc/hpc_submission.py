@@ -1,6 +1,8 @@
 """HPC submission payload and Slurm layout shared by CLI and SDK."""
 
 from __future__ import annotations
+from inspire.services.public_path import public_path_mount_fields
+
 from typing import Any, Sequence
 from dataclasses import dataclass
 from inspire.services.catalog.datasets import dataset_mount_views
@@ -69,8 +71,8 @@ def hpc_plan_payload(
     for key in ("description", "ttl_after_job_finish_seconds"):
         if key in create_kwargs:
             payload[key] = create_kwargs[key]
-    if "is_publicpath_readonly" in create_kwargs:
-        payload["public_path_readonly"] = create_kwargs["is_publicpath_readonly"]
+    if "publicpath_mount_mode" in create_kwargs:
+        payload["public_path_mount_mode"] = create_kwargs["publicpath_mount_mode"]
     return payload
 
 
@@ -244,6 +246,7 @@ def build_hpc_create_payload(
     description: str | None = None,
     keep_after_finish_hours: float | None = None,
     public_path_readonly: bool | None = None,
+    public_path_mount_mode: int | None = None,
     session: Any = None,
     image_resolver: Any = None,
 ) -> dict[str, Any]:
@@ -305,6 +308,5 @@ def build_hpc_create_payload(
         payload["description"] = description
     if keep_after_finish_hours is not None:
         payload["ttl_after_job_finish_seconds"] = int(round(keep_after_finish_hours * 3600))
-    if public_path_readonly is not None:
-        payload["is_publicpath_readonly"] = bool(public_path_readonly)
+    payload.update(public_path_mount_fields(public_path_mount_mode, public_path_readonly))
     return payload

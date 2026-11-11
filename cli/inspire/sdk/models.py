@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from inspire.services.public_path import PublicPathMountMode
+
 from ._sync_handle import SyncHandle
 
 from dataclasses import dataclass, field, asdict
@@ -216,6 +218,7 @@ class JobCreateSpec:
     enable_notification: bool | None = None
     exclude_nodes: list[str] = field(default_factory=list)
     specified_nodes: list[str] = field(default_factory=list)
+    public_path_mount_mode: PublicPathMountMode | int | None = None
 
 
 @dataclass(frozen=True)
@@ -244,6 +247,8 @@ class JobPlan:
             "priority": self.priority, "nodes": self.nodes, "envs_count": self.envs_count,
             "description": self.description, "max_time": self.max_time, "shm": self.shm,
             "datasets": [f"{item.dataset}:{item.version}" for item in self.datasets],
+            **({"public_path_mount_mode": self.create_kwargs["publicpath_mount_mode"]}
+               if "publicpath_mount_mode" in self.create_kwargs else {}),
         }
 
     @property

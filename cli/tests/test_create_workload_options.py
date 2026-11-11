@@ -231,7 +231,7 @@ def test_notebook_create_body_carries_the_new_fields(monkeypatch: pytest.MonkeyP
     assert body["stop_hour"] == 1
     assert body["stop_minute"] == 30
     # False is a value the caller chose; only `None` means "do not send".
-    assert body["is_publicpath_readonly"] is True
+    assert body["publicpath_mount_mode"] == 1
     assert body["is_projectuserspath_readonly"] is False
 
 
@@ -356,7 +356,7 @@ def test_job_create_payload_carries_the_new_fields(monkeypatch: pytest.MonkeyPat
     # field reserveOnSuccessMs".
     assert payload["reserve_on_success_ms"] == "1800000"
     assert payload["reserve_on_fail_ms"] == "7200000"
-    assert payload["is_publicpath_readonly"] is True
+    assert payload["publicpath_mount_mode"] == 1
 
 
 def test_job_fault_tolerance_interval_needs_fault_tolerance(
@@ -451,7 +451,7 @@ def test_hpc_create_payload_carries_the_new_fields(monkeypatch: pytest.MonkeyPat
     assert payload["description"] == "probe"
     # Seconds here, unlike the millisecond fields on the training job.
     assert payload["ttl_after_job_finish_seconds"] == 900
-    assert payload["is_publicpath_readonly"] is True
+    assert payload["publicpath_mount_mode"] == 1
 
 
 def test_hpc_runtime_cap_lives_inside_the_sbatch_script(monkeypatch: pytest.MonkeyPatch) -> None:

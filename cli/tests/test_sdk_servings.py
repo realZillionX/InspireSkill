@@ -145,7 +145,7 @@ def test_payload_equivalent_to_cli_dry_run(client, catalog, monkeypatch):
     ]
     result = CliRunner().invoke(main, [*args, "--dry-run"])
     assert result.exit_code == 0, result.output
-    assert json.loads(result.output)["data"] == plan.to_dict()
+    assert json.loads(result.stdout)["data"] == plan.to_dict()
     result = CliRunner().invoke(main, args)
     assert result.exit_code == 0, result.output
     assert {k: v for k, v in captured[0].items() if k != "session"} == plan.create_kwargs

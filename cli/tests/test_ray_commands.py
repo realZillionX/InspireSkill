@@ -698,4 +698,4 @@ def test_ray_create_body_carries_an_explicit_read_only_guard(
     body = _ray_create_body(monkeypatch, public_path_readonly=requested)
 
     # `False` is a value the caller chose; only `None` means "do not send".
-    assert body["is_publicpath_readonly"] is requested
+    assert body["publicpath_mount_mode"] == int(requested)

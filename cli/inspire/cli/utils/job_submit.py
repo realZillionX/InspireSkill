@@ -117,6 +117,7 @@ def submit_training_job(
     keep_after_success_hours: Optional[float] = None,
     keep_after_failure_hours: Optional[float] = None,
     public_path_readonly: Optional[bool] = None,
+    public_path_mount_mode: int | None = None,
     fault_tolerance_retry_interval_sec: Optional[int] = None,
     specified_nodes: Iterable[str] | None = None,
 ) -> JobSubmission:
@@ -145,6 +146,7 @@ def submit_training_job(
         keep_after_success_hours=keep_after_success_hours,
         keep_after_failure_hours=keep_after_failure_hours,
         public_path_readonly=public_path_readonly,
+        public_path_mount_mode=public_path_mount_mode,
         fault_tolerance_retry_interval_sec=fault_tolerance_retry_interval_sec,
         session=session,
     )
@@ -207,6 +209,7 @@ def build_training_job_plan(
     keep_after_success_hours: Optional[float] = None,
     keep_after_failure_hours: Optional[float] = None,
     public_path_readonly: Optional[bool] = None,
+    public_path_mount_mode: int | None = None,
     fault_tolerance_retry_interval_sec: Optional[int] = None,
     specified_nodes: Iterable[str] | None = None,
     session: Any = None,
@@ -239,6 +242,7 @@ def build_training_job_plan(
         keep_after_success_hours=keep_after_success_hours,
         keep_after_failure_hours=keep_after_failure_hours,
         public_path_readonly=public_path_readonly,
+        public_path_mount_mode=public_path_mount_mode,
         fault_tolerance_retry_interval_sec=fault_tolerance_retry_interval_sec,
         specified_nodes=specified_nodes,
         session=session,

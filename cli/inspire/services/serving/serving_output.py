@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from inspire.services.public_path import public_path_mount_mode_from_detail
+
 from typing import Any
 
 from inspire.services.serving.serving_status import normalize_status
@@ -183,6 +185,11 @@ def public_serving(item: object, *, fallback_name: str = "") -> dict[str, Any]:
                 "resource": (
                     sanitize_public_text(resource, omit_urls=True)
                     if resource not in (None, "")
+                    else None
+                ),
+                "public_path_mount_mode": (
+                    public_path_mount_mode_from_detail(item)
+                    if isinstance(item, dict) and ("publicpath_mount_mode" in item or "is_publicpath_readonly" in item)
                     else None
                 ),
                 "replicas": _value(item, "replicas"),

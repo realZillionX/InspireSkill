@@ -25,6 +25,8 @@ import sys
 import time
 from typing import Any, Optional, cast
 
+from inspire.cli.utils.public_path import public_path_mode
+
 import click
 
 from inspire.cli.context import (
@@ -863,9 +865,16 @@ def _parse_worker_spec(raw: str) -> dict[str, Any]:
     ),
 )
 @click.option(
+    "--public-path-mount-mode",
+    type=click.IntRange(0, 2),
+    default=None,
+    help="Project public path: 0=read-write, 1=read-only, 2=not mounted. Omit for platform default.",
+)
+@click.option(
     "--public-path-readonly/--no-public-path-readonly",
     default=None,
     help=(
+        "Deprecated: use --public-path-mount-mode. "
         "Mount the project's public path read-only inside every Ray container "
         "(平台 高级设置·项目Public只读挂载). Omit to leave the platform default."
     ),
@@ -891,6 +900,7 @@ def create_ray(
     shm_size: Optional[int],
     workers: tuple[str, ...],
     public_path_readonly: Optional[bool],
+    public_path_mount_mode: int | None,
     dry_run: bool,
 ) -> None:
     """Create a Ray (弹性计算) job with one head and one or more worker groups.
@@ -913,6 +923,7 @@ def create_ray(
           --worker 'name=decode;image=<image>;group=HPC-可上网区资源-2;quota=0,20,80;min=1;max=8;shm-size=32'
 
     """
+    public_path_mount_mode = public_path_mode(public_path_mount_mode, public_path_readonly)
     try:
         config, _ = Config.from_files_and_env()
         session = get_web_session()
@@ -934,6 +945,7 @@ def create_ray(
             shm_size=shm_size,
             workers=workers,
             public_path_readonly=public_path_readonly,
+            public_path_mount_mode=public_path_mount_mode,
         )
 
         if dry_run:
@@ -960,11 +972,10 @@ def create_ray(
             if shm_size is not None:
                 click.echo(f"Shared memory: {shm_size} GiB")
             click.echo(f"Image: {scrub_raw_ids(image)}")
-            if public_path_readonly is not None:
+            if public_path_mount_mode is not None:
                 click.echo(
-                    "Public path: read-only"
-                    if public_path_readonly
-                    else "Public path: writable"
+                    "Public path: "
+                    + ("writable", "read-only", "not mounted")[public_path_mount_mode]
                 )
             click.echo(f"Command: {scrub_raw_ids(body.get('entrypoint'))}")
             click.echo(f"Workers: {len(worker_plans)}")
@@ -1043,6 +1054,7 @@ def _assemble_create_body(
     shm_size: Optional[int],
     workers: tuple[str, ...],
     public_path_readonly: Optional[bool] = None,
+    public_path_mount_mode: int | None = None,
 ) -> dict[str, Any]:
     from inspire.services.ray.ray_submission import assemble_create_body, validate_create_inputs
     from inspire.cli.utils.quota_resolver import parse_quota, resolve_quota, SCHEDULE_TYPE_RAY
@@ -1078,6 +1090,7 @@ def _assemble_create_body(
             workspace=workspace, priority=priority, image=image, image_type=image_type,
             group=group, quota=quota, shm_size=shm_size, workers=workers,
             public_path_readonly=public_path_readonly,
+            public_path_mount_mode=public_path_mount_mode,
         )
     except (TaskPriorityError, ConfigError):
         raise
