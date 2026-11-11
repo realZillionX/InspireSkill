@@ -2,30 +2,26 @@
 
 各版本条目记录该版本发布时的用户可见变化；当前用法以 README 和 CLI Help 为准。
 
-## Unreleased
+## v7.2.0
 
-- Report malformed JSON/TOML and unreadable batch files as ConfigError (exit 10), with the file name and parse location, across all five workloads.
-- Complete Job history scans with up to eight concurrent workspace readers, short-page termination independent of platform-wide totals, and the console's 5000-row paging window. Remove `--scan-timeout`; window-limited or stalled scans return rows with explicit JSON truncation metadata and a stderr notice.
-- Validate workload creation names locally before submission or dry-run, including every expanded Batch item: Notebook/Ray/Serving use their 32-character console limits and Job/HPC/TensorBoard their 255-character limits, with workload-specific character rules. Invalid names return ValidationError (exit 12).
-- Return NotFound (exit 12) immediately for unknown Notebook names. Successful single, batch and SDK submissions persist an account/workspace/name marker for 30 seconds; live name resolution, including lifecycle mutations, retries visibility misses with bounded backoff for at most 12 seconds within that window. API/network failures are not retried.
-- Preserve successful default workload metrics when individual metrics fail; include per-metric JSON errors or stderr warnings. Explicit metric requests and wholly failed queries still fail.
-- Explain update-check failures in human and JSON output, including local uv sources, missing harness skills, and unavailable version lookups, without exposing local source paths.
-- Preserve optional platform error code, HTTP status, service/action, request ID, and retry hint on synchronous and asynchronous SDK exceptions, including uncertain submissions, without replaying writes.
-- Fix SDK safe-read retries to honor Retry-After seconds and HTTP dates, use bounded jittered backoff otherwise, and preserve status/retry_after on final errors. Insufficient operation deadlines fail without an early resend; single-send writes remain unreplayed.
-- Redact sensitive server error echoes with the shared sanitizer and discard raw browser error bodies; preserve browser, wrapped catalog, non-JSON, and missing-ID response context.
-- Preserve strict default status return types with literal overloads for sync/async jobs and HPC, while typing partial and dynamic-bool calls explicitly.
-- Add opt-in partial batch status results to synchronous and asynchronous SDK jobs/HPC polling: preserve input order and duplicates, distinguish missing references and workspace validation errors, and keep strict defaults and whole-batch failure propagation.
-- Add opt-in `--fields NAME[,NAME...]` token reports and offline `--bundles` scanning to `scan_v2_surface.py`. Each name reports `token_presence` separately from `request_field_evidence: not linked to a request body`; token matches do not establish request-body usage or platform acceptance. Default output, default JSON schema and read-only probes are unchanged. Offline tests use inline expectations for SDK/CLI payloads and small synthetic JavaScript snippets.
-- Show resolved public-path mount modes in all five batch dry-run outputs for JSON and TOML, including legacy boolean conversion. Convert legacy options once at CLI/batch entry so explicit legacy use warns once; new and omitted parameters do not warn.
-- Fix project public-path mounts for Notebook, training, HPC, Ray, and Serving creation: expose `PublicPathMountMode` and `public_path_mount_mode` in the sync/async SDK, `--public-path-mount-mode` in the CLI, and the same field in batch configs. Send only the current integer wire field; preserve omission, deprecate legacy booleans, and reject conflicting values without retrying writes.
-- Prefer the current mount mode in detail views, including the not-mounted state, with legacy response fallback.
-- Fix Notebook batch passing an unsupported `gpu_type` argument so public-path mount modes reach the Notebook creator.
-- Add `inspire login --cas` with SMS two-step and Feishu QR login, private per-account CAS sessions, and data plaza catalogue access.
-- Reuse valid CAS sessions for automatic OAuth device approval and silent renewal after refresh credentials expire; retain manual authorization fallback for explicit login.
-- Report missing or expired CAS sessions with an actionable login hint without attempting OAuth refresh for CAS ticket failures.
-- 登录改用官方 OAuth 设备授权，`inspire login --account NAME` 自动创建账号并登录（不带 `--account` 时登录当前活动账号；尚无任何账号时自动创建名为 `default` 的账号），`account add` 保留为兼容创建入口；访问令牌自动刷新，用户名和密码不再存储或读取（包括旧配置和环境变量），已有用户需为每个账号重新登录一次；`inspire init` 发现账号未登录时会直接发起设备授权。
-- `logout` 与 `account remove` 统一为删除本地账号（包含令牌、配置和 bridge/tunnel 状态），需确认；平台工作负载继续运行，删除活动账号会清除活动指针。可用 `account add --no-login` 暂缓授权；传入旧的 `--username` / `--password` 时同样跳过授权，避免旧脚本卡在等待确认。
-- 数据广场（`aip.sii.edu.cn`）只支持 CAS 登录：普通 OAuth 设备登录不提供目录访问，完成 `inspire login --cas` 后可使用 `dataset list / show / tags / applications`；`--dataset` 挂载和 `dataset validate` 不受影响。
+不兼容变化：
+- 登录改用官方 OAuth 设备授权，用户名和密码不再存储或读取（包括旧配置和环境变量）；已有用户需为每个账号重新登录一次。`inspire login --account NAME` 自动创建账号并登录（不带 `--account` 时登录当前活动账号；尚无任何账号时创建 `default`），`account add` 保留为兼容创建入口；`inspire init` 发现未登录时直接发起设备授权。
+- `logout` 与 `account remove` 统一为删除本地账号（令牌、配置和 bridge/tunnel 状态），需确认；平台工作负载继续运行。可用 `account add --no-login` 暂缓授权；传入旧的 `--username` / `--password` 时同样跳过授权。
+- 查询不存在的 Notebook 改为立即返回 NotFound（退出码 12，原为 APIError/13 且固定等待约 13 秒）；30 秒内刚提交的 Notebook 仍会最多等待 12 秒以等待列表可见。
+- `job list` 的 JSON `total` 在结果不完整时为 `null`，并新增 `truncated` / `incomplete_slices`。
+
+新增与修复：
+- 新增 `inspire login --cas`（短信两步验证或飞书扫码），按账号私有保存 CAS 会话。数据广场（`dataset list / show / tags / applications`）只支持 CAS 登录；有效 CAS 会话可自动批准 OAuth 设备授权，并在刷新凭据过期后静默续期。
+- 修复 Notebook、训练、HPC、Ray、Serving 创建时公共路径挂载不生效：新增 `--public-path-mount-mode`（0 读写、1 只读、2 不挂载）、批量配置同名字段及 SDK `public_path_mount_mode` / `PublicPathMountMode`；旧布尔参数弃用并自动转换，冲突时报错；详情优先显示新挂载模式；batch dry-run 显示解析后的挂载模式。
+- 修复 Notebook batch 传入不支持的 `gpu_type` 参数。
+- `job list --all` 按控制台 5000 行分页窗口并发扫描各空间，不再依赖平台返回的全平台总数，能够正常返回；超出窗口时显式标记截断并在 stderr 提示。
+- 创建、batch 和 dry-run 在提交前本地校验名称：Notebook / Ray / Serving 不超过 32 个字符，Job / HPC / TensorBoard 不超过 255 个字符，并按各自字符规则校验；不合法返回 ValidationError（退出码 12）。
+- 默认 metrics 查询中个别指标失败时保留成功的指标，并在 JSON `errors` 或 stderr 警告中列出；显式指定的指标或全部失败仍报错。
+- batch 配置 JSON/TOML 格式错误或文件无法读取时返回 ConfigError（退出码 10），并给出文件名和出错位置。
+- `update --check` 失败时说明具体原因（本地源码安装、缺少 SKILL.md、版本查询失败等），不暴露本地路径。
+- SDK 异常保留平台错误码、HTTP 状态、service/action、request ID 和重试提示；安全读请求遵循 Retry-After 并使用有界抖动退避，写请求不重放；服务端错误回显统一脱敏。
+- SDK jobs / HPC 批量状态查询新增可选部分结果（`allow_partial`），保持输入顺序；默认严格行为和返回类型不变。
+- 开发工具 `scan_v2_surface.py` 新增 `--fields` 字段令牌报告和离线 `--bundles` 扫描。
 
 ## v7.1.16
 
