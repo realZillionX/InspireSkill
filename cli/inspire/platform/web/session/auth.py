@@ -22,6 +22,7 @@ from inspire.platform.web.flow import (
 )
 
 from . import models
+from .cas import CasSession, approve_device, cas_ticket_valid
 from .envelope import _v2_result
 from .identity import token_login_username
 from .models import AuthenticationError, WebSession
@@ -49,7 +50,6 @@ def _load_runtime_config(account: Optional[str] = None) -> Config:
     else:
         config, _ = Config.from_files_and_env(require_credentials=False)
     return config
-
 
 
 def login_required(account: str | None) -> AuthenticationError:
@@ -90,14 +90,14 @@ def refresh_cached(account: str | None, observed: float | None = None) -> WebSes
     if cached.is_valid() and (observed is None or cached.created_at > observed):
         return cached
     if cached.refresh_expires_at <= time.time():
-        raise login_required(account)
+        return _renew_with_cas(cached, account)
     try:
         with _http(account) as http:
             tokens = DeviceAuthorization(
                 cached.base_url or _load_runtime_config(account).base_url, http
             ).refresh(cached.refresh_token)
     except AuthenticationError:
-        raise login_required(account) from None
+        return _renew_with_cas(cached, account)
     refreshed = replace(
         cached,
         access_token=tokens.access_token,
@@ -111,12 +111,42 @@ def refresh_cached(account: str | None, observed: float | None = None) -> WebSes
     return refreshed
 
 
+def _renew_with_cas(cached: WebSession, account: str | None) -> WebSession:
+    """Caller owns the refresh lock; silent renewal never prompts or relocks."""
+    cas = CasSession.load(account)
+    if cas is None or not cas_ticket_valid(cas, account):
+        raise login_required(account)
+    base_url = cached.base_url or _load_runtime_config(account).base_url
+    with cas.http(account) as cas_http, _http(account) as http:
+
+        def notify(uri: str, code: str, expires: float) -> None:
+            if not approve_device(cas_http, uri, base_url):
+                raise login_required(account)
+
+        try:
+            tokens = DeviceAuthorization(base_url, http).login(notify)
+        except (AuthenticationError, requests.RequestException):
+            raise login_required(account) from None
+    renewed = replace(
+        cached,
+        access_token=tokens.access_token,
+        refresh_token=tokens.refresh_token,
+        access_expires_at=tokens.access_expires_at,
+        refresh_expires_at=tokens.refresh_expires_at,
+        created_at=time.time(),
+    )
+    _save_existing_account(renewed, account)
+    return renewed
+
+
 @workflow
 def get_web_session(
-    force_refresh: bool = False, require_workspace: bool = False, account: Optional[str] = None,
-    lock_timeout: float | None = None
+    force_refresh: bool = False,
+    require_workspace: bool = False,
+    account: Optional[str] = None,
+    lock_timeout: float | None = None,
 ) -> Program[WebSession]:
-    """Load or refresh cached tokens without starting device authorization."""
+    """Load or renew cached tokens without prompting or opening a browser."""
     account = models._resolve_account_for_storage(account)
     cached = yield call(WebSession.load, allow_expired=True, account=account)
     if cached is None:

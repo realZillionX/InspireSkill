@@ -7,7 +7,7 @@ dataset catalogue can be browsed or searched — qz's own ``/api/v2/dataset``
 route carries a single ``ValidateDataset`` Action and no listing at all (see
 :mod:`inspire.platform.web.browser_api.datasets`).
 
-Signing in needs no browser. The caller's platform web session holds the CAS
+Signing in needs no browser. The account's separately stored CAS session holds the CAS
 ticket-granting cookie, which is enough to mint a service ticket for the plaza:
 
 1. ``GET {CAS}/cas/login?service=<plaza>/`` → 302 whose ``Location`` carries
@@ -28,15 +28,13 @@ call answers
 handshake again.
 
 The handshake is two cheap requests, so the signed-in client is cached only
-in its owning Transport and closed with it. There is deliberately no on-disk
-counterpart to ``web_session.json``, keeping stale and account-crossing state
-out of the way. A rejected plaza cookie is re-minted from CAS first; only a
+in its owning Transport and closed with it. CAS credentials live separately in ``cas_session.json``; plaza cookies stay in memory. A rejected plaza cookie is re-minted from CAS first; only a
 second failure escalates to the transport's platform-session refresh ladder.
 """
 
 from __future__ import annotations
 
-from inspire.platform.web.flow import Program, workflow, http_call
+from inspire.platform.web.flow import Program, workflow, http_call, call
 
 import logging
 from dataclasses import dataclass
@@ -50,9 +48,9 @@ from inspire.platform.web.session import (
     SessionExpiredError,
     TransientAPIError,
     WebSession,
-    build_requests_session,
 )
 from inspire.platform.web.session.retry import retry_after_seconds
+from inspire.platform.web.session.cas import CasSession, ticket_from_response
 
 if TYPE_CHECKING:
     from inspire.platform.web.transport import Transport
@@ -86,24 +84,11 @@ class PlazaError(ValueError):
     """
 
 
-class CasTicketExpired(SessionExpiredError):
-    """CAS refused to mint a service ticket; a fresh CASTGC is required."""
-
-
 class PlazaNotSignedIn(PlazaError):
     """The plaza does not recognize the ``datasets-session`` being presented."""
 
 
-PLAZA_UNAVAILABLE_MESSAGE = (
-    "The data plaza (aip.sii.edu.cn) only accepts CAS sign-in, which the OAuth device "
-    "login does not provide, so dataset catalogue queries (dataset list/show/tags/"
-    "applications) are unavailable for now. Use the Dataset Hub web UI (aip.sii.edu.cn) "
-    "instead; --dataset mounts and `inspire dataset validate` still work."
-)
-
-# The CAS handshake below is kept for a future interactive CAS sign-in; device
-# login sessions hold no CASTGC, so it stays disabled until one exists.
-CAS_SIGN_IN_ENABLED = False
+PLAZA_UNAVAILABLE_MESSAGE = "The data plaza needs a CAS login; run inspire login --cas."
 
 
 class PlazaUnavailable(PlazaError):
@@ -111,6 +96,17 @@ class PlazaUnavailable(PlazaError):
 
     def __init__(self, message: str = PLAZA_UNAVAILABLE_MESSAGE) -> None:
         super().__init__(message)
+
+
+class CasTicketExpired(PlazaUnavailable):
+    """CAS refused a ticket; OAuth refresh cannot repair this session."""
+
+
+def _login_hint(account: str | None) -> str:
+    from inspire.accounts import default_account
+
+    suffix = f" --account {account}" if account and account != default_account() else ""
+    return f"inspire login --cas{suffix}"
 
 
 @dataclass
@@ -153,54 +149,43 @@ def _json_body(response: requests.Response) -> dict[str, Any]:
     return payload
 
 
-def _cas_ticket(location: str) -> str:
-    """Read the service ticket out of the CAS redirect target."""
-    _, separator, query = str(location or "").partition("?")
-    if not separator:
-        return ""
-    for field in query.split("&"):
-        name, _, value = field.partition("=")
-        if name == "ticket":
-            return value.strip()
-    return ""
-
-
 @workflow
 def sign_in(session: WebSession, transport: Transport, timeout: float = 30) -> Program[PlazaClient]:
-    """Trade the web session's CAS cookie for a plaza ``datasets-session``."""
-    if not CAS_SIGN_IN_ENABLED:
-        raise PlazaUnavailable()
-    http = build_requests_session(session, PLAZA_BASE_URL)
+    """Trade the account's stored CAS cookie for a plaza session."""
+    stored = yield call(CasSession.load, session.account)
+    if stored is None:
+        raise PlazaUnavailable(
+            f"The data plaza needs a CAS login; run {_login_hint(session.account)}."
+        )
+    http = yield call(stored.http, session.account)
     service = _service_url()
     try:
-        ticket_response = (yield http_call(http.get,
+        ticket_response = yield http_call(
+            http.get,
             f"{CAS_BASE_URL}/cas/login?service={quote(service, safe='')}",
             allow_redirects=False,
             timeout=min(timeout, transport.remaining()),
-        ))
+        )
         transport.check_deadline()
         _raise_transient(ticket_response)
-        ticket = _cas_ticket(ticket_response.headers.get("Location", ""))
+        ticket = ticket_from_response(ticket_response)
         if not ticket:
-            # No ticket means CAS did not recognize the cookie: the platform
-            # session behind it is what expired, not the plaza's.
-            raise CasTicketExpired("The platform single-sign-on ticket expired; CAS issued no data plaza ticket for this session.")
+            raise CasTicketExpired(f"CAS login expired; run {_login_hint(session.account)}.")
 
-        login_response = (yield http_call(http.post,
+        login_response = yield http_call(
+            http.post,
             f"{PLAZA_BASE_URL}/api/base/login",
             json={"ticket": ticket, "service": service},
             timeout=min(timeout, transport.remaining()),
             allow_redirects=False,
-        ))
+        )
         transport.check_deadline()
         _raise_transient(login_response)
         if login_response.status_code == 401 or login_response.status_code >= 400:
             raise SessionExpiredError("The data plaza rejected the CAS ticket.")
         payload = _json_body(login_response)
         if payload.get("code") != 0:
-            raise SessionExpiredError(
-                f"The data plaza declined the sign-in: {payload.get('msg') or 'unknown reason'}"
-            )
+            raise SessionExpiredError("The data plaza declined the CAS sign-in.")
 
         data = payload.get("data")
         user = data.get("userInfo") if isinstance(data, dict) else None

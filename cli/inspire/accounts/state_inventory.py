@@ -43,6 +43,9 @@ _ACCOUNT_FILES = frozenset(
     {
         "config.toml",
         "web_session.json",
+        "cas_session.json",
+        "cas_pending.json",
+        "cas_qr.png",
         "resource-index.sqlite3",
         "notebook-ide-url.json",
         "bridges.json",
@@ -114,7 +117,9 @@ def _is_lock_for(name: str, owned: frozenset[str]) -> bool:
     return base in owned or base.rsplit(".", 1)[0] in owned
 
 
-def _scan(directory: Path, owned_files: frozenset[str], owned_dirs: frozenset[str]) -> list[OrphanEntry]:
+def _scan(
+    directory: Path, owned_files: frozenset[str], owned_dirs: frozenset[str]
+) -> list[OrphanEntry]:
     if not directory.is_dir():
         return []
 

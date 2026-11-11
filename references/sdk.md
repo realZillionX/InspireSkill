@@ -223,7 +223,7 @@ For external images, call `images.register`, push the image to the returned regi
 
 ### datasets
 
-The catalogue methods below (`applications`, `get`, `list`, `tags`) currently raise because the Dataset Hub accepts only CAS sign-in, which OAuth device login does not provide; mount validation is unaffected.
+The catalogue methods below (`applications`, `get`, `list`, `tags`) require a stored CAS session: first run `inspire login --cas feishu --account NAME` or the SMS flow with `--cas sms --phone NUMBER`. Missing or expired CAS sessions return an actionable login hint; mount validation is unaffected.
 
 | Method | Return Type | Equivalent CLI Command |
 | --- | --- | --- |

@@ -1,0 +1,463 @@
+"""Offline CAS contracts: persistence, approval boundaries, SMS and terminal QR."""
+
+from __future__ import annotations
+
+import importlib
+import json
+import os
+import time
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
+import requests
+from click.testing import CliRunner
+from PIL import Image, ImageDraw
+
+from inspire import accounts
+from inspire.accounts.state_inventory import find_orphan_state as inspect_account_state
+from inspire.cli.main import main
+from inspire.platform.web.session import auth, cas
+from inspire.platform.web.session.cas_qr import render_qr
+from inspire.platform.web.session.models import WebSession
+
+commands = importlib.import_module("inspire.cli.commands.login")
+PHONE = "13800000000"
+CODE = "123456"
+COOKIE = dict(
+    name="CASTGC",
+    value="private-cookie",
+    domain=cas.CAS_HOST,
+    path="/cas",
+    expires=None,
+    secure=True,
+)
+FORM = '<form id="fm2"><input name="execution" value="e1s1"><input name="username" value="ignored"><input name="smscode" value="ignored"><input name="submit" value="Login"></form>'
+
+
+@pytest.fixture(autouse=True)
+def isolated(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(
+        requests.sessions.Session, "send", Mock(side_effect=AssertionError("Network forbidden"))
+    )
+    monkeypatch.setattr(cas, "resolve_requests_proxy_config", lambda **kw: ({}, "none"))
+    monkeypatch.setattr(commands, "stdin_is_interactive", lambda: False)
+    accounts.create_account("tester", '[api]\nbase_url="https://qz.sii.edu.cn"\n')
+    return tmp_path
+
+
+def response(status=200, text="", payload=None, location=""):
+    return SimpleNamespace(
+        status_code=status, text=text, headers={"Location": location}, json=lambda: payload
+    )
+
+
+def test_session_roundtrip_permissions_and_redaction():
+    stored = cas.CasSession([COOKIE], time.time(), "sms")
+    stored.save("tester")
+    assert cas.CasSession.load("tester") == stored
+    assert "private-cookie" not in repr(stored)
+    path = cas.cache_path("tester", "cas_session.json")
+    if os.name != "nt":
+        assert path.stat().st_mode & 0o777 == 0o600
+    with stored.http("tester") as http:
+        assert http.cookies.get("CASTGC") == "private-cookie"
+        assert http.headers["User-Agent"] == cas.USER_AGENT
+    path.write_text('{"cookies":null}')
+    assert cas.CasSession.load("tester") is None
+    path.unlink()
+    assert cas.CasSession.load("tester") is None
+
+
+@pytest.mark.parametrize(
+    "bad", [[], None, {}, [dict(COOKIE, domain="sii.edu.cn")], [dict(COOKIE, expires="tomorrow")]]
+)
+def test_malformed_cache(bad):
+    path = cas.cache_path("tester", "cas_session.json")
+    path.write_text(json.dumps(dict(cookies=bad, created_at=time.time(), method="sms")))
+    assert cas.CasSession.load("tester") is None
+
+
+def test_sms_send_complete_and_pending(monkeypatch):
+    with cas.build_cas_http([], "tester") as http:
+        http.cookies.set("SESSION", "state", domain=cas.CAS_HOST, path="/cas")
+        monkeypatch.setattr(http, "get", Mock(return_value=response(text=FORM)))
+        post = Mock(return_value=response(payload={"success": True}))
+        monkeypatch.setattr(http, "post", post)
+        pending = cas.sms_send_code("+86" + PHONE, http)
+        assert post.call_args.kwargs["data"] == {"request_username": PHONE, "isEn": "false"}
+        pending.save("tester")
+        path = cas.cache_path("tester", "cas_pending.json")
+        assert PHONE not in path.read_text() and CODE not in path.read_text()
+        assert "username" not in path.read_text() and "smscode" not in path.read_text()
+        if os.name != "nt":
+            assert path.stat().st_mode & 0o777 == 0o600
+        pending = cas.SmsPending.load("tester")
+        http.cookies.set_cookie(requests.cookies.create_cookie(**COOKIE))
+        post.return_value = response(302, location=cas.SERVICE + "?ticket=ST-test")
+        stored = cas.sms_complete(PHONE, CODE, pending, http)
+        assert stored.method == "sms"
+        assert "submit" not in post.call_args.kwargs["data"]
+        assert post.call_args.kwargs["allow_redirects"] is False
+
+
+@pytest.mark.parametrize(
+    "status,with_cookie,exception", [(200, False, cas.SmsCodeRejected), (302, False, cas.CasError)]
+)
+def test_sms_rejection_is_sanitized(monkeypatch, status, with_cookie, exception):
+    with cas.build_cas_http([], "tester") as http:
+        monkeypatch.setattr(
+            http,
+            "post",
+            Mock(
+                return_value=response(
+                    status, text=PHONE + CODE, location=cas.SERVICE + "?ticket=ST-test"
+                )
+            ),
+        )
+        with pytest.raises(exception) as error:
+            cas.sms_complete(PHONE, CODE, cas.SmsPending([], {"execution": "e"}, time.time()), http)
+        assert PHONE not in str(error.value) and CODE not in str(error.value)
+
+
+def test_pending_expiry_and_missing():
+    with pytest.raises(cas.CasError, match="missing or expired"):
+        cas.SmsPending.load("tester")
+    cas.SmsPending([], {"execution": "e"}, time.time() - 601).save("tester")
+    with pytest.raises(cas.CasError, match="missing or expired"):
+        cas.SmsPending.load("tester")
+
+
+@pytest.mark.parametrize("phone", ["student-id", "123", "23800000000", "１３８００００００００"])
+def test_phone_validation(phone):
+    with pytest.raises(cas.CasError):
+        cas.validate_phone(phone)
+
+
+@pytest.mark.parametrize("form", [False, True])
+def test_device_approval(form):
+    broker = (
+        '<script>{"kcContext":{"url":"/realms/inf-internal/broker/cas/login?a=1&amp;b=2"}}</script>'
+    )
+    consent = (
+        '<form action="/grant"><input name="code" value="opaque"><button name="accept" value="Yes">Accept</button><input name="cancel"></form>'
+        if form
+        else '<script>{"pageId":"login-oauth-grant","url":{"oauthAction":"\\/grant"},"oauth":{"code":"opaque"}}</script>'
+    )
+    http = Mock()
+    http.request.side_effect = [
+        response(text=broker),
+        response(303, location="https://cas.sii.edu.cn/cas/login"),
+        response(302, location="https://keycloak.test/consent"),
+        response(text=consent),
+        response(302, location="/device/status"),
+        response(),
+    ]
+    assert cas.approve_device(
+        http, "https://keycloak.test/device?user_code=test", "https://qz.sii.edu.cn"
+    )
+    calls = http.request.call_args_list
+    assert all(c.kwargs["allow_redirects"] is False for c in calls)
+    assert calls[4].args[:2] == ("POST", "https://keycloak.test/grant")
+    assert calls[4].kwargs["data"] == {"code": "opaque", "accept": "Yes"}
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        response(302, location="https://foreign.test/steal"),
+        response(text='<form action="https://foreign.test/steal"><input name="accept"></form>'),
+        response(text="unexpected page"),
+        response(302, location="http://cas.sii.edu.cn/insecure"),
+    ],
+)
+def test_approval_refuses_foreign_hosts_and_surprises(page):
+    http = Mock()
+    http.request.return_value = page
+    assert not cas.approve_device(http, "https://keycloak.test/device", "https://qz.sii.edu.cn")
+    assert http.request.call_count == 1
+
+
+def test_qr_grid_and_fallback(tmp_path):
+    image = Image.new("L", (29 * 5, 29 * 5), 255)
+    draw = ImageDraw.Draw(image)
+    for ox, oy in ((4, 4), (18, 4), (4, 18)):
+        for y in range(7):
+            for x in range(7):
+                if x in (0, 6) or y in (0, 6) or (2 <= x <= 4 and 2 <= y <= 4):
+                    draw.rectangle(
+                        ((ox + x) * 5, (oy + y) * 5, (ox + x + 1) * 5 - 1, (oy + y + 1) * 5 - 1),
+                        fill=0,
+                    )
+    path = tmp_path / "qr.png"
+    image.save(path)
+    result = render_qr(path)
+    assert result and len(result.splitlines()) == 15
+    assert "▀" in result and "█" in result and "\x1b[30;47m" in result
+    Image.new("L", (50, 50), 255).save(path)
+    assert render_qr(path) is None
+
+
+def test_bare_cas_json_errors_before_login():
+    result = CliRunner().invoke(main, ["login", "--cas", "--json"])
+    assert result.exit_code != 0 and "Specify --cas sms or --cas feishu" in result.output
+
+
+def test_cli_two_step(monkeypatch):
+    monkeypatch.setattr(
+        cas, "sms_send_code", Mock(return_value=cas.SmsPending([], {"execution": "e"}, time.time()))
+    )
+    monkeypatch.setattr(
+        cas, "sms_complete", Mock(return_value=cas.CasSession([COOKIE], time.time(), "sms"))
+    )
+    monkeypatch.setattr(
+        commands,
+        "run_login",
+        Mock(
+            return_value=SimpleNamespace(
+                login_username="tester", access_expires_at=1, refresh_expires_at=2
+            )
+        ),
+    )
+    args = ["login", "--account", "tester", "--cas", "sms", "--phone", PHONE, "--json"]
+    first = CliRunner().invoke(main, args)
+    assert first.exit_code == 0, first.output
+    assert json.loads(first.stdout)["data"]["pending"]
+    commands.run_login.assert_not_called()
+    second = CliRunner().invoke(main, args + ["--sms-code", CODE])
+    assert second.exit_code == 0, second.output
+    assert cas.CasSession.load("tester") is not None
+    assert not cas.cache_path("tester", "cas_pending.json").exists()
+    assert PHONE not in first.output + second.output and CODE not in first.output + second.output
+
+
+@pytest.mark.parametrize("approved", [True, False])
+def test_login_auto_approval_or_manual_fallback(monkeypatch, capsys, approved):
+    cas.CasSession([COOKIE], time.time(), "sms").save("tester")
+    monkeypatch.setattr(cas, "cas_ticket_valid", lambda *a: True)
+    monkeypatch.setattr(cas, "approve_device", lambda *a: approved)
+
+    def device(account, notify):
+        notify("https://keycloak.test/device", "user-code", 300)
+        return Mock()
+
+    monkeypatch.setattr(commands, "device_login", device)
+    metadata = {}
+    commands.run_login("tester", no_browser=True, cas_metadata=metadata)
+    output = capsys.readouterr()
+    assert ("https://keycloak.test/device" in output.err) is not approved
+    assert metadata == {"cas": True, "cas_method": "sms"}
+
+
+@pytest.mark.parametrize("expired", [True, False])
+def test_silent_renewal_without_relocking(monkeypatch, expired):
+    cached = WebSession(
+        access_token="old",
+        refresh_token="old-refresh",
+        access_expires_at=0,
+        refresh_expires_at=0 if expired else time.time() + 1000,
+        created_at=1,
+        account="tester",
+        base_url="https://qz.sii.edu.cn",
+    )
+    monkeypatch.setattr(WebSession, "load", lambda **kw: cached)
+    cas.CasSession([COOKIE], time.time(), "sms").save("tester")
+    monkeypatch.setattr(auth, "cas_ticket_valid", lambda *a: True)
+    monkeypatch.setattr(auth, "approve_device", lambda *a: True)
+    tokens = SimpleNamespace(
+        access_token="new",
+        refresh_token="new-refresh",
+        access_expires_at=100,
+        refresh_expires_at=200,
+    )
+
+    class Device:
+        def __init__(self, *args):
+            pass
+
+        def refresh(self, token):
+            raise auth.AuthenticationError("refused")
+
+        def login(self, notify):
+            notify("https://keycloak.test/device", "code", 300)
+            return tokens
+
+    monkeypatch.setattr(auth, "DeviceAuthorization", Device)
+    monkeypatch.setattr(
+        auth, "exclusive_session_refresh", Mock(side_effect=AssertionError("must not relock"))
+    )
+    saved = Mock()
+    monkeypatch.setattr(auth, "_save_existing_account", saved)
+    assert auth.refresh_cached("tester").access_token == "new"
+    saved.assert_called_once()
+    monkeypatch.setattr(auth, "cas_ticket_valid", lambda *a: False)
+    with pytest.raises(auth.AuthenticationError, match="inspire login"):
+        auth.refresh_cached("tester")
+
+
+@pytest.mark.parametrize("outcome", ["success", "timeout", "missing-cookie", "render-error"])
+def test_feishu_capture_private_file_and_cleanup(monkeypatch, outcome):
+    from inspire.platform.web.session import cas_qr
+
+    clock = [100.0]
+    monkeypatch.setattr(cas_qr.time, "monotonic", lambda: clock[0])
+    browser = Mock()
+    context = browser.new_context.return_value
+    page = context.new_page.return_value
+    element = page.wait_for_selector.return_value
+    frame = element.content_frame.return_value
+    frame.query_selector.return_value = None
+    element.screenshot.return_value = b"fake-png"
+    context.cookies.return_value = (
+        [dict(COOKIE, expires=-1), dict(COOKIE, domain="qz.sii.edu.cn")]
+        if outcome != "missing-cookie"
+        else []
+    )
+    shown = []
+
+    def wait(milliseconds):
+        clock[0] += milliseconds / 1000
+        if shown and outcome in ("success", "missing-cookie"):
+            predicate, intercept = context.route.call_args.args
+            assert predicate("https://aip.sii.edu.cn/?ticket=ST-example")
+            assert not predicate("https://aip.sii.edu.cn.foreign.test/?ticket=ST-example")
+            intercept(Mock())
+
+    page.wait_for_timeout.side_effect = wait
+    playwright = Mock()
+    playwright.__enter__ = Mock(return_value=playwright)
+    playwright.__exit__ = Mock(return_value=False)
+    playwright.chromium.launch.return_value = browser
+    monkeypatch.setattr(cas_qr, "sync_playwright", lambda: playwright)
+    monkeypatch.setattr(
+        cas_qr, "get_playwright_proxy", lambda account: {"server": "http://proxy.test"}
+    )
+
+    def show(path):
+        shown.append(path)
+        assert path.read_bytes() == b"fake-png"
+        if os.name != "nt":
+            assert path.stat().st_mode & 0o777 == 0o600
+        if outcome == "render-error":
+            raise ValueError("private diagnostics")
+
+    if outcome == "success":
+        stored = cas.feishu_qr_login(show, "tester", timeout=4)
+        assert stored.method == "feishu"
+        assert len(stored.cookies) == 1 and stored.cookies[0]["expires"] is None
+    else:
+        with pytest.raises(cas.CasError) as error:
+            cas.feishu_qr_login(show, "tester", timeout=4)
+        assert "private diagnostics" not in str(error.value)
+    browser.close.assert_called_once()
+    assert shown and not shown[0].exists()
+    assert playwright.chromium.launch.call_args.kwargs["proxy"] == {"server": "http://proxy.test"}
+    assert page.goto.call_args.kwargs["wait_until"] == "load"
+
+
+def test_sms_interactive_retry_limit(monkeypatch):
+    monkeypatch.setattr(commands, "stdin_is_interactive", lambda: True)
+    send = Mock(return_value=cas.SmsPending([], {"execution": "e"}, time.time()))
+    complete = Mock(side_effect=cas.SmsCodeRejected("Code rejected."))
+    monkeypatch.setattr(cas, "sms_send_code", send)
+    monkeypatch.setattr(cas, "sms_complete", complete)
+    result = CliRunner().invoke(
+        main,
+        ["login", "--account", "tester", "--cas", "sms", "--phone", PHONE],
+        input="111111\n222222\n333333\n",
+    )
+    assert result.exit_code != 0
+    assert complete.call_count == 3 and send.call_count == 1
+    assert cas.CasSession.load("tester") is None
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_sms_cli_missing_expired_pending(monkeypatch, expired):
+    if expired:
+        cas.SmsPending([], {"execution": "e"}, time.time() - 601).save("tester")
+    complete = Mock()
+    monkeypatch.setattr(cas, "sms_complete", complete)
+    result = CliRunner().invoke(
+        main, ["login", "--account", "tester", "--cas", "sms", "--phone", PHONE, "--sms-code", CODE]
+    )
+    assert result.exit_code != 0 and "missing or expired" in result.output
+    complete.assert_not_called()
+
+
+def test_ticket_validation_and_foreign_redirect(monkeypatch):
+    http = Mock()
+    http.get.return_value = response(302, location="https://foreign.test/?ticket=private")
+    with pytest.raises(cas.CasTicketExpired, match="CAS login expired"):
+        cas.mint_ticket(http)
+    http.get.return_value = response(302, location=cas.SERVICE + "?ticket=ST-example")
+    assert cas.mint_ticket(http) == "ST-example"
+    assert http.get.call_args.kwargs["allow_redirects"] is False
+
+
+def test_silent_approval_failure_does_not_save_or_poll(monkeypatch):
+    cached = WebSession(
+        access_token="old",
+        refresh_token="old-refresh",
+        access_expires_at=0,
+        refresh_expires_at=0,
+        created_at=1,
+        account="tester",
+        base_url="https://qz.sii.edu.cn",
+    )
+    monkeypatch.setattr(WebSession, "load", lambda **kw: cached)
+    cas.CasSession([COOKIE], time.time(), "feishu").save("tester")
+    monkeypatch.setattr(auth, "cas_ticket_valid", lambda *a: True)
+    monkeypatch.setattr(auth, "approve_device", lambda *a: False)
+
+    def login(notify):
+        notify("https://keycloak.test/device", "code", 300)
+        pytest.fail("Must not poll when approval failed")
+
+    device = Mock()
+    device.login.side_effect = login
+    monkeypatch.setattr(auth, "DeviceAuthorization", Mock(return_value=device))
+    saved = Mock()
+    monkeypatch.setattr(auth, "_save_existing_account", saved)
+    with pytest.raises(auth.AuthenticationError, match="inspire login"):
+        auth.refresh_cached("tester")
+    saved.assert_not_called()
+
+
+def test_account_state_inventory_keeps_cas_files():
+    for name in ("cas_session.json", "cas_pending.json", "cas_qr.png"):
+        cas.cache_path("tester", name).write_text("test")
+    assert not inspect_account_state()
+
+
+@pytest.mark.parametrize("approved", [True, False])
+def test_feishu_cli_autoapproval_and_json(monkeypatch, approved):
+    monkeypatch.setattr(
+        cas, "feishu_qr_login", lambda show, name: cas.CasSession([COOKIE], time.time(), "feishu")
+    )
+    monkeypatch.setattr(cas, "cas_ticket_valid", lambda *args: True)
+    monkeypatch.setattr(cas, "approve_device", lambda *args: approved)
+    browser = Mock()
+    monkeypatch.setattr(commands.webbrowser, "open", browser)
+
+    def device(name, notify):
+        notify("https://keycloak.test/device", "device-user-code", 300)
+        return SimpleNamespace(login_username="tester", access_expires_at=10, refresh_expires_at=20)
+
+    monkeypatch.setattr(commands, "device_login", device)
+    result = CliRunner().invoke(main, ["login", "--account", "tester", "--cas", "feishu", "--json"])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)["data"]
+    assert data["cas"] is True and data["cas_method"] == "feishu"
+    assert ("https://keycloak.test/device" in result.stderr) is not approved
+    browser.assert_not_called()
+
+
+def test_requests_proxy_is_account_scoped(monkeypatch):
+    resolve = Mock(return_value=({"https": "http://proxy.test:1234"}, "toml"))
+    monkeypatch.setattr(cas, "resolve_requests_proxy_config", resolve)
+    with cas.build_cas_http([COOKIE], "tester") as http:
+        assert http.proxies["https"] == "http://proxy.test:1234"
+        assert not http.trust_env
+    resolve.assert_called_once_with(account="tester")

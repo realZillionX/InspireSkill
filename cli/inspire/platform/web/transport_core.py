@@ -146,7 +146,9 @@ def claim_write(state: dict[str, Any] | None) -> None:
 
 def uncertain(state: dict[str, Any], error: Exception) -> NoReturn:
     if state["create"]:
-        raise SubmissionUncertainError(state["operation_id"], inspect=state.get("inspect", "jobs")) from error
+        raise SubmissionUncertainError(
+            state["operation_id"], inspect=state.get("inspect", "jobs")
+        ) from error
     raise MutationUncertainError("Mutation may have succeeded; inspect state.") from error
 
 
@@ -364,9 +366,9 @@ def refresh(self: Any, *, require_cas_ticket: bool = False) -> FlowProgram[Any]:
             refreshed = (
                 (yield call(refresh_session, self._session, lock_timeout=self.remaining()))
                 if self._session is not None
-                else (yield call(
-                    get_web_session, account=self.account, lock_timeout=self.remaining()
-                ))
+                else (
+                    yield call(get_web_session, account=self.account, lock_timeout=self.remaining())
+                )
             )
             self._adopt_session(refreshed)
             self._decisions.rebuilt(refreshed.created_at)
@@ -392,7 +394,7 @@ def refresh_cli(self: Any, observed_created_at: float, *, can_refresh: bool) -> 
     with self._generation_lock:
         self._decisions.refresh_guard(observed_created_at, can_refresh)
         web_session.logger.debug("Web session expired; rebuilding it once for this call.")
-        refreshed = (yield call(self._refresh_expired_session, observed_created_at))
+        refreshed = yield call(self._refresh_expired_session, observed_created_at)
         web_session.refresh_session_in_place(self.session, refreshed)
         self._decisions.rebuilt(self.session.created_at)
 
@@ -400,7 +402,6 @@ def refresh_cli(self: Any, observed_created_at: float, *, can_refresh: bool) -> 
 @workflow
 def refresh_expired_session(self: Any, observed_created_at: float) -> FlowProgram[Any]:
     with self.scope(timeout=None):
-
         session = self.session
         if session.created_at > observed_created_at:
             return session
@@ -411,13 +412,21 @@ def refresh_expired_session(self: Any, observed_created_at: float) -> FlowProgra
 
 @workflow
 def plaza_request(
-    self: Any, method: str, path: str, *, params: dict[str, Any] | None = None,
-    body: dict[str, Any] | None = None, timeout: float = 30
+    self: Any,
+    method: str,
+    path: str,
+    *,
+    params: dict[str, Any] | None = None,
+    body: dict[str, Any] | None = None,
+    timeout: float = 30,
 ) -> FlowProgram[Any]:
     """Dispatch plaza calls with caller-owned authentication and retry budgets."""
     import requests
     from inspire.platform.web.plaza.core import (
-        PLAZA_BASE_URL, PlazaError, PlazaNotSignedIn, CasTicketExpired, unwrap,
+        PLAZA_BASE_URL,
+        PlazaError,
+        PlazaNotSignedIn,
+        unwrap,
     )
     from inspire.platform.web.session.models import SessionExpiredError, TransientAPIError
     from inspire.platform.web.session.retry import backoff_delay
@@ -434,8 +443,12 @@ def plaza_request(
             try:
                 self._decisions.dispatched()
                 response = yield http_call(
-                    client.http.request, method.upper(), PLAZA_BASE_URL + path,
-                    params=params, json=body, timeout=min(timeout, self.remaining()),
+                    client.http.request,
+                    method.upper(),
+                    PLAZA_BASE_URL + path,
+                    params=params,
+                    json=body,
+                    timeout=min(timeout, self.remaining()),
                     allow_redirects=False,
                 )
                 self.check_deadline()
@@ -456,17 +469,12 @@ def plaza_request(
                 yield call(self.reset_plaza_client)
                 if auth_attempt == 2:
                     raise SessionExpiredError(
-                        "The platform single-sign-on ticket could not be renewed; CAS still "
-                        "cannot authenticate the data plaza." if isinstance(error, CasTicketExpired)
-                        else "The data plaza rejected the refreshed platform session."
+                        "The data plaza rejected the refreshed platform session."
                     ) from error
                 auth_attempt += 1
                 if auth_attempt == 2:
                     try:
-                        if isinstance(error, CasTicketExpired):
-                            yield call(self._refresh, require_cas_ticket=True)
-                        else:
-                            yield call(self._refresh)
+                        yield call(self._refresh)
                     except AuthenticationError as refresh_error:
                         if self.cli_compat:
                             raise SessionExpiredError(str(refresh_error)) from refresh_error
@@ -475,13 +483,14 @@ def plaza_request(
             if isinstance(error, TransientAPIError):
                 if transient_attempt == 2 or state is not None:
                     raise
-                yield call(time.sleep, min(backoff_delay(transient_attempt, error), self.remaining()))
+                yield call(
+                    time.sleep, min(backoff_delay(transient_attempt, error), self.remaining())
+                )
                 transient_attempt += 1
                 continue
             if isinstance(error, requests.RequestException):
                 raise PlazaError("The data plaza did not answer.") from error
             raise
-
 
 
 @workflow
@@ -495,7 +504,9 @@ def acquire_session(self: Any) -> FlowProgram[None]:
             )
             return
         self._session = self._validate_session(
-            (yield call(
-                web_session.get_web_session, account=self.account, lock_timeout=self.remaining()
-            ))
+            (
+                yield call(
+                    web_session.get_web_session, account=self.account, lock_timeout=self.remaining()
+                )
+            )
         )

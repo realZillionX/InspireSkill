@@ -106,8 +106,9 @@ class _Script:
 
 @pytest.fixture(autouse=True)
 def _enable_cas_sign_in(monkeypatch):
-    # These tests cover the retained CAS handshake; production keeps it disabled.
-    monkeypatch.setattr(plaza_core, "CAS_SIGN_IN_ENABLED", True)
+    monkeypatch.setattr(
+        plaza_core.CasSession, "load", lambda account: plaza_core.CasSession([], 0, "sms")
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -127,7 +128,7 @@ def _install(monkeypatch: pytest.MonkeyPatch, script: _Script) -> _Script:
         script.sessions.append(http)
         return http
 
-    monkeypatch.setattr(plaza_core, "build_requests_session", _build)
+    monkeypatch.setattr(plaza_core.CasSession, "http", _build)
     return script
 
 
@@ -156,7 +157,9 @@ def test_sign_in_spends_a_cas_ticket_on_the_plaza(monkeypatch) -> None:  # noqa:
 def test_plaza_request_returns_the_unwrapped_data(monkeypatch) -> None:  # noqa: ANN001
     _install(
         monkeypatch,
-        _Script(api=[_FakeResponse(payload={"code": 0, "data": {"total": 531}, "msg": "获取成功"})]),
+        _Script(
+            api=[_FakeResponse(payload={"code": 0, "data": {"total": 531}, "msg": "获取成功"})]
+        ),
     )
 
     assert plaza_core.plaza_request("GET", "/api/datasets/getDatasetsList") == {"total": 531}
@@ -175,7 +178,9 @@ def test_plaza_request_signs_in_once_per_transport(monkeypatch) -> None:  # noqa
 def test_a_declared_failure_carries_the_platform_reason(monkeypatch) -> None:  # noqa: ANN001
     _install(
         monkeypatch,
-        _Script(api=[_FakeResponse(payload={"code": 7, "data": {}, "msg": "查询失败:record not found"})]),
+        _Script(
+            api=[_FakeResponse(payload={"code": 7, "data": {}, "msg": "查询失败:record not found"})]
+        ),
     )
 
     with pytest.raises(plaza_core.PlazaError, match="record not found"):
@@ -209,7 +214,7 @@ def test_an_expired_plaza_cookie_is_re_minted_without_a_platform_login(monkeypat
     assert script.sessions[0].closed is True
 
 
-def test_a_dead_cas_cookie_forces_one_platform_refresh(monkeypatch) -> None:  # noqa: ANN001
+def test_a_dead_cas_cookie_never_refreshes_platform_tokens(monkeypatch) -> None:  # noqa: ANN001
     script = _install(
         monkeypatch,
         _Script(
@@ -230,9 +235,13 @@ def test_a_dead_cas_cookie_forces_one_platform_refresh(monkeypatch) -> None:  # 
         lambda *, require_cas_ticket: refreshes.append(require_cas_ticket),
     )
 
-    assert plaza_core.plaza_request("GET", "/api/datasets/getDatasetsList") == {"ok": True}
-    assert refreshes == [True]
-    assert script.sign_ins == 3
+    with pytest.raises(
+        plaza_core.CasTicketExpired, match="CAS login expired; run inspire login --cas"
+    ):
+        plaza_core.plaza_request("GET", "/api/datasets/getDatasetsList")
+    assert refreshes == []
+    assert script.sign_ins == 1
+    assert script.sessions[0].closed
 
 
 def test_a_session_that_never_authenticates_is_reported_as_expired(monkeypatch) -> None:  # noqa: ANN001
@@ -323,10 +332,17 @@ def sdk_client(tmp_path, monkeypatch):
     account.mkdir(parents=True)
     (account / "config.toml").write_text('[auth]\nusername="test"\npassword="unused"\n')
     client = InspireClient(account="tester", allow_browser=False)
-    client._transport.adopt_session(WebSession(
-        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
-        created_at=1000, account="tester", base_url=client.base_url,
-    ))
+    client._transport.adopt_session(
+        WebSession(
+            access_token="test-access",
+            refresh_token="test-refresh",
+            access_expires_at=9999999999,
+            refresh_expires_at=9999999999,
+            created_at=1000,
+            account="tester",
+            base_url=client.base_url,
+        )
+    )
     yield client
     client.close()
 
@@ -356,7 +372,15 @@ def test_expired_sdk_session_uses_browser_free_refresh(sdk_client, monkeypatch, 
     from inspire.platform.web.session import auth, refresh_lock
     from inspire.platform.web.session.models import WebSession
 
-    script = _install(monkeypatch, _Script(cas=[_FakeResponse(), _FakeResponse()]))
+    script = _install(
+        monkeypatch,
+        _Script(
+            api=[
+                _FakeResponse(status_code=401, payload={"code": 7}),
+                _FakeResponse(status_code=401, payload={"code": 7}),
+            ]
+        ),
+    )
     steps = []
     monkeypatch.setattr(refresh_lock, "exclusive_session_refresh", lambda *a, **k: nullcontext())
     monkeypatch.setattr(WebSession, "load", lambda **k: None)
@@ -383,10 +407,15 @@ def test_expired_sdk_session_uses_browser_free_refresh(sdk_client, monkeypatch, 
 
 
 def test_second_plaza_401_escalates_once(monkeypatch):
-    script = _install(monkeypatch, _Script(api=[
-        _FakeResponse(status_code=401, payload={"code": 7}),
-        _FakeResponse(status_code=401, payload={"code": 7}),
-    ]))
+    script = _install(
+        monkeypatch,
+        _Script(
+            api=[
+                _FakeResponse(status_code=401, payload={"code": 7}),
+                _FakeResponse(status_code=401, payload={"code": 7}),
+            ]
+        ),
+    )
     observed = []
     monkeypatch.setattr(get_transport(), "_refresh", lambda: observed.append(script.sign_ins))
     assert plaza_core.plaza_request("GET", "/read") == {"ok": True}
@@ -431,15 +460,18 @@ def test_sdk_plaza_deadline_bounds_every_step(sdk_client, monkeypatch, stage):
         assert len(script.sessions[0].calls) == 3
 
 
-@pytest.mark.parametrize("response,expected", [
-    (_FakeResponse(payload={"code": 7, "msg": "denied"}), "ValidationError"),
-    (_FakeResponse(status_code=403), "AuthenticationError"),
-    (_FakeResponse(status_code=429), "TransportError"),
-    (_FakeResponse(status_code=503), "MutationUncertainError"),
-    (_FakeResponse(status_code=501), "MutationUncertainError"),
-    (_FakeResponse(status_code=401, payload={"code": 7}), "MutationUncertainError"),
-    (_FakeResponse(json_error=True), "MutationUncertainError"),
-])
+@pytest.mark.parametrize(
+    "response,expected",
+    [
+        (_FakeResponse(payload={"code": 7, "msg": "denied"}), "ValidationError"),
+        (_FakeResponse(status_code=403), "AuthenticationError"),
+        (_FakeResponse(status_code=429), "TransportError"),
+        (_FakeResponse(status_code=503), "MutationUncertainError"),
+        (_FakeResponse(status_code=501), "MutationUncertainError"),
+        (_FakeResponse(status_code=401, payload={"code": 7}), "MutationUncertainError"),
+        (_FakeResponse(json_error=True), "MutationUncertainError"),
+    ],
+)
 def test_single_send_plaza_classification(sdk_client, monkeypatch, response, expected):
     import time
     from inspire.sdk import exceptions
@@ -468,10 +500,13 @@ def test_single_send_handshake_failure_does_not_mark_write_sent(sdk_client, monk
 def test_bare_plaza_uses_shared_process_default(monkeypatch):
     from inspire.platform.web import runtime
     from inspire.platform.web import session
+
     _install(monkeypatch, _Script())
     monkeypatch.setattr("inspire.accounts.current_account", lambda: None)
-    monkeypatch.setattr("inspire.platform.web.browser_api.core._configured_base_url",
-                        lambda: "https://qz.sii.edu.cn")
+    monkeypatch.setattr(
+        "inspire.platform.web.browser_api.core._configured_base_url",
+        lambda: "https://qz.sii.edu.cn",
+    )
     monkeypatch.setattr(session, "get_web_session", lambda **kwargs: _FakeWebSession())
     token = runtime.active_transport.set(None)
     try:
@@ -497,7 +532,15 @@ def test_refresh_http_step_uses_remaining_sdk_budget(sdk_client, monkeypatch):
     monkeypatch.setattr(refresh_lock, "exclusive_session_refresh", lambda *a, **k: nullcontext())
     cached = sdk_client._transport.session
     monkeypatch.setattr(WebSession, "load", lambda **k: cached)
-    _install(monkeypatch, _Script(cas=[_FakeResponse(), _FakeResponse()]))
+    _install(
+        monkeypatch,
+        _Script(
+            api=[
+                _FakeResponse(status_code=401, payload={"code": 7}),
+                _FakeResponse(status_code=401, payload={"code": 7}),
+            ]
+        ),
+    )
     timeouts = []
 
     def get(http, url, **kwargs):
@@ -525,7 +568,11 @@ def test_single_send_plaza_disconnect_is_uncertain(sdk_client, monkeypatch):
     monkeypatch.setattr(script, "api", disconnect)
     transport = sdk_client._transport
     transport._last_success = time.monotonic()
-    with transport.scope(), pytest.raises(SubmissionUncertainError), transport.single_send(create=True):
+    with (
+        transport.scope(),
+        pytest.raises(SubmissionUncertainError),
+        transport.single_send(create=True),
+    ):
         plaza_core.plaza_request("POST", "/write")
     assert len(script.sessions[0].calls) == 3
 
@@ -543,11 +590,21 @@ def test_plaza_and_platform_share_single_send_budget(sdk_client, monkeypatch):
     assert len(script.sessions[0].calls) == 3
 
 
-@pytest.mark.parametrize("stage", [
-    "plaza_start", "plaza_response", "plaza_exception",
-    "signin_cas", "signin_login", "signin_exception",
-    "refresh_cache", "refresh_renew", "refresh_login", "refresh_outer",
-])
+@pytest.mark.parametrize(
+    "stage",
+    [
+        "plaza_start",
+        "plaza_response",
+        "plaza_exception",
+        "signin_cas",
+        "signin_login",
+        "signin_exception",
+        "refresh_cache",
+        "refresh_renew",
+        "refresh_login",
+        "refresh_outer",
+    ],
+)
 def test_check_deadline_preserves_discarded_remaining_error(monkeypatch, stage):
     import requests
     from inspire.platform.errors import WaitTimeoutError
@@ -580,22 +637,30 @@ def test_check_deadline_preserves_discarded_remaining_error(monkeypatch, stage):
     monkeypatch.setattr(transport, "check_deadline", record_check)
     if stage.startswith("refresh_"):
         monkeypatch.setattr(auth, "refresh_session", lambda s, **kwargs: expire(error=True))
+
         def action():
             Transport._refresh(transport)
     else:
         if stage == "plaza_start":
             transport.deadline = 0
         elif stage in ("plaza_response", "plaza_exception"):
-            monkeypatch.setattr(script, "api", lambda: expire(
-                _FakeResponse(payload={"code": 0}), error=stage == "plaza_exception"))
+            monkeypatch.setattr(
+                script,
+                "api",
+                lambda: expire(
+                    _FakeResponse(payload={"code": 0}), error=stage == "plaza_exception"
+                ),
+            )
         elif stage == "signin_cas":
             monkeypatch.setattr(script, "cas", lambda: expire(_FakeResponse()))
         elif stage == "signin_login":
             monkeypatch.setattr(script, "login", lambda: expire(_FakeResponse()))
         else:
             monkeypatch.setattr(script, "cas", lambda: expire(error=True))
+
         def action():
             transport.plaza_request("GET", "/read")
+
     with pytest.raises(type(original.value)) as actual:
         action()
     assert type(actual.value) is type(original.value)
@@ -709,11 +774,11 @@ def test_concurrent_plaza_calls_exclusively_borrow_one_cookie_jar(monkeypatch):
     assert len(script.sessions) == 1
 
 
-def test_disabled_cas_sign_in_fails_clearly_without_network(monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setattr(plaza_core, "CAS_SIGN_IN_ENABLED", False)
+def test_missing_cas_session_fails_clearly_without_network(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(plaza_core.CasSession, "load", lambda account: None)
     script = _install(monkeypatch, _Script())
 
-    with pytest.raises(plaza_core.PlazaUnavailable, match="only accepts CAS sign-in"):
+    with pytest.raises(plaza_core.PlazaUnavailable, match="needs a CAS login"):
         plaza_core.plaza_request("GET", "/api/datasets/getDatasetsList")
 
     assert script.sessions == []
