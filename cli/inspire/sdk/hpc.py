@@ -238,6 +238,7 @@ class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
             description=spec.description,
             keep_after_finish_hours=spec.keep_after_finish_hours,
             public_path_readonly=spec.public_path_readonly,
+            public_path_mount_mode=spec.public_path_mount_mode,
             session=self.session,
         )
         payload = core.hpc_plan_payload(

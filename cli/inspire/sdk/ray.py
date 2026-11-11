@@ -163,6 +163,7 @@ class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
             shm_size=spec.shm_gib,
             workers=tuple(spec.workers),
             public_path_readonly=spec.public_path_readonly,
+            public_path_mount_mode=spec.public_path_mount_mode,
         )
         payload = core.ray_plan_payload(
             body=body,

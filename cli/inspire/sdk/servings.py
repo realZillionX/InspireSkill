@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from inspire.platform.web.session.envelope import _v2_error_metadata
+from inspire.services.public_path import public_path_mount_fields
 from .models import Instance
 from .instances import sdk_instances, label_selectors
 from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget
@@ -316,7 +317,7 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
             custom_domain=domain,
             resource_spec_price=core.build_resource_spec_price(quota),
             enable_auto_scaling=spec.auto_scaling,
-            is_publicpath_readonly=spec.public_path_readonly,
+            **public_path_mount_fields(spec.public_path_mount_mode, spec.public_path_readonly),
         )
         payload = sanitize_public_data(
             dict(
@@ -341,6 +342,7 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
                 custom_domain=domain,
                 auto_scaling=spec.auto_scaling,
                 public_path_readonly=spec.public_path_readonly,
+                public_path_mount_mode=kwargs.get("publicpath_mount_mode"),
             ),
             omit_urls=True,
         )

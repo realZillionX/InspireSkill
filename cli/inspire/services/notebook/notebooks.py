@@ -1,6 +1,8 @@
 """Notebook creation and observation cores shared by CLI and SDK."""
 
 from __future__ import annotations
+from inspire.services.public_path import public_path_mount_fields
+
 from typing import Any, Optional
 from inspire.config import Config
 from inspire.services.catalog.quotas import ResolvedQuota, build_resource_spec_price
@@ -101,6 +103,7 @@ def build_notebook_create_kwargs(
     stop_hour=None,
     stop_minute=None,
     public_path_readonly=None,
+    public_path_mount_mode=None,
     project_path_readonly=None,
 ) -> dict[str, Any]:
     return dict(
@@ -124,7 +127,7 @@ def build_notebook_create_kwargs(
         enable_notification=enable_notification,
         stop_hour=stop_hour,
         stop_minute=stop_minute,
-        is_publicpath_readonly=public_path_readonly,
+        **public_path_mount_fields(public_path_mount_mode, public_path_readonly),
         is_projectuserspath_readonly=project_path_readonly,
     )
 

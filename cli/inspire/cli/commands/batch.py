@@ -8,6 +8,9 @@ from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
 from typing import Any
 
+from inspire.cli.utils.public_path import public_path_mode
+from inspire.services.public_path import public_path_mount_fields
+
 import click
 
 try:  # pragma: no cover - Python 3.11 path
@@ -130,7 +133,6 @@ _PUBLIC_FIELDS_BY_KIND = {
         ("description", "description"),
         ("keep_after_success", "keep_after_success_hours"),
         ("keep_after_failure", "keep_after_failure_hours"),
-        ("public_path_readonly", "public_path_readonly"),
         ("command", "command"),
     ),
     "hpc": (
@@ -147,7 +149,6 @@ _PUBLIC_FIELDS_BY_KIND = {
         ("auto_stop", "auto_stop"),
         ("auto_stop_after", "auto_stop_after_minutes"),
         ("enable_notification", "notifications"),
-        ("public_path_readonly", "public_path_readonly"),
         ("project_path_readonly", "project_path_readonly"),
         ("wait", "wait"),
         ("post_start", "post_start"),
@@ -174,6 +175,12 @@ _PUBLIC_FIELDS_BY_KIND = {
 class _FormatMap(dict[str, Any]):
     def __missing__(self, key: str) -> str:
         raise KeyError(f"Unknown template variable: {key}")
+
+
+def _batch_public_path_mode(item: dict[str, Any]) -> int | None:
+    return public_path_mode(
+        item.get("public_path_mount_mode"), _tristate_bool(item, "public_path_readonly")
+    )
 
 
 def _load_config(path: Path) -> dict[str, Any]:
@@ -504,6 +511,7 @@ def _public_batch_plan(
     *,
     kind: str,
     name: str,
+    payload: dict[str, Any],
     overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     output: dict[str, Any] = {"name": name}
@@ -524,6 +532,8 @@ def _public_batch_plan(
             output.pop(key, None)
         else:
             output[key] = value
+    if "publicpath_mount_mode" in payload:
+        output["public_path_mount_mode"] = payload["publicpath_mount_mode"]
     return json_formatter.sanitize_json_data(output)
 
 
@@ -773,7 +783,7 @@ def _prepare_training_item(
         description=_optional_str(item, "description"),
         keep_after_success_hours=_optional_hours(item, "keep_after_success"),
         keep_after_failure_hours=_optional_hours(item, "keep_after_failure"),
-        public_path_readonly=_tristate_bool(item, "public_path_readonly"),
+        public_path_mount_mode=_batch_public_path_mode(item),
         fault_tolerance_retry_interval_sec=_optional_int(
             item, "fault_tolerance_retry_interval", min_value=1
         ),
@@ -882,7 +892,7 @@ def _prepare_hpc_item(
         ),
         description=_optional_str(item, "description"),
         keep_after_finish_hours=_optional_hours(item, "keep_after_finish"),
-        public_path_readonly=_tristate_bool(item, "public_path_readonly"),
+        public_path_mount_mode=_batch_public_path_mode(item),
         session=session,
     )
 
@@ -1048,7 +1058,6 @@ def _prepare_notebook_item(
         "image_url": selected_image.url,
         "logic_compute_group_id": resolved_quota.logic_compute_group_id,
         "quota_id": resolved_quota.quota_id,
-        "gpu_type": resolved_quota.gpu_type,
         "gpu_count": resolved_quota.gpu_count,
         "cpu_count": resolved_quota.cpu_count,
         "memory_size": resolved_quota.memory_gib,
@@ -1075,9 +1084,9 @@ def _prepare_notebook_item(
         # The timer only runs when auto-stop is armed, exactly as the create
         # command couples them.
         create_kwargs["auto_stop"] = True
+    create_kwargs.update(public_path_mount_fields(_batch_public_path_mode(item)))
     for key, payload_key in (
         ("enable_notification", "enable_notification"),
-        ("public_path_readonly", "is_publicpath_readonly"),
         ("project_path_readonly", "is_projectuserspath_readonly"),
     ):
         value = _tristate_bool(item, key)
@@ -1235,7 +1244,7 @@ def _prepare_ray_item(
         group=_require_condition_str(item, "group", kind="ray"),
         quota=_require_condition_str(item, "quota", kind="ray"),
         shm_size=_optional_int(item, "shm_size", min_value=1),
-        public_path_readonly=_tristate_bool(item, "public_path_readonly"),
+        public_path_mount_mode=_batch_public_path_mode(item),
         workers=_ray_worker_specs(
             item,
             ctx=ctx,
@@ -1327,8 +1336,8 @@ def _prepare_serving_item(
         "custom_domain": _optional_str(item, "custom_domain"),
         "resource_spec_price": _build_serving_resource_spec_price(resolved),
     }
+    payload.update(public_path_mount_fields(_batch_public_path_mode(item)))
     for key, kwarg in (
-        ("public_path_readonly", "is_publicpath_readonly"),
         ("auto_scaling", "enable_auto_scaling"),
     ):
         value = _tristate_bool(item, key)
@@ -1476,7 +1485,7 @@ def job_batch(
         nodes, max_time, auto_fault_tolerance, fault_tolerance_max_retry,
         fault_tolerance_retry_interval, enable_notification, exclude_nodes,
         specified_nodes, shm_size, dataset, env, description, keep_after_success,
-        keep_after_failure, public_path_readonly
+        keep_after_failure, public_path_mount_mode, public_path_readonly
         `dataset` takes one "<name>:<version>" or a list of them; `env` takes
         either a "KEY=VALUE" list or a table.
 
@@ -1520,6 +1529,7 @@ def job_batch(
                         item,
                         kind="job",
                         name=str(plan.create_kwargs["name"]),
+                        payload=plan.create_kwargs,
                         overrides={
                             "workspace": workspace_label(
                                 session,
@@ -1605,7 +1615,7 @@ def hpc_batch(
         Optional fields use create-command defaults: priority, image_type,
         instance_count, number_of_tasks, cpus_per_task, memory_per_cpu,
         enable_hyper_threading, max_time, keep_after_finish, dataset,
-        description, enable_notification, public_path_readonly
+        description, enable_notification, public_path_mount_mode, public_path_readonly
         `dataset` takes one "<name>:<version>" or a list of them.
 
     \b
@@ -1642,6 +1652,7 @@ def hpc_batch(
                         item,
                         kind="hpc",
                         name=str(create_kwargs["job_name"]),
+                        payload=create_kwargs,
                         overrides={
                             "priority": create_kwargs.get("task_priority"),
                             "instances": create_kwargs.get("instance_count"),
@@ -1711,7 +1722,7 @@ def notebook_batch(
         name, quota, workspace, project, group, image
         Optional fields use create-command defaults: priority, shm_size,
         auto_stop, auto_stop_after, wait, post_start, post_start_script,
-        dataset, enable_notification, public_path_readonly,
+        dataset, enable_notification, public_path_mount_mode, public_path_readonly,
         project_path_readonly
         `dataset` takes one "<name>:<version>" or a list of them;
         `auto_stop_after` is in minutes and arms auto_stop.
@@ -1754,6 +1765,7 @@ def notebook_batch(
                         item,
                         kind="notebook",
                         name=str(plan["name"]),
+                        payload=plan["create_kwargs"],
                         overrides={
                             "workspace": plan["workspace_name"],
                             "project": plan["project_name"],
@@ -1821,7 +1833,7 @@ def ray_batch(
     Required fields after expansion:
         name, command, workspace, project, image, group, quota, workers
         Optional fields use create-command defaults: priority, description,
-        image_type, shm_size, public_path_readonly
+        image_type, shm_size, public_path_mount_mode, public_path_readonly
         Ray takes no dataset mounts: the platform rejects them, and the
         console form has no 官方数据集 section either.
 
@@ -1858,6 +1870,7 @@ def ray_batch(
                         item,
                         kind="ray",
                         name=str(body["name"]),
+                        payload=body,
                     )
                 )
             else:
@@ -1919,7 +1932,7 @@ def serving_batch(
         name, model, workspace, project, group, quota, image, command, port
         Optional fields use create-command defaults: priority, description,
         replicas, nodes_per_replica, shm_size, custom_domain, auto_scaling,
-        public_path_readonly
+        public_path_mount_mode, public_path_readonly
         Serving takes no dataset mounts: the platform rejects them.
 
     \b
@@ -1954,6 +1967,7 @@ def serving_batch(
                         item,
                         kind="serving",
                         name=str(payload["name"]),
+                        payload=payload,
                     )
                 )
             else:

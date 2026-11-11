@@ -7,6 +7,7 @@ shares business logic and suspends at native I/O boundaries; it is not a pool of
 synchronous clients. Both clients share the CLI package and installation.
 """
 
+from inspire.services.public_path import PublicPathMountMode
 from inspire.services.execution.notebook_transfer import TransferResult
 from inspire.services.execution.remote_exec import ExecResult
 from inspire.exec_output import iter_output_file
@@ -150,6 +151,7 @@ from .models_observations import (
 
 
 __all__ = [
+    "PublicPathMountMode",
     "AsyncJobHandle",
     "AsyncNotebookHandle",
     "AsyncHPCJobHandle",

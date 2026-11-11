@@ -385,6 +385,7 @@ def create_notebook_and_report(
     stop_hour: Optional[int] = None,
     stop_minute: Optional[int] = None,
     public_path_readonly: Optional[bool] = None,
+    public_path_mount_mode: int | None = None,
     project_path_readonly: Optional[bool] = None,
 ) -> str | None:
     try:
@@ -395,7 +396,8 @@ def create_notebook_and_report(
                 quota=quota, shm_size=shm_size, auto_stop=auto_stop, workspace_id=workspace_id,
                 task_priority=task_priority, node_id=node_id, dataset_info=dataset_info,
                 enable_notification=enable_notification, stop_hour=stop_hour, stop_minute=stop_minute,
-                public_path_readonly=public_path_readonly, project_path_readonly=project_path_readonly,
+                public_path_readonly=public_path_readonly,
+                public_path_mount_mode=public_path_mount_mode, project_path_readonly=project_path_readonly,
             ),
             session=session,
         )
@@ -742,6 +744,7 @@ def run_notebook_create(
     enable_notification: Optional[bool] = None,
     auto_stop_after: Optional[int] = None,
     public_path_readonly: Optional[bool] = None,
+    public_path_mount_mode: int | None = None,
     project_path_readonly: Optional[bool] = None,
 ) -> None:
     del project_explicit
@@ -955,6 +958,7 @@ def run_notebook_create(
         stop_hour=stop_hour,
         stop_minute=stop_minute,
         public_path_readonly=public_path_readonly,
+        public_path_mount_mode=public_path_mount_mode,
         project_path_readonly=project_path_readonly,
     )
     if not notebook_id:

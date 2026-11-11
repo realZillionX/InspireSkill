@@ -668,6 +668,7 @@ class Notebooks(Service):
             stop_hour=stop_hour,
             stop_minute=stop_minute,
             public_path_readonly=spec.public_path_readonly,
+            public_path_mount_mode=spec.public_path_mount_mode,
             project_path_readonly=spec.project_path_readonly,
         )
         return NotebookPlan(

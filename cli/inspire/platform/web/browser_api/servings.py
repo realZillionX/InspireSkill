@@ -21,6 +21,8 @@ were silently broken once already.
 
 from __future__ import annotations
 
+from inspire.services.public_path import public_path_mount_fields
+
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
@@ -596,6 +598,7 @@ def create_serving(
     inference_serving_type: str = "CUSTOM",
     model_source: str | None = None,
     is_publicpath_readonly: bool | None = None,
+    publicpath_mount_mode: int | None = None,
     enable_auto_scaling: bool | None = None,
     session: Optional[WebSession] = None,
 ) -> dict[str, Any]:
@@ -606,7 +609,7 @@ def create_serving(
     a nested `resource_spec_price` proto-style object rather than a flat
     `spec_id`.
 
-    `is_publicpath_readonly` and `enable_auto_scaling` are omitted unless the
+    `publicpath_mount_mode` and `enable_auto_scaling` are omitted unless the
     caller passes them, so a create that does not ask for them is byte-for-byte
     what it was before they existed. `queue_id`, `dataset_info`, `envs` and
     `scale_status` are **rejected** by this Action and have no counterpart.
@@ -636,8 +639,7 @@ def create_serving(
         body["shm_gi"] = int(shm_gi)
     if model_source:
         body["model_source"] = model_source
-    if is_publicpath_readonly is not None:
-        body["is_publicpath_readonly"] = bool(is_publicpath_readonly)
+    body.update(public_path_mount_fields(publicpath_mount_mode, is_publicpath_readonly))
     if enable_auto_scaling is not None:
         body["enable_auto_scaling"] = bool(enable_auto_scaling)
 

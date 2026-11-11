@@ -247,7 +247,7 @@ def check_cli_payload(kind, client, catalog, monkeypatch):
     # JSON output deliberately scrubs platform paths; apply the same public rendering to SDK plan.
     from inspire.services.utils.json_formatter import format_json
 
-    assert json.loads(result.output) == json.loads(format_json(planned.to_dict()))
+    assert json.loads(result.stdout) == json.loads(format_json(planned.to_dict()))
     assert (
         spec.entrypoint not in planned.summary
         if kind == "hpc"

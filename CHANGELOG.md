@@ -9,11 +9,14 @@
 - Redact sensitive server error echoes with the shared sanitizer and discard raw browser error bodies; preserve browser, wrapped catalog, non-JSON, and missing-ID response context.
 - Preserve strict default status return types with literal overloads for sync/async jobs and HPC, while typing partial and dynamic-bool calls explicitly.
 - Add opt-in partial batch status results to synchronous and asynchronous SDK jobs/HPC polling: preserve input order and duplicates, distinguish missing references and workspace validation errors, and keep strict defaults and whole-batch failure propagation.
+- Add opt-in `--fields NAME[,NAME...]` token reports and offline `--bundles` scanning to `scan_v2_surface.py`. Each name reports `token_presence` separately from `request_field_evidence: not linked to a request body`; token matches do not establish request-body usage or platform acceptance. Default output, default JSON schema and read-only probes are unchanged. Offline tests use inline expectations for SDK/CLI payloads and small synthetic JavaScript snippets.
+- Show resolved public-path mount modes in all five batch dry-run outputs for JSON and TOML, including legacy boolean conversion. Convert legacy options once at CLI/batch entry so explicit legacy use warns once; new and omitted parameters do not warn.
+- Fix project public-path mounts for Notebook, training, HPC, Ray, and Serving creation: expose `PublicPathMountMode` and `public_path_mount_mode` in the sync/async SDK, `--public-path-mount-mode` in the CLI, and the same field in batch configs. Send only the current integer wire field; preserve omission, deprecate legacy booleans, and reject conflicting values without retrying writes.
+- Prefer the current mount mode in detail views, including the not-mounted state, with legacy response fallback.
+- Fix Notebook batch passing an unsupported `gpu_type` argument so public-path mount modes reach the Notebook creator.
 - Add `inspire login --cas` with SMS two-step and Feishu QR login, private per-account CAS sessions, and data plaza catalogue access.
 - Reuse valid CAS sessions for automatic OAuth device approval and silent renewal after refresh credentials expire; retain manual authorization fallback for explicit login.
 - Report missing or expired CAS sessions with an actionable login hint without attempting OAuth refresh for CAS ticket failures.
-
-
 - 登录改用官方 OAuth 设备授权，`inspire login --account NAME` 自动创建账号并登录（不带 `--account` 时登录当前活动账号；尚无任何账号时自动创建名为 `default` 的账号），`account add` 保留为兼容创建入口；访问令牌自动刷新，用户名和密码不再存储或读取（包括旧配置和环境变量），已有用户需为每个账号重新登录一次；`inspire init` 发现账号未登录时会直接发起设备授权。
 - `logout` 与 `account remove` 统一为删除本地账号（包含令牌、配置和 bridge/tunnel 状态），需确认；平台工作负载继续运行，删除活动账号会清除活动指针。可用 `account add --no-login` 暂缓授权；传入旧的 `--username` / `--password` 时同样跳过授权，避免旧脚本卡在等待确认。
 - 数据广场（`aip.sii.edu.cn`）只支持 CAS 登录：普通 OAuth 设备登录不提供目录访问，完成 `inspire login --cas` 后可使用 `dataset list / show / tags / applications`；`--dataset` 挂载和 `dataset validate` 不受影响。

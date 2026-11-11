@@ -6,6 +6,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from inspire.cli.utils.public_path import public_path_mode
+
 import click
 
 from .notebook_create_flow import maybe_run_post_start, run_notebook_create
@@ -194,9 +196,16 @@ def _with_workspace_display_name(item: dict, workspace_name: str) -> dict:
     ),
 )
 @click.option(
+    "--public-path-mount-mode",
+    type=click.IntRange(0, 2),
+    default=None,
+    help="Project public path: 0=read-write, 1=read-only, 2=not mounted. Omit for platform default.",
+)
+@click.option(
     "--public-path-readonly/--no-public-path-readonly",
     default=None,
     help=(
+        "Deprecated: use --public-path-mount-mode. "
         "Mount the project's public path read-only inside the container "
         "(平台 高级设置·项目Public只读挂载). Omit to leave the platform default."
     ),
@@ -256,6 +265,7 @@ def create_notebook_cmd(
     datasets: tuple[str, ...],
     enable_notification: Optional[bool],
     public_path_readonly: Optional[bool],
+    public_path_mount_mode: int | None,
     project_path_readonly: Optional[bool],
     wait: bool,
     post_start: Optional[str],
@@ -282,6 +292,7 @@ def create_notebook_cmd(
           --image <image> --group CPU资源-2 -q 0,4,32 \\
           --dataset pixabay-81k:v0 --auto-stop-after 120
     """
+    public_path_mount_mode = public_path_mode(public_path_mount_mode, public_path_readonly)
     if post_start and post_start_script:
         raise click.UsageError("Use either --post-start or --post-start-script, not both.")
 
@@ -309,7 +320,7 @@ def create_notebook_cmd(
         dataset_mounts=dataset_mounts,
         enable_notification=enable_notification,
         auto_stop_after=auto_stop_after,
-        public_path_readonly=public_path_readonly,
+        public_path_mount_mode=public_path_mount_mode,
         project_path_readonly=project_path_readonly,
     )
 

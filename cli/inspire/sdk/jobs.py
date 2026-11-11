@@ -485,6 +485,7 @@ class Jobs(Service):
             keep_after_success_hours=spec.keep_after_success_hours,
             keep_after_failure_hours=spec.keep_after_failure_hours,
             public_path_readonly=spec.public_path_readonly,
+            public_path_mount_mode=spec.public_path_mount_mode,
             enable_notification=(
                 spec.enable_notification
                 if spec.enable_notification is not None

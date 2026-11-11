@@ -10,15 +10,15 @@
 | --- | --- | --- |
 | 1 | [`browser_api/`](../../cli/inspire/platform/web/browser_api/) | Canonical request construction, response key extraction, and normalization |
 | 2 | [`session/`](../../cli/inspire/platform/web/session/), [`plaza/`](../../cli/inspire/platform/web/plaza/) | Per-account isolation, login, cookies, proxies, transport retries, and Dataset Hub client |
-| 3 | `cli/tests/test_browser_api_*.py` | Unit tests locking wrapper contracts and output boundaries |
+| 3 | `cli/tests/test_browser_api_*.py` | Unit tests checking wrapper behavior and output boundaries |
 | 4 | Live console SPA network requests | Authoritative proof of whether a platform capability exists and what payload it sends |
-| 5 | `GET {base_url}/discovery` | Candidate Action names and request schemas (**a hint, not a contract** — see Section 6) |
-| 6 | Click `--help` | Public CLI contract |
+| 5 | `GET {base_url}/discovery` | Candidate Action names and request schemas (**a hint, not proof of supported behavior** — see Section 6) |
+| 6 | Click `--help` | Public CLI interface |
 
 **Core invariants:**
 - All `/api/v2` JSON Action requests are constructed inside `browser_api/` (instance PTY WebSockets in `job_shell.py` and login bootstrap in `session/auth.py` are the only non-Action console flows).
 - All v2 JSON responses are unpacked through `_v2_result()` in `session/envelope.py` (re-exported by `browser_api/core.py`).
-- Only verified, reproducible contracts with active or explicitly evaluated consumers belong in this document.
+- Only verified, reproducible behavior with active or explicitly evaluated consumers belong in this document.
 
 ## 2. Request & Response Contract
 
@@ -128,6 +128,70 @@ Workspace discovery uses `user.ListAccessibleWorkspaces` with `{}` and reads `Re
 
 Never conclude a capability is missing based solely on `/discovery` — always check `*Console` variants and the SPA bundle first.
 
+### Offline request-field evidence
+
+From `cli/`, scan an already downloaded directory without loading credentials or
+contacting any server:
+
+```bash
+uv run python ../scripts/scan_v2_surface.py \
+  --bundles /path/to/sanitized-bundles \
+  --fields is_publicpath_readonly,publicpath_mount_mode \
+  --json /tmp/request-field-evidence.json
+```
+
+`--bundles` reads only immediate `*.js` files, skips session loading, fetching and
+`/discovery`, and rejects `--probe`. An empty directory is an error. Existing
+flags, default output and default JSON schema remain unchanged. `--fields` is
+opt-in in both local and normal scanning modes; it adds a `field_evidence`
+JSON section and a text field section.
+
+Each requested name is reported once with two observations: `token_presence`
+is `present` or `no token evidence`; `request_field_evidence` is always
+`not linked to a request body`. Whole JavaScript identifier matching across all
+input bundles cannot associate a token with a submit call. A token may come from
+read/compatibility code or a `delete` expression. Neither presence nor absence
+proves that a field is sent, omitted, accepted, or rejected by the platform.
+Reports contain field names and classifications, never source excerpts, matched
+values, or bundle filenames. Only scan sanitized bundles when sharing the
+existing Action/REST inventory.
+
+Offline tests use inline expectations to capture SDK and CLI create/batch
+payloads for Notebook, training, HPC, Ray and Serving. Issue #95 records rejection
+of `is_publicpath_readonly`; none of these create paths sends that field.
+Tests cover omitted and explicit mount modes, legacy boolean conversion,
+conflicting options, strict integer validation and detail response fallback.
+Batch JSON and TOML dry-run output shows the resolved mount mode and omits it
+when unset. Explicit legacy use emits one deprecation warning per entry; new
+or omitted parameters emit none. Scanner tests use small synthetic JavaScript
+snippets, including send/read swaps that leave token presence unchanged.
+
+### Optional maintainer write regression (manual only)
+
+There is no automatic write mode in this scanner or its tests. A maintainer may
+run a separate, explicitly authorized smoke only after all of the following:
+
+1. Select a dedicated test account with credentials configured locally; never
+   place credentials, cookies, raw responses or resource identities in test data
+   or reports. Explicitly approve the selected workload and one create attempt.
+2. Pin the workspace, project, group, quota, image and unique disposable name.
+   Set hard CPU/GPU/memory, replica/worker, cost and wall-time caps before submit
+   (for example one minimal CPU allocation, zero GPUs where supported, and a
+   five-minute deadline). Verify quota and cleanup permissions. For Ray bound
+   both head and worker totals; for Serving bound replicas and disable scaling.
+3. Check current `<workload> create/status/stop/delete --help`, prepare the exact
+   stop/delete commands and an independent cleanup operator/watchdog, and review
+   a dry-run plan before the single create. Start with a harmless short command.
+4. Query that exact created resource, compare the requested optional setting to
+   its observed state, then stop it in a `finally` cleanup path. Confirm terminal
+   state and delete the disposable resource when appropriate. Clean up even if
+   the query or assertion fails; record only sanitized field-level outcomes.
+5. If submission times out, fails, or returns no identity, do not guess a renamed
+   field and resubmit. Reconcile the unique name in the selected workspace using
+   read-only queries or ask the cleanup operator to identify the resource. An
+   uncertain result is not permission for a second create. Escalate cleanup
+   failure and verify no resource remains running before calling the smoke done.
+
 ## 7. Probing Methodology
 
 When verifying undocumented Actions or fields without mutating state:
@@ -166,7 +230,7 @@ Referer: `/jobs/distributedTraining` (detail: `/jobs/distributedTrainingDetail/{
 
 | Action | Request Keys | Response (`Result`) | CLI Consumer |
 | --- | --- | --- | --- |
-| `CreateJobConsole` † | See [Section 9](#9-creation-payload-contracts) | `{job_id, sub_code, sub_msg}` | `job create`, `job batch` |
+| `CreateJobConsole` † | See [Section 9](#9-creation-payload-fields) | `{job_id, sub_code, sub_msg}` | `job create`, `job batch` |
 | `GetTrainScheduleConfig` | `{workspace_id}` | `train_enable_specified_nodes` | `job create --specified-node`, `job batch` |
 | `GetJob` | `{job_id}` | `name`, `status`, `command`, `framework_config[]`, `dataset_info[]`, `node_infos[]`, `specified_nodes[]`, `exclude_nodes[]`, `project_id`, `workspace_id`, `logic_compute_group_name`, `created_at`, `finished_at` | `job status` / `command` / `logs` / `metrics` / `wait` |
 | `ListJobs` | `{workspace_id, page_num, page_size, created_by, status?, keyword?}` or batch `{workspace_id, job_ids[]}` ([Section 8.15](#815-batch-reads--listjobs--listjobevents)) | `{jobs[], total}` (`total` is `int`) | `job list`, `job status`, Name Resolver, `cache refresh` |
@@ -204,7 +268,7 @@ Referer: `/jobs/highPerformanceComputing` (detail: `/jobs/hpcDetail/{job_id}`).
 
 | Action | Request Keys | Response (`Result`) | CLI Consumer |
 | --- | --- | --- | --- |
-| `CreateJobConsole` † | See [Section 9](#9-creation-payload-contracts) | `{job_id, sub_code, sub_msg}` | `hpc create`, `hpc batch` |
+| `CreateJobConsole` † | See [Section 9](#9-creation-payload-fields) | `{job_id, sub_code, sub_msg}` | `hpc create`, `hpc batch` |
 | `GetJob` | `{job_id}` | `{job_name, status, sbatch_script{}, slurm_cluster_spec{}, nodes[], steps, description, ttl_after_job_finish_seconds, dataset_info[], project_id, workspace_id, …}` | `hpc status`, `hpc metrics` |
 | `ListJobs` | `{workspace_id, page_num, page_size, created_by, status?}` or batch `{workspace_id, job_ids[]}` | `{jobs[]\|items[], total}` (`total` is `str`) | `hpc list`, `hpc status`, Name Resolver |
 | `ListJobEvents` | `{pageNum: -1, pageSize: 200, filter:{object_ids:[job_id], object_type:"HPC_JOB"}, sorter:[{field:"last_timestamp", sort:"ascend"}]}` | `{events[]\|items[]\|list[]}` | `hpc events` |
@@ -230,7 +294,7 @@ Referer: `/jobs/ray`.
 
 | Action | Request Keys | Response (`Result`) | CLI Consumer |
 | --- | --- | --- | --- |
-| `CreateJob` | See [Section 9](#9-creation-payload-contracts) | `{ray_job_id, sub_code, sub_msg}` | `ray create`, `ray batch` |
+| `CreateJob` | See [Section 9](#9-creation-payload-fields) | `{ray_job_id, sub_code, sub_msg}` | `ray create`, `ray batch` |
 | `GetJob` | `{ray_job_id}` | `status`, `head_node{}`, `worker_groups[]`, `entrypoint`, `creator{}`, `priority_name` | `ray status`, `ray metrics` |
 | `ListJobs` | `{workspace_id, page_num, page_size, filter_by:{user_id:[…]}}` | `{items[], total}` (`str`) | `ray list`, Name Resolver |
 | `ListJobCreators` | `{workspace_id}` | `{items[]}` | — |
@@ -257,7 +321,7 @@ Referer: `/jobs/interactiveModeling`.
 
 | Action | Request Keys | Response (`Result`) | CLI Consumer |
 | --- | --- | --- | --- |
-| `CreateNotebook` | See [Section 9](#9-creation-payload-contracts) | `{notebook_id, sub_code, sub_msg}` | `notebook create`, `notebook batch` |
+| `CreateNotebook` | See [Section 9](#9-creation-payload-fields) | `{notebook_id, sub_code, sub_msg}` | `notebook create`, `notebook batch` |
 | `GetNotebook` | `{notebook_id}` | `status`, `sub_status`, `workspace{}`, `project{}`, `logic_compute_group{}`, `quota{}`, `node{}`, `extra_info{}`, `dataset_info[]` | `notebook status` / `metrics` / `exec` / `shell` / `ssh` / `proxy-url`, `wait` |
 | `ListNotebooks` | `{workspace_id, page, page_size, filter_by:{keyword, user_id[], logic_compute_group_id[], status[], mirror_url[]}, order_by:[{field:"created_at", order:"desc"}]}` | `{list[], total}` (`int`) | `notebook list`, Name Resolver |
 | `ListNotebookCreators` † | `{workspace_id}` | `{list[], total}` | — |
@@ -292,7 +356,7 @@ Referer: `/jobs/modelDeployment`. Route uses an **underscore** (`inference_servi
 
 | Action | Request Keys | Response (`Result`) | CLI Consumer |
 | --- | --- | --- | --- |
-| `CreateServingConsole` † | See [Section 9](#9-creation-payload-contracts) | `{inference_serving_id, sub_code, sub_msg}` | `serving create`, `serving batch` |
+| `CreateServingConsole` † | See [Section 9](#9-creation-payload-fields) | `{inference_serving_id, sub_code, sub_msg}` | `serving create`, `serving batch` |
 | `ListServings` | `{workspace_id, page, page_size, filter_by:{my_serving:true, keyword?, project_id[]?, status[]?, inference_serving_type[]?}}` | `{inference_servings[], total}` | `serving list`, Name Resolver |
 | `GetServing` | `{inference_serving_id}` | `status`, `replicas`, `node_num_per_replica`, `model_id`, `model_version`, `mirror_id`, `port`, `command`, `resource_spec_price{}`, `extra_info{node_names[], service}` | `serving status` / `api` / `metrics` |
 | `ListServingVersions` | `{inference_serving_id}` | `{inference_servings[]\|list[], total}` | `serving versions` |
@@ -384,7 +448,7 @@ Referer: `/jobs/interactiveModeling`.
 | `UpdateImage` † | `{id, visibility?, description?}` | — | `image set-visibility` (requires bare `id`, not `image_id`) |
 | `DeleteImage` | `{image_id}` | — | `image delete` |
 
-Direct push was verified against the console request contract and a controlled register → push → sync → readiness round trip. The initial state is `PENDING_SYNC`; synchronization transitions the uploaded image to `SUCCESS`. Numeric `add_method: 2` selects `IMAGE_ADDRESS` and is not equivalent to `DIRECT_PUSH`. SyncImage uses camelCase keys even though CreateImage uses snake_case. Registry content and catalog synchronization are separate steps.
+Direct push was verified against the console request format and a controlled register → push → sync → readiness round trip. The initial state is `PENDING_SYNC`; synchronization transitions the uploaded image to `SUCCESS`. Numeric `add_method: 2` selects `IMAGE_ADDRESS` and is not equivalent to `DIRECT_PUSH`. SyncImage uses camelCase keys even though CreateImage uses snake_case. Registry content and catalog synchronization are separate steps.
 
 ---
 
@@ -473,18 +537,34 @@ Called per service route (`POST /api/v2/{notebook|train|hpc|ray|inference_servin
 
 ---
 
-## 9. Creation Payload Contracts
+## 9. Creation Payload Fields
+
+The matrix below describes the documented wrapper surface. “Not exposed” is not
+evidence of platform rejection.
 
 | Field | `notebook.CreateNotebook` | `train.CreateJobConsole` † | `hpc.CreateJobConsole` † | `ray.CreateJob` | `inference_serving.CreateServingConsole` † |
 | --- | --- | --- | --- | --- | --- |
-| `dataset_info` | Accepted | Accepted | Accepted | **Rejected** | **Rejected** |
-| `envs` (`[{name, value}]`) | **Rejected** | Accepted (not echoed by `GetJob`) | **Rejected** | **Rejected** | **Rejected** |
-| `description` | **Rejected** | Accepted | Accepted | Accepted | Accepted |
-| `is_publicpath_readonly` | Accepted | Accepted | Accepted | Accepted | Accepted |
-| `is_projectuserspath_readonly` | Accepted (Maintainer only) | **Rejected** | **Rejected** | — | — |
+| `dataset_info` | Exposed | Exposed | Exposed | Not exposed | Not exposed |
+| `envs` (`[{name, value}]`) | Not exposed | Exposed (not echoed by `GetJob`) | Not exposed | Not exposed | Not exposed |
+| `description` | Not exposed | Exposed | Exposed | Exposed | Exposed |
+| `publicpath_mount_mode` (`0`, `1`, `2`) | Exposed | Exposed | Exposed | Exposed | Exposed |
+| `is_projectuserspath_readonly` | Exposed (Maintainer only) | Not exposed | Not exposed | — | — |
+
+**Public-path behavior (console bundle inspected offline on 2026-11-11):**
+`publicpath_mount_mode` is an integer: `0` read-write (`xiangMuPublicGuaZaiDuXie`),
+`1` read-only (`ZhiDu`), `2` not mounted (`BuGuaZai`). The Notebook, training, HPC,
+Ray, and Serving forms submit it at the top level to the Actions above. Forms default
+to `0`; the CLI/SDK intentionally omit it when neither public option was specified.
+Legacy data uses `publicpath_mount_mode ?? (is_publicpath_readonly ? 1 : 0)`.
+Creation must not send `is_publicpath_readonly` (HPC rejects it as an unknown field).
+Do not retry a write after removing the rejected field. The public SDK enum
+`PublicPathMountMode` maps to these three integer values. CLI
+`--public-path-mount-mode` and SDK/batch `public_path_mount_mode` select the
+mode; legacy `public_path_readonly=True/False` maps to `1/0` with one
+`DeprecationWarning`. Conflicting options and boolean mode values are rejected.
 
 **Key payload rules:**
-- **Omit unset optional fields:** Optional flags (such as `is_publicpath_readonly` or `is_projectuserspath_readonly`) must be omitted from the JSON body when not explicitly set.
+- **Omit unset optional fields:** Optional fields (such as `publicpath_mount_mode` or `is_projectuserspath_readonly`) must be omitted from the JSON body when not explicitly set.
 - **HPC runtime limits & priority:** `job_max_time` (`"D-HH:MM:SS"`) and `max_running_time_days`/`_hours`/`_minutes` live inside `sbatch_script`. Top-level `priority` is required (missing `priority` triggers `InternalError`). Never send `sbatch_script.memory_per_node` (broken in the platform script generator); always send `memory_per_cpu`.
 - **Durations as strings:** `train.CreateJobConsole` expects `max_running_time_ms`, `reserve_on_fail_ms`, and `reserve_on_success_ms` as **string** integers.
 - **Images:** Pass registry URLs (`image` / `mirror_url`) or `mirror_id` as required by each Action, never display names.

@@ -156,9 +156,12 @@ def extract_rest_paths(texts: dict[str, str]) -> set[str]:
 
 
 def discovery_actions(session: WebSession, base_url: str) -> tuple[str, dict[str, set[str]]]:
-    payload = _request_json(
-        session, "GET", "/discovery", referer=f"{base_url}/", timeout=30
-    ).get("Result") or {}
+    payload = (
+        _request_json(session, "GET", "/discovery", referer=f"{base_url}/", timeout=30).get(
+            "Result"
+        )
+        or {}
+    )
     declared: dict[str, set[str]] = defaultdict(set)
     for service in payload.get("Services") or []:
         name = str(service.get("Name") or "")
@@ -196,36 +199,82 @@ def probe(
     return verdicts
 
 
+def field_evidence(texts: dict[str, str], fields: list[str]) -> list[dict[str, str]]:
+    """Global token evidence only: never emit bundle text, filenames or values.
+
+    A match can come from read/compatibility code, including a deleted field.
+    It cannot establish Action association, acceptance, type or enum semantics.
+    """
+    tokens = set()
+    for text in texts.values():
+        tokens.update(re.findall(r"[A-Za-z_$][A-Za-z0-9_$]*", text))
+    return [
+        {
+            "field": name,
+            "token_presence": "present" if name in tokens else "no token evidence",
+            "request_field_evidence": "not linked to a request body",
+        }
+        for name in sorted(set(fields))
+    ]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--probe", action="store_true", help="check each read-only Action routes")
     parser.add_argument("--delay", type=float, default=0.25, help="seconds between probes")
     parser.add_argument("--cache", default="", help="directory for downloaded chunks")
     parser.add_argument("--json", dest="json_out", default="", help="write the report here")
+    parser.add_argument(
+        "--bundles",
+        type=pathlib.Path,
+        help="read local *.js bundles only; skip session, fetch and discovery",
+    )
+    parser.add_argument(
+        "--fields",
+        metavar="NAME[,NAME...]",
+        help="report global token presence for comma-separated field names",
+    )
     args = parser.parse_args()
+    if args.bundles is not None and args.probe:
+        parser.error("--bundles cannot be combined with --probe")
 
-    session = WebSession.load(allow_expired=True)
-    if session is None:
-        print("No session. Run `inspire account check` first.", file=sys.stderr)
-        return 2
-
-    base_url = _get_base_url()
-    cache = pathlib.Path(args.cache) if args.cache else _REPO_ROOT / ".scan-cache"
-    texts = fetch_bundles(session, base_url, cache)
+    session = None
+    base_url = ""
+    if args.bundles is not None:
+        paths = sorted(args.bundles.glob("*.js"))
+        if not paths:
+            parser.error("--bundles must contain at least one *.js file")
+        texts = {
+            str(i): path.read_text(encoding="utf-8", errors="replace")
+            for i, path in enumerate(paths)
+        }
+        version, declared = "", {}
+    else:
+        session = WebSession.load(allow_expired=True)
+        if session is None:
+            print("No session. Run `inspire account check` first.", file=sys.stderr)
+            return 2
+        base_url = _get_base_url()
+        cache = pathlib.Path(args.cache) if args.cache else _REPO_ROOT / ".scan-cache"
+        texts = fetch_bundles(session, base_url, cache)
+        version, declared = discovery_actions(session, base_url)
     console = extract_actions(texts)
     rest = extract_rest_paths(texts)
-    version, declared = discovery_actions(session, base_url)
 
     total = sum(len(names) for names in console.values())
     print(f"chunks {len(texts)}  console: {len(console)} routes / {total} actions")
-    print(f"discovery {version}: {len(declared)} services / "
-          f"{sum(len(v) for v in declared.values())} actions")
+    print(
+        f"discovery {version}: {len(declared)} services / "
+        f"{sum(len(v) for v in declared.values())} actions"
+    )
     print(f"REST-shaped /api/v2 paths (no ?Action=): {len(rest)}")
     for path in sorted(rest):
         print(f"  {path}")
     print()
 
-    verdicts = probe(session, base_url, console, args.delay) if args.probe else {}
+    verdicts = (
+        probe(session, base_url, console, args.delay) if args.probe and session is not None else {}
+    )
 
     absent_routes = sorted(set(console) - set(declared))
     print(f"routes discovery does not declare ({len(absent_routes)}):")
@@ -248,6 +297,19 @@ def main() -> int:
         ]
         print(f"  absent (InvalidAction): {missing or 0}")
 
+    extra = {}
+    if args.fields:
+        evidence = field_evidence(
+            texts, [name.strip() for name in args.fields.split(",") if name.strip()]
+        )
+        extra = {"field_evidence": evidence}
+        print("\nrequest field evidence (global tokens, not acceptance):")
+        for row in evidence:
+            print(
+                f"  {row['field']}: token_presence={row['token_presence']}; "
+                f"request_field_evidence={row['request_field_evidence']}"
+            )
+
     if args.json_out:
         pathlib.Path(args.json_out).write_text(
             json.dumps(
@@ -257,6 +319,7 @@ def main() -> int:
                     "rest_paths": sorted(rest),
                     "discovery": {s: sorted(a) for s, a in sorted(declared.items())},
                     "probe": verdicts,
+                    **extra,
                 },
                 ensure_ascii=False,
                 indent=2,

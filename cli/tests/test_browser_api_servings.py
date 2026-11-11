@@ -695,7 +695,7 @@ def test_serving_create_sends_explicit_read_only_and_autoscaling(monkeypatch) ->
     )
 
     # `False` is a value the caller chose; only `None` means "do not send".
-    assert body["is_publicpath_readonly"] is True
+    assert body["publicpath_mount_mode"] == 1
     assert body["enable_auto_scaling"] is False
 
 
