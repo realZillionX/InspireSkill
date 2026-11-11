@@ -169,7 +169,7 @@ def test_resolve_notebook_project_passes_selection_settings(monkeypatch) -> None
         notebook_create_flow.browser_api_module, "select_project", fake_select_project
     )
 
-    config = Config(username="user", password="pass")
+    config = Config()
 
     resolved = notebook_create_flow.resolve_notebook_project(
         notebook_create_flow.Context(),
@@ -394,7 +394,7 @@ def test_cpu_notebook_skips_health_check(monkeypatch) -> None:
         fake_check_scheduling_health,
     )
 
-    config = Config(username="user", password="pass")
+    config = Config()
 
     resolved = notebook_create_flow.resolve_notebook_project(
         notebook_create_flow.Context(),

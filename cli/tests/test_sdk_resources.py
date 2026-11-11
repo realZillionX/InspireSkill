@@ -119,13 +119,13 @@ def test_account_metadata_check_context_permissions(client, catalog, monkeypatch
 def test_account_check_configuration_and_authentication_failures(client, catalog, monkeypatch):
     from inspire.config import Config
 
-    bad = replace(client._config, base_url="https://api.example.com", password="")
+    bad = replace(client._config, base_url="https://api.example.com")
     monkeypatch.setattr(Config, "from_files_and_env", classmethod(lambda cls, **kw: (bad, {})))
     monkeypatch.setattr(
         api, "get_current_user", lambda **kw: pytest.fail("invalid config dispatched")
     )
     check = client.account_info.check()
-    assert not check.ok and len(check.issues) == 2 and check.user is None
+    assert not check.ok and len(check.issues) == 1 and check.user is None
     monkeypatch.setattr(
         Config, "from_files_and_env", classmethod(lambda cls, **kw: (client._config, {}))
     )

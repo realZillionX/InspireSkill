@@ -33,7 +33,7 @@ def test_job_create_rejects_project_id_before_platform_lookup(
     monkeypatch.setattr(
         job_create.Config,
         "from_files_and_env",
-        lambda: (Config(username="", password=""), {}),
+        lambda: (Config(), {}),
     )
 
     def _unexpected_session() -> object:
@@ -81,7 +81,7 @@ def test_job_project_selector_rejects_project_id_before_session_lookup(
 
     with pytest.raises(ConfigError, match="project name"):
         job_submit.select_project_for_workspace(
-            Config(username="", password=""),
+            Config(),
             workspace_id=WORKSPACE_ID,
             requested=PROJECT_ID,
         )
@@ -93,7 +93,7 @@ def test_job_project_selector_uses_explicit_live_name(
     session = object()
     expected = _project(PROJECT_ID, "Project One")
     other = _project(OTHER_PROJECT_ID, "Other Project")
-    config = Config(username="user", password="pass")
+    config = Config()
 
     monkeypatch.setattr(job_submit.web_session_module, "get_web_session", lambda: session)
     monkeypatch.setattr(
@@ -136,7 +136,7 @@ def test_job_project_selector_reuses_one_command_snapshot(
     monkeypatch.setattr(job_submit.browser_api_module, "list_projects", _projects)
     monkeypatch.setattr(job_submit.browser_api_module, "check_scheduling_health", _health)
     cache: job_submit.ProjectSelectionCache = {}
-    config = Config(username="user", password="pass")
+    config = Config()
 
     first, _ = job_submit.select_project_for_workspace(
         config,

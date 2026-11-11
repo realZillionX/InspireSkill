@@ -71,7 +71,7 @@ def test_connection_target_list_defaults_to_twenty(monkeypatch) -> None:  # noqa
 
 
 def test_serving_configs_defaults_to_twenty(monkeypatch) -> None:  # noqa: ANN001
-    config = Config(username="", password="")
+    config = Config()
 
     class _ServingSession:
         all_workspace_ids = ["workspace"]

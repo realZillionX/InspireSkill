@@ -15,13 +15,15 @@ def _select_account(ctx: click.Context, param: click.Parameter, value: str | Non
         return value
     if value is not None:
         value = value.strip()
-        if not account_exists(value):
+        if ctx.parent is not None and ctx.command.name != "login" and not account_exists(value):
             output = ctx.find_object(Context) or Context()
             output.json_output = output.json_output or bool(ctx.params.get("json_output"))
             exit_with_error(
                 output, "ConfigError", f"Account not found: {value}", EXIT_CONFIG_ERROR,
                 hint="Pass one configured account alias; see `inspire account list`.",
             )
+        if ctx.parent is None and not account_exists(value):
+            ctx.meta["missing_selected_account"] = value
         ctx.with_resource(account_scope(value))
     return value
 
@@ -32,16 +34,21 @@ def install_account_options(command: click.Command) -> None:
     Existing Notebook options retain their callback argument for internal
     callers. Every other command consumes the selector through account_scope.
     """
+    help_text = (
+        "Select or create an account and log in; --use/--no-use controls activation."
+        if command.name == "login" else
+        "Use this account for this command; keep the saved default unchanged."
+    )
     for param in command.params:
         if isinstance(param, click.Option) and "--account" in param.opts:
             param.callback = _select_account
-            param.help = "Use this account for this command; keep the saved default unchanged."
+            param.help = help_text
             break
     else:
         command.params.append(click.Option(
             ["--account"], metavar="NAME", expose_value=False,
             callback=_select_account,
-            help="Use this account for this command; keep the saved default unchanged.",
+            help=help_text,
         ))
     if isinstance(command, click.Group):
         for child in command.commands.values():

@@ -10,8 +10,6 @@ import click
 
 from inspire.config import Config
 from inspire.platform.web.browser_api.core import _set_base_url
-from inspire.platform.web.session import AuthenticationError
-from inspire.platform.web.session.browser_launch import is_playwright_browser_runtime_error
 
 from inspire.services.account.account_config import (
     toml_dumps as _toml_dumps,
@@ -55,15 +53,15 @@ def _ensure_playwright_browser(*, non_interactive: bool = False) -> None:
         if "--with-deps" in install_args:
             click.echo(
                 "A local browser runtime and Linux system dependencies are required for "
-                "platform login (one-time setup)."
+                "notebook browser automation (one-time setup)."
             )
         else:
             click.echo(
-                "A local browser runtime is required for platform login "
+                "A local browser runtime is required for notebook browser automation "
                 "(one-time ~150 MB download)."
             )
         if not click.confirm("Install Chromium now?", default=True):
-            click.echo("Cannot proceed without a browser for platform login.")
+            click.echo("Cannot proceed without a browser for notebook browser automation.")
             raise SystemExit(1)
 
     result = subprocess.run(
@@ -84,57 +82,6 @@ def _ensure_playwright_browser(*, non_interactive: bool = False) -> None:
             err=True,
         )
         raise SystemExit(1)
-
-
-def _resolve_credentials_interactive(
-    config: object,
-    *,
-    cli_username: str | None,
-    cli_base_url: str | None,
-    allow_config_password: bool = False,
-    confirm_config_username: bool = False,
-    non_interactive: bool = False,
-) -> tuple[str, str, str]:
-    """Resolve base URL, username and password, prompting when missing."""
-    base_url = (cli_base_url or "").strip() or _usable_base_url(
-        getattr(config, "base_url", "")
-    )
-    if not base_url:
-        if non_interactive:
-            raise ValueError("Platform URL is required for non-interactive init.")
-        base_url = click.prompt("Platform URL", type=str).strip()
-    if not base_url:
-        raise ValueError("Platform URL is required.")
-
-    username = (cli_username or "").strip()
-    if not username:
-        configured = _usable_username(getattr(config, "username", ""))
-        if configured and confirm_config_username and not non_interactive:
-            username = click.prompt(
-                "Platform login name (not display name)",
-                default=configured,
-                type=str,
-            ).strip()
-        else:
-            username = configured
-    if not username:
-        if non_interactive:
-            raise ValueError("Username is required for non-interactive init.")
-        username = click.prompt("Platform login name (not display name)", type=str).strip()
-    if not username:
-        raise ValueError("Username is required.")
-
-    password = ""
-    if allow_config_password or non_interactive:
-        password = str(getattr(config, "password", "") or "").strip()
-    if not password:
-        if non_interactive:
-            raise ValueError("Password is required for non-interactive init.")
-        password = click.prompt("Password", type=str, hide_input=True)
-    if not password:
-        raise ValueError("Password is required.")
-
-    return username, password, base_url
 
 
 def _ensure_ssh_key(*, non_interactive: bool = False) -> None:
@@ -191,83 +138,37 @@ def _usable_base_url(value: object) -> str:
     return text
 
 
+def _validate_cli_base_url(config: Config, cli_base_url: str | None) -> None:
+    if cli_base_url is not None and (
+        cli_base_url.strip().rstrip("/") != config.base_url.strip().rstrip("/")
+    ):
+        raise ValueError(
+            "--base-url only applies when init creates the first account. "
+            "Create an account for that platform with `inspire login --account NAME "
+            "--base-url URL`, or edit [api].base_url in the account config and run inspire login."
+        )
+
+
 def _resolve_discover_runtime(
     *,
     config: Config,
     web_session_module,  # noqa: ANN001
     default_workspace_id: str,
-    cli_username: str | None,
     cli_base_url: str | None,
     non_interactive: bool = False,
     verbose: bool = False,
-) -> tuple[object, tuple[str, str, str] | None, str]:
-    session = None
-    prompted_credentials: tuple[str, str, str] | None = None
-    if cli_username or cli_base_url:
-        _ensure_playwright_browser(non_interactive=non_interactive)
-        username, password, base_url = _resolve_credentials_interactive(
-            config,
-            cli_username=cli_username,
-            cli_base_url=cli_base_url,
-            allow_config_password=True,
-            non_interactive=non_interactive,
-        )
-        prompted_credentials = (username, password, base_url)
-        _progress(verbose, "Logging in...")
-        session = web_session_module.login_with_playwright(
-            username,
-            password,
-            base_url=base_url,
-        )
-    else:
-        try:
-            session = web_session_module.get_web_session(require_workspace=True)
-        except (ValueError, RuntimeError) as exc:
-            _ensure_playwright_browser(non_interactive=non_interactive)
-            if is_playwright_browser_runtime_error(exc):
-                try:
-                    session = web_session_module.get_web_session(
-                        force_refresh=True,
-                        require_workspace=True,
-                    )
-                except (ValueError, RuntimeError) as retry_exc:
-                    if is_playwright_browser_runtime_error(retry_exc):
-                        raise
-            if session is None:
-                if isinstance(exc, AuthenticationError):
-                    click.echo(click.style(str(exc), fg="yellow"), err=True)
-                username, password, base_url = _resolve_credentials_interactive(
-                    config,
-                    cli_username=cli_username,
-                    cli_base_url=cli_base_url,
-                    confirm_config_username=True,
-                    non_interactive=non_interactive,
-                )
-                prompted_credentials = (username, password, base_url)
-                _progress(verbose, "Logging in...")
-                session = web_session_module.login_with_playwright(
-                    username,
-                    password,
-                    base_url=base_url,
-                )
-
-    account_key = (
-        _usable_username(prompted_credentials[0])
-        if prompted_credentials
-        else _usable_username(getattr(session, "login_username", ""))
-        or _usable_username(getattr(config, "username", ""))
-    )
+) -> tuple[object, str]:
+    _validate_cli_base_url(config, cli_base_url)
+    session = web_session_module.get_web_session(require_workspace=True)
+    account_key = _usable_username(getattr(session, "login_username", ""))
     if not account_key:
         raise ValueError("Could not resolve account login name.")
 
-    if prompted_credentials:
-        _set_base_url(prompted_credentials[2])
-    else:
-        base_url = _usable_base_url(getattr(config, "base_url", "")) or _usable_base_url(
-            getattr(session, "base_url", "")
-        )
-        if base_url:
-            _set_base_url(base_url)
+    base_url = _usable_base_url(getattr(config, "base_url", "")) or _usable_base_url(
+        getattr(session, "base_url", "")
+    )
+    if base_url:
+        _set_base_url(base_url)
 
     workspace_id = str(getattr(session, "workspace_id", "") or "").strip()
     if not workspace_id or workspace_id == default_workspace_id:
@@ -276,7 +177,7 @@ def _resolve_discover_runtime(
             "Re-run `inspire init` with an account that can see at least one workspace."
         )
 
-    return session, prompted_credentials, account_key
+    return session, account_key
 
 
 def _persist_api_base_url(
@@ -298,45 +199,11 @@ def _persist_api_base_url(
         api["base_url"] = base_url
 
 
-def _persist_prompted_credentials(
-    *,
-    account_data: dict[str, Any],
-    prompted_credentials: tuple[str, str, str] | None,
-) -> None:
-    if not prompted_credentials:
-        return
-    username, password, base_url = prompted_credentials
-    auth = account_data.get("auth")
-    if not isinstance(auth, dict):
-        auth = {}
-        account_data["auth"] = auth
-    auth["username"] = username
-    auth["password"] = password
-    api = account_data.get("api")
-    if not isinstance(api, dict):
-        api = {}
-        account_data["api"] = api
-    api["base_url"] = base_url
-
-
-def _persist_cached_session_identity(*, account_data: dict[str, Any], session: Any) -> None:
-    username = _usable_username(getattr(session, "login_username", ""))
-    if not username:
-        return
-    auth = account_data.get("auth")
-    if not isinstance(auth, dict):
-        auth = {}
-        account_data["auth"] = auth
-    if not _usable_username(auth.get("username")):
-        auth["username"] = username
-
-
 def _persist_account_config(
     *,
     force: bool,
     config: Config,
     session: Any,
-    prompted_credentials: tuple[str, str, str] | None,
     non_interactive: bool,
     verbose: bool,
 ) -> None:
@@ -358,13 +225,6 @@ def _persist_account_config(
     raw_data = Config._load_toml(path) if path.exists() else {}
     account_data = _sanitize_account_config(raw_data)
     _persist_api_base_url(account_data=account_data, config=config, session=session)
-    _persist_prompted_credentials(
-        account_data=account_data,
-        prompted_credentials=prompted_credentials,
-    )
-    if not prompted_credentials:
-        _persist_cached_session_identity(account_data=account_data, session=session)
-
     _progress(verbose, "Writing account configuration...")
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(path, _toml_dumps(account_data), private=True)
@@ -374,7 +234,6 @@ def _persist_account_config(
 def _init_discover_mode(
     force: bool,
     *,
-    cli_username: str | None = None,
     cli_base_url: str | None = None,
     non_interactive: bool = False,
     verbose: bool = False,
@@ -385,11 +244,10 @@ def _init_discover_mode(
     from inspire.platform.web.session.browser_client import _close_browser_client
 
     config, _ = Config.from_files_and_env(require_credentials=False)
-    session, prompted_credentials, account_key = _resolve_discover_runtime(
+    session, account_key = _resolve_discover_runtime(
         config=config,
         web_session_module=web_session_module,
         default_workspace_id=DEFAULT_WORKSPACE_ID,
-        cli_username=cli_username,
         cli_base_url=cli_base_url,
         non_interactive=non_interactive,
         verbose=verbose,
@@ -400,7 +258,6 @@ def _init_discover_mode(
             force=force,
             config=config,
             session=session,
-            prompted_credentials=prompted_credentials,
             non_interactive=non_interactive,
             verbose=verbose,
         )

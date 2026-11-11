@@ -63,6 +63,7 @@ __all__ = [
     "PlazaError",
     "PlazaClient",
     "PlazaNotSignedIn",
+    "PlazaUnavailable",
     "PlazaRejected",
     "sign_in",
     "unwrap",
@@ -91,6 +92,25 @@ class CasTicketExpired(SessionExpiredError):
 
 class PlazaNotSignedIn(PlazaError):
     """The plaza does not recognize the ``datasets-session`` being presented."""
+
+
+PLAZA_UNAVAILABLE_MESSAGE = (
+    "The data plaza (aip.sii.edu.cn) only accepts CAS sign-in, which the OAuth device "
+    "login does not provide, so dataset catalogue queries (dataset list/show/tags/"
+    "applications) are unavailable for now. Use the Dataset Hub web UI (aip.sii.edu.cn) "
+    "instead; --dataset mounts and `inspire dataset validate` still work."
+)
+
+# The CAS handshake below is kept for a future interactive CAS sign-in; device
+# login sessions hold no CASTGC, so it stays disabled until one exists.
+CAS_SIGN_IN_ENABLED = False
+
+
+class PlazaUnavailable(PlazaError):
+    """The plaza cannot be signed in to with OAuth device tokens."""
+
+    def __init__(self, message: str = PLAZA_UNAVAILABLE_MESSAGE) -> None:
+        super().__init__(message)
 
 
 @dataclass
@@ -148,6 +168,8 @@ def _cas_ticket(location: str) -> str:
 @workflow
 def sign_in(session: WebSession, transport: Transport, timeout: float = 30) -> Program[PlazaClient]:
     """Trade the web session's CAS cookie for a plaza ``datasets-session``."""
+    if not CAS_SIGN_IN_ENABLED:
+        raise PlazaUnavailable()
     http = build_requests_session(session, PLAZA_BASE_URL)
     service = _service_url()
     try:

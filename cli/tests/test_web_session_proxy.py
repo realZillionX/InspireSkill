@@ -98,8 +98,6 @@ def test_lowercase_no_proxy_takes_precedence(
 
 def test_get_playwright_proxy_uses_proxy_toml(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = config_module.Config(
-        username="",
-        password="",
         base_url="https://qz.sii.edu.cn",
         playwright_proxy="http://127.0.0.1:7897",
     )
@@ -123,8 +121,6 @@ def test_get_playwright_proxy_uses_explicit_account_config(
         calls.append(account)
         proxy = "http://127.0.0.1:18080" if account == "bob" else "http://127.0.0.1:7897"
         return config_module.Config(
-            username="",
-            password="",
             base_url="https://qz.sii.edu.cn",
             playwright_proxy=proxy,
         ), {}
@@ -141,8 +137,6 @@ def test_get_playwright_proxy_uses_explicit_account_config(
 
 def test_resolve_requests_proxy_config_prefers_toml(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = config_module.Config(
-        username="",
-        password="",
         base_url="https://qz.sii.edu.cn",
         requests_http_proxy="http://127.0.0.1:7897",
         requests_https_proxy="http://127.0.0.1:7897",
@@ -165,8 +159,6 @@ def test_resolve_requests_proxy_config_uses_remote_dns_for_socks5(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = config_module.Config(
-        username="",
-        password="",
         base_url="https://qz.sii.edu.cn",
         requests_http_proxy="SOCKS5://127.0.0.1:1080",
         requests_https_proxy="socks5://127.0.0.1:1081",
@@ -197,8 +189,6 @@ def test_requests_socks_proxy_support_is_installed() -> None:
 
 def test_get_rtunnel_proxy_override_uses_toml(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = config_module.Config(
-        username="",
-        password="",
         base_url="https://qz.sii.edu.cn",
         rtunnel_proxy="http://127.0.0.1:7897",
     )

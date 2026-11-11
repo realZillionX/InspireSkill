@@ -41,8 +41,6 @@ class DummyHPCAPI:
 
 def patch_hpc_config_and_auth(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> DummyHPCAPI:
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
     config.compute_groups = [{"id": "lcg-123", "name": "CG-123"}]

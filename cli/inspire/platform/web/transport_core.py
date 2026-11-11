@@ -15,9 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import sys
 import time
-from inspire.platform.web.flow import enter_context, exit_context
 
 from inspire.platform.web.flow import Program as FlowProgram, workflow, call, http_call
 
@@ -26,7 +24,6 @@ from typing import Any, Generator, NoReturn
 
 from inspire.platform.errors import (
     AuthenticationError,
-    AuthenticationCooldownError,
     TransportError,
     ValidationError,
     SubmissionUncertainError,
@@ -123,10 +120,12 @@ class SharedState:
         if self.unproven_rebuild is not None and observed >= self.unproven_rebuild:
             raise SessionExpiredError(
                 "The session the last rebuild produced was refused as well. Not logging "
-                "in again to replace a login nothing has been able to use."
+                "in again to replace a login nothing has been able to use. Run inspire login."
             )
         if not can_refresh:
-            raise SessionExpiredError("Session expired again after a single authentication refresh")
+            raise SessionExpiredError(
+                "Session expired again after a single authentication refresh; run inspire login."
+            )
 
     def rebuilt(self, generation: float) -> None:
         self.unproven_rebuild = generation
@@ -353,71 +352,28 @@ class RequestCore:
         raise AssertionError("unreachable")
 
 
-
-
 @workflow
 def refresh(self: Any, *, require_cas_ticket: bool = False) -> FlowProgram[Any]:
-    with self.scope(timeout=None):
-        from inspire.platform.web.session.models import WebSession
-        from inspire.platform.web.session.refresh_lock import exclusive_session_refresh
-        from inspire.platform.web.session import auth
+    """Refresh the transport session and release its stale browser client."""
+    from inspire.platform.web.session.auth import get_web_session, refresh_session
 
-        previous = self._session.created_at if self._session else None
-        if previous is not None:
-            self._decisions.refresh_guard(previous, True)
+    with self.scope(timeout=None):
         try:
-            _context = exclusive_session_refresh(self.account, timeout=self.remaining())
-            yield call(enter_context, _context)
-            try:
-                try:
-                    cached = WebSession.load(allow_expired=True, account=self.account)
-                    if not require_cas_ticket and cached and (previous is None or cached.created_at > previous):
-                        self._adopt_session(cached)
-                        return
-                except Exception as error:
-                    self.check_deadline()
-                    if getattr(error, "retry_at", None) is not None:
-                        raise
-                    logger.debug("Cached session load failed; trying session renewal", exc_info=True)
-                if self._session is not None and not require_cas_ticket:
-                    renewed = (yield call(auth.renew_web_session_without_credentials, self._session))
-                    if renewed is not None:
-                        self._validate_session(renewed)
-                        auth._persist(renewed, account=self.account)
-                        self._adopt_session(renewed)
-                        return
-                logger.debug("No reusable cached session or SSO renewal; trying credential login")
-                try:
-                    username, password = auth.get_credentials(self.account)
-                    self._adopt_session(
-                        (yield call(auth.login_without_browser,
-                            username, password, base_url=self.base_url, account=self.account
-                        ))
-                    )
-                    self._decisions.rebuilt(self.session.created_at)
-                except Exception as error:
-                    self.check_deadline()
-                    if (
-                        not self.allow_browser
-                        or getattr(error, "retry_at", None) is not None
-                        or isinstance(error, auth.AuthenticationError)
-                        or isinstance(error.__cause__, auth._CasVerificationRequired)
-                    ):
-                        raise
-                    logger.debug("Credential login unavailable; trying browser login", exc_info=True)
-                    self._adopt_session(
-                        (yield call(auth.get_web_session, force_refresh=True, account=self.account))
-                    )
-                    self._decisions.rebuilt(self.session.created_at)
-            finally:
-                yield call(exit_context, _context, *sys.exc_info())
+            if self._session is not None:
+                self._decisions.refresh_guard(self._session.created_at, True)
+            refreshed = (
+                (yield call(refresh_session, self._session, lock_timeout=self.remaining()))
+                if self._session is not None
+                else (yield call(
+                    get_web_session, account=self.account, lock_timeout=self.remaining()
+                ))
+            )
+            self._adopt_session(refreshed)
+            self._decisions.rebuilt(refreshed.created_at)
         except (AuthenticationError, WaitTimeoutError):
             raise
         except Exception as error:
             self.check_deadline()
-            retry_at = getattr(error, "retry_at", None)
-            if isinstance(retry_at, (int, float)):
-                raise AuthenticationCooldownError(retry_at, str(error)) from error
             raise AuthenticationError(str(error)) from error
         finally:
             if self._browser is not None:
@@ -444,39 +400,13 @@ def refresh_cli(self: Any, observed_created_at: float, *, can_refresh: bool) -> 
 @workflow
 def refresh_expired_session(self: Any, observed_created_at: float) -> FlowProgram[Any]:
     with self.scope(timeout=None):
-        from inspire.platform.web import session as web_session
 
         session = self.session
         if session.created_at > observed_created_at:
             return session
-        _context = web_session.exclusive_session_refresh(session.account)
-        yield call(enter_context, _context)
-        try:
-            if session.created_at > observed_created_at:
-                return session
-            cached = web_session.WebSession.load(allow_expired=True, account=session.account)
-            if (
-                cached is not None
-                and cached.storage_state.get("cookies")
-                and cached.created_at > observed_created_at
-            ):
-                return cached
-            renewed = (yield call(web_session.renew_web_session_without_credentials, session))
-            if renewed is not None:
-                web_session.logger.debug(
-                    "Web session renewed through cached SSO state without credentials."
-                )
-                return renewed
-            logger.debug("Cached SSO renewal unavailable; trying credential login")
-            if not self.allow_browser:
-                from inspire.platform.web.session import auth
+        from inspire.platform.web.session.auth import refresh_session
 
-                username, password = auth.get_credentials(session.account)
-                return (yield call(auth.login_without_browser, username, password,
-                                   base_url=self.base_url, account=session.account))
-            return (yield call(web_session.acquire_web_session, force_refresh=True, account=session.account))
-        finally:
-            yield call(exit_context, _context, *sys.exc_info())
+        return (yield call(refresh_session, session, lock_timeout=self.remaining()))
 
 
 @workflow
@@ -560,12 +490,12 @@ def acquire_session(self: Any) -> FlowProgram[None]:
 
     with self.scope(timeout=None):
         if self.cli_compat:
-            self._session = yield call(web_session.get_web_session, account=self.account)
+            self._session = yield call(
+                web_session.get_web_session, account=self.account, lock_timeout=self.remaining()
+            )
             return
-        cached = yield call(web_session.WebSession.load, allow_expired=True, account=self.account)
-        try:
-            self._session = self._validate_session(cached)
-        except AuthenticationError:
-            if not self.allow_browser:
-                raise
-            yield call(self._refresh)
+        self._session = self._validate_session(
+            (yield call(
+                web_session.get_web_session, account=self.account, lock_timeout=self.remaining()
+            ))
+        )

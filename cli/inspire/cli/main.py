@@ -17,6 +17,7 @@ import click
 import click.exceptions as click_exceptions
 
 from inspire import __version__
+from inspire.cli.commands.login import login, logout
 from inspire.accounts import account_scope, current_account
 from inspire.cli.logging_setup import clear_debug_logging, configure_debug_logging
 from inspire.cli.context import (
@@ -150,8 +151,12 @@ def main(
     """
     from inspire.cli.utils.web_transport import install_web_transport
 
-    install_web_transport()
     ctx.json_output = json_output
+    click_ctx = click.get_current_context()
+    missing_account = click_ctx.meta.get("missing_selected_account")
+    if click_ctx.invoked_subcommand != "login" and missing_account:
+        _handle_error(ctx, "ConfigError", f"Account not found: {missing_account}", EXIT_CONFIG_ERROR)
+    install_web_transport()
     ctx.debug = debug
 
     try:
@@ -258,6 +263,8 @@ main.add_command(update)
 main.add_command(ensure_playwright_runtime)
 main.add_command(refresh_skills)
 main.add_command(post_update)
+main.add_command(login)
+main.add_command(logout)
 install_account_options(main)
 
 

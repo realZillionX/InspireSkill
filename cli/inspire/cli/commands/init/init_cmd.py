@@ -13,16 +13,14 @@ from inspire.accounts import (
     current_account,
     ensure_inspire_home,
     list_accounts,
-    normalize_environment,
     set_current_account,
-    validate_name,
 )
 from inspire.services.account.account_config import render_account_config as _render_account_config
 from inspire.cli.context import Context, EXIT_GENERAL_ERROR, pass_context
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.config import DEFAULT_BASE_URL, Config
 
-from .discover import _init_discover_mode
+from .discover import _init_discover_mode, _validate_cli_base_url
 from .env_detect import _detect_env_vars
 from .errors import run_init_action
 from .json_report import emit_init_result, snapshot_paths
@@ -48,7 +46,6 @@ def _bootstrap_first_account_if_needed(
     *,
     effective_json: bool,
     non_interactive: bool,
-    cli_username: str | None,
     cli_base_url: str | None,
 ) -> bool:
     """Create the first account inline for an interactive first run."""
@@ -61,44 +58,13 @@ def _bootstrap_first_account_if_needed(
     if effective_json or non_interactive:
         raise ValueError(
             "No active account configured. Run `inspire account add <name>` first; "
-            "non-interactive init cannot prompt for credentials."
+            "non-interactive init requires an account alias."
         )
 
     ensure_inspire_home()
-    while True:
-        raw_name = click.prompt(
-            "Account alias",
-            default="",
-            show_default=False,
-            type=str,
-        ).strip()
-        if not raw_name:
-            click.echo(click.style("Account alias is required.", fg="red"), err=True)
-            continue
-        try:
-            account_name = validate_name(raw_name)
-        except AccountError as err:
-            click.echo(click.style(f"Invalid account alias: {err}", fg="red"), err=True)
-            continue
-        break
+    from inspire.cli.commands.login import prompt_account_alias
+    account_name = prompt_account_alias()
 
-    username = (
-        click.prompt(
-            "Platform login name (not display name)",
-            default=account_name,
-            show_default=True,
-        )
-        if cli_username is None
-        else cli_username
-    ).strip()
-    if not username:
-        raise ValueError("Username cannot be empty.")
-
-    password = click.prompt(
-        "Platform password",
-        hide_input=True,
-        confirmation_prompt="Confirm password",
-    )
     base_url = (
         click.prompt("Inspire base URL", default=DEFAULT_BASE_URL, show_default=True)
         if cli_base_url is None
@@ -107,8 +73,6 @@ def _bootstrap_first_account_if_needed(
     proxy = click.prompt("Proxy URL (leave empty for none)", default="", show_default=False)
 
     content = _render_account_config(
-        username=username,
-        password=password,
         base_url=base_url.strip(),
         proxy=(proxy or "").strip(),
     )
@@ -120,8 +84,28 @@ def _bootstrap_first_account_if_needed(
         raise ValueError(str(err)) from err
 
     click.echo(f"Active account: {account_name}")
-    normalize_environment(interactive=True, auto_install_playwright=True)
+    from inspire.cli.commands.login import run_login
+    run_login(account_name)
     return True
+
+
+def _login_if_logged_out(cli_base_url: str | None = None) -> None:
+    """Start device login before discovery captures output in JSON mode."""
+    from inspire.platform.web.session import auth
+    from inspire.platform.web.session.models import AuthenticationError
+
+    account = current_account()
+    if not account:
+        return
+    config, _ = Config.from_files_and_env(require_credentials=False, account=account)
+    _validate_cli_base_url(config, cli_base_url)
+    try:
+        auth.get_web_session(account=account)
+    except AuthenticationError:
+        from inspire.cli.commands.login import run_login
+
+        click.echo(f"Account {account} is not logged in; starting device login.", err=True)
+        run_login(account)
 
 
 @click.command()
@@ -143,7 +127,8 @@ def _bootstrap_first_account_if_needed(
     "-u",
     default=None,
     metavar="LOGIN",
-    help="Platform login name used during first-account discovery.",
+    hidden=True,
+    help="Deprecated and ignored.",
 )
 @click.option(
     "--base-url",
@@ -174,6 +159,8 @@ def init(
       inspire init --template --force
       inspire init --no-discover --force
     """
+    if username is not None:
+        click.echo("Deprecated: --username is ignored; use device login.", err=True)
     effective_json = ctx.json_output
     non_interactive = effective_json or not _stdin_is_interactive()
     warnings: list[str] = []
@@ -189,15 +176,14 @@ def init(
             _bootstrap_first_account_if_needed(
                 effective_json=effective_json,
                 non_interactive=non_interactive,
-                cli_username=username,
                 cli_base_url=base_url,
             )
 
         account_path = _require_active_account_config_path()
         before = snapshot_paths(account_path)
 
-        if not run_discovery and (username or base_url):
-            _warn("--username and --base-url only apply to discovery and were ignored.")
+        if not run_discovery and base_url:
+            _warn("--base-url only applies to discovery and was ignored.")
 
         if non_interactive and account_path.exists() and not force:
             raise ValueError(
@@ -205,11 +191,11 @@ def init(
             )
 
         if run_discovery:
+            _login_if_logged_out(base_url)
             run_init_action(
                 _init_discover_mode,
                 effective_json,
                 force,
-                cli_username=username,
                 cli_base_url=base_url,
                 non_interactive=non_interactive,
             )

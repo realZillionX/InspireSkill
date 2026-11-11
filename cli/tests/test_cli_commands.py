@@ -36,8 +36,6 @@ def make_test_config(tmp_path: Path, include_compute_groups: bool = False) -> co
         include_compute_groups: If True, include test compute groups
     """
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
     # Add test compute groups if requested
@@ -447,8 +445,6 @@ def test_build_remote_command_exports_account_environment() -> None:
     from inspire.cli.utils import job_submit as job_submit_module
 
     config = config_module.Config(
-        username="user",
-        password="pass",
         remote_env={"WANDB_MODE": "offline"},
     )
 
@@ -464,8 +460,6 @@ def test_build_remote_command_preserves_user_pythonunbuffered() -> None:
     from inspire.cli.utils import job_submit as job_submit_module
 
     config = config_module.Config(
-        username="user",
-        password="pass",
         remote_env={"PYTHONUNBUFFERED": "0"},
     )
 
@@ -482,8 +476,6 @@ def test_build_remote_command_without_environment_is_unchanged() -> None:
     from inspire.cli.utils import job_submit as job_submit_module
 
     config = config_module.Config(
-        username="user",
-        password="pass",
     )
 
     command = job_submit_module.build_remote_command(
@@ -1928,8 +1920,6 @@ def test_notebook_list_all_workspaces_combines_results(
     ws_gpu = "ws-9dcc0e1f-80a4-4af2-bc2f-0e352e7b17e6"
 
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
 

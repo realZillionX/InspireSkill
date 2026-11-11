@@ -105,6 +105,12 @@ class _Script:
 
 
 @pytest.fixture(autouse=True)
+def _enable_cas_sign_in(monkeypatch):
+    # These tests cover the retained CAS handshake; production keeps it disabled.
+    monkeypatch.setattr(plaza_core, "CAS_SIGN_IN_ENABLED", True)
+
+
+@pytest.fixture(autouse=True)
 def _reset_plaza_client(monkeypatch):
     transport = Transport("tester", "https://qz.sii.edu.cn", username="", cli_compat=True)
     transport.adopt_session(_FakeWebSession())
@@ -318,7 +324,7 @@ def sdk_client(tmp_path, monkeypatch):
     (account / "config.toml").write_text('[auth]\nusername="test"\npassword="unused"\n')
     client = InspireClient(account="tester", allow_browser=False)
     client._transport.adopt_session(WebSession(
-        storage_state=_FakeWebSession.storage_state,
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
         created_at=1000, account="tester", base_url=client.base_url,
     ))
     yield client
@@ -354,9 +360,6 @@ def test_expired_sdk_session_uses_browser_free_refresh(sdk_client, monkeypatch, 
     steps = []
     monkeypatch.setattr(refresh_lock, "exclusive_session_refresh", lambda *a, **k: nullcontext())
     monkeypatch.setattr(WebSession, "load", lambda **k: None)
-    monkeypatch.setattr(auth, "renew_web_session_without_credentials",
-                        lambda session: steps.append("renew"))
-    monkeypatch.setattr(auth, "get_credentials", lambda account: ("test", "unused"))
 
     def login(*args, **kwargs):
         steps.append("http-login")
@@ -367,9 +370,9 @@ def test_expired_sdk_session_uses_browser_free_refresh(sdk_client, monkeypatch, 
     def browser(*args, **kwargs):
         pytest.fail("Browser login must never be reached")
 
-    monkeypatch.setattr(auth, "login_without_browser", login)
+    monkeypatch.setattr(auth, "refresh_session", login)
     monkeypatch.setattr(auth, "get_web_session", browser)
-    monkeypatch.setattr(auth, "login_with_playwright", browser)
+    monkeypatch.setattr(auth, "device_login", browser)
     if login_fails:
         with pytest.raises(AuthenticationError, match="verification"):
             sdk_client.datasets.tags()
@@ -483,7 +486,7 @@ def test_bare_plaza_uses_shared_process_default(monkeypatch):
 
 def test_refresh_http_step_uses_remaining_sdk_budget(sdk_client, monkeypatch):
     import requests
-    from inspire.platform.web.session import auth, refresh_lock
+    from inspire.platform.web.session import refresh_lock
     from inspire.platform.web.session.models import WebSession
     from inspire.platform.web import transport as transport_module
     from inspire.sdk import WaitTimeoutError
@@ -492,9 +495,8 @@ def test_refresh_http_step_uses_remaining_sdk_budget(sdk_client, monkeypatch):
     clock = [100.0]
     monkeypatch.setattr(transport_module.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(refresh_lock, "exclusive_session_refresh", lambda *a, **k: nullcontext())
-    monkeypatch.setattr(WebSession, "load", lambda **k: None)
-    monkeypatch.setattr(auth, "renew_web_session_without_credentials", lambda session: None)
-    monkeypatch.setattr(auth, "get_credentials", lambda account: ("test", "unused"))
+    cached = sdk_client._transport.session
+    monkeypatch.setattr(WebSession, "load", lambda **k: cached)
     _install(monkeypatch, _Script(cas=[_FakeResponse(), _FakeResponse()]))
     timeouts = []
 
@@ -503,7 +505,7 @@ def test_refresh_http_step_uses_remaining_sdk_budget(sdk_client, monkeypatch):
         clock[0] += 0.02
         raise requests.Timeout("authentication budget spent")
 
-    monkeypatch.setattr(requests.Session, "get", get)
+    monkeypatch.setattr(requests.Session, "post", get)
     sdk_client.operation_timeout = 0.01
     with pytest.raises(WaitTimeoutError):
         sdk_client.datasets.tags()
@@ -547,11 +549,9 @@ def test_plaza_and_platform_share_single_send_budget(sdk_client, monkeypatch):
     "refresh_cache", "refresh_renew", "refresh_login", "refresh_outer",
 ])
 def test_check_deadline_preserves_discarded_remaining_error(monkeypatch, stage):
-    from contextlib import nullcontext
     import requests
     from inspire.platform.errors import WaitTimeoutError
-    from inspire.platform.web.session import auth, refresh_lock
-    from inspire.platform.web.session.models import WebSession
+    from inspire.platform.web.session import auth
 
     transport = get_transport()
     script = _install(monkeypatch, _Script())
@@ -579,20 +579,7 @@ def test_check_deadline_preserves_discarded_remaining_error(monkeypatch, stage):
 
     monkeypatch.setattr(transport, "check_deadline", record_check)
     if stage.startswith("refresh_"):
-        monkeypatch.setattr(refresh_lock, "exclusive_session_refresh", lambda *a, **k: nullcontext())
-        monkeypatch.setattr(WebSession, "load", lambda **k: None)
-        monkeypatch.setattr(auth, "renew_web_session_without_credentials", lambda s: None)
-        monkeypatch.setattr(auth, "get_credentials", lambda a: ("test", "unused"))
-        if stage == "refresh_cache":
-            monkeypatch.setattr(WebSession, "load", lambda **k: expire(error=True))
-        elif stage == "refresh_renew":
-            monkeypatch.setattr(auth, "renew_web_session_without_credentials",
-                                lambda s: expire(error=True))
-        elif stage == "refresh_login":
-            monkeypatch.setattr(auth, "login_without_browser", lambda *a, **k: expire(error=True))
-        else:
-            monkeypatch.setattr(refresh_lock, "exclusive_session_refresh",
-                                lambda *a, **k: expire(error=True))
+        monkeypatch.setattr(auth, "refresh_session", lambda s, **kwargs: expire(error=True))
         def action():
             Transport._refresh(transport)
     else:
@@ -720,3 +707,13 @@ def test_concurrent_plaza_calls_exclusively_borrow_one_cookie_jar(monkeypatch):
         assert first.result(timeout=5) == second.result(timeout=5) == {"ok": True}
     assert script.sign_ins == 1
     assert len(script.sessions) == 1
+
+
+def test_disabled_cas_sign_in_fails_clearly_without_network(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(plaza_core, "CAS_SIGN_IN_ENABLED", False)
+    script = _install(monkeypatch, _Script())
+
+    with pytest.raises(plaza_core.PlazaUnavailable, match="only accepts CAS sign-in"):
+        plaza_core.plaza_request("GET", "/api/datasets/getDatasetsList")
+
+    assert script.sessions == []

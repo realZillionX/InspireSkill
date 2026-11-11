@@ -102,8 +102,6 @@ def _patch_submit_deps(
     enable_notification: bool = False,
 ) -> DummyAPI:
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
     config.shm_size = shm_size

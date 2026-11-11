@@ -2,6 +2,12 @@
 
 各版本条目记录该版本发布时的用户可见变化；当前用法以 README 和 CLI Help 为准。
 
+## Unreleased
+
+- 登录改用官方 OAuth 设备授权，`inspire login --account NAME` 自动创建账号并登录（不带 `--account` 时登录当前活动账号；尚无任何账号时自动创建名为 `default` 的账号），`account add` 保留为兼容创建入口；访问令牌自动刷新，用户名和密码不再存储或读取（包括旧配置和环境变量），已有用户需为每个账号重新登录一次；`inspire init` 发现账号未登录时会直接发起设备授权。
+- `logout` 与 `account remove` 统一为删除本地账号（包含令牌、配置和 bridge/tunnel 状态），需确认；平台工作负载继续运行，删除活动账号会清除活动指针。可用 `account add --no-login` 暂缓授权；传入旧的 `--username` / `--password` 时同样跳过授权，避免旧脚本卡在等待确认。
+- 数据广场（`aip.sii.edu.cn`）只支持 CAS 登录，设备授权无法提供，因此 `dataset list / show / tags / applications` 暂不可用并直接给出明确错误（`PlazaUnavailable`）；`--dataset` 挂载和 `dataset validate` 不受影响。
+
 ## v7.1.16
 
 - 修复连接检查、SSH 命令和 SCP 传输未使用缓存的 `identity_file`，非默认文件名私钥认证失败的问题；未缓存私钥时保留 SSH agent 和默认密钥查找。

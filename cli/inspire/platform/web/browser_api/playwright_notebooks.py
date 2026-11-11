@@ -23,6 +23,7 @@ from inspire.platform.web.browser_api.core import (
     _run_in_thread,
 )
 from inspire.platform.web.session import WebSession, build_requests_session, get_web_session
+from inspire.platform.web.session.oauth import platform_headers
 
 COMMAND_COMPLETION_MARKER_PREFIX = "INSPIRE_NOTEBOOK_COMMAND_DONE_"
 _log = logging.getLogger("inspire.platform.web.browser_api.playwright_notebooks")
@@ -126,88 +127,16 @@ def open_notebook_lab(
     prefer_direct: bool = False,
 ):
     """Open the notebook's JupyterLab and return the lab frame/page handle."""
-    base_url = str(getattr(session, "base_url", None) or _get_base_url()).rstrip("/")
-    requested_timeout_ms = max(int(timeout), 1000)
-    timeout_ms = requested_timeout_ms if prefer_direct else max(requested_timeout_ms, 10000)
-    timeout_s = max(timeout_ms / 1000.0, 1.0)
-    started_at = time.time()
-    notebook_lab_pattern = f"{NOTEBOOK_LAB_PATH}/"
-    direct_lab_url = f"{base_url}{NOTEBOOK_LAB_PATH}/{notebook_id}"
+    from .jupyter_terminal import _notebook_jupyter_url
 
-    def open_direct(*, fast: bool) -> object | None:
-        elapsed_ms = int((time.time() - started_at) * 1000)
-        remaining_floor_ms = 1000 if fast else 10000
-        remaining_ms = max(remaining_floor_ms, timeout_ms - elapsed_ms)
-        resolve_timeout_s = (
-            min(8.0, max(2.0, remaining_ms / 1000.0))
-            if fast
-            else min(15.0, max(5.0, remaining_ms / 1000.0))
-        )
-        resolved_url = _resolve_direct_lab_url(
-            direct_lab_url,
-            session=session,
-            timeout_s=resolve_timeout_s,
-        )
-        try:
-            page.goto(
-                resolved_url,
-                timeout=remaining_ms,
-                wait_until="commit",
-            )
-        except Exception:
-            _log.debug("Direct JupyterLab navigation failed; trying next strategy", exc_info=True)
-            pass
-        return _wait_for_lab_handle(
-            page,
-            notebook_lab_pattern=notebook_lab_pattern,
-            timeout_s=(
-                min(2.0, max(0.5, remaining_ms / 1000.0))
-                if fast
-                else min(5.0, max(1.0, remaining_ms / 1000.0))
-            ),
-        )
+    if session is None:
+        from inspire.platform.web.session import get_web_session
 
-    # One-shot terminal operations only need the Jupyter proxy surface.  Going
-    # straight to it avoids waiting for the outer /ide page and the complete
-    # JupyterLab UI; keep the UI path as a secondary route.
-    if prefer_direct:
-        lab_handle = open_direct(fast=True)
-        if lab_handle is not None:
-            return lab_handle
-
-    elapsed_ms = int((time.time() - started_at) * 1000)
-    remaining_ms = max(1000, timeout_ms - elapsed_ms)
-    ide_timeout_ms = min(remaining_ms, 20000)
-    try:
-        page.goto(
-            f"{base_url}/ide?notebook_id={notebook_id}",
-            timeout=ide_timeout_ms,
-            wait_until="domcontentloaded",
-        )
-    except Exception:
-        _log.debug("Notebook IDE page navigation failed; trying next strategy", exc_info=True)
-        pass
-
-    if prefer_direct:
-        elapsed_ms = int((time.time() - started_at) * 1000)
-        remaining_s = max(0.5, (timeout_ms - elapsed_ms) / 1000.0)
-        frame_probe_s = min(10.0, max(2.0, min(timeout_s / 6.0, remaining_s)))
-    else:
-        frame_probe_s = min(10.0, max(4.0, timeout_s / 6.0))
-    lab_handle = _wait_for_lab_handle(
-        page,
-        notebook_lab_pattern=notebook_lab_pattern,
-        timeout_s=frame_probe_s,
-    )
-    if lab_handle is not None:
-        return lab_handle
-
-    # Retry the direct route after the UI route. A direct-first caller reaches
-    # this point only after both routes have already been attempted.
-    lab_handle = open_direct(fast=prefer_direct)
-    if lab_handle is not None:
-        return lab_handle
-
+        session = get_web_session()
+    url = _notebook_jupyter_url(session, notebook_id)
+    if not url:
+        raise ValueError("Notebook did not return a Jupyter access URL.")
+    page.goto(url, timeout=timeout, wait_until="domcontentloaded")
     return page
 
 
@@ -580,7 +509,25 @@ def _resolve_notebook_ide_url_sync(
 
     with sync_playwright() as p:
         browser = _launch_browser(p, headless=headless)
-        context = _new_context(browser, storage_state=session.storage_state)
+        context = _new_context(browser, account=session.account)
+
+        def authorize(route: Any) -> None:
+            platform = platform_headers(
+                session.base_url or base_url, route.request.url, session.access_token
+            )
+            if not platform:
+                route.continue_()
+                return
+            headers = {
+                key: value
+                for key, value in route.request.headers.items()
+                if key.lower() not in {"authorization", "x-inspire-client-source"}
+            }
+            headers.update(platform)
+            response = route.fetch(headers=headers, max_redirects=0)
+            route.fulfill(response=response)
+
+        context.route("**/*", authorize)
         page = context.new_page()
         try:
             page.goto(
@@ -852,7 +799,7 @@ def _run_command_in_notebook_sync(
 
     with sync_playwright() as p:
         browser = _launch_browser(p, headless=headless)
-        context = _new_context(browser, storage_state=session.storage_state)
+        context = _new_context(browser, account=session.account)
         page = context.new_page()
 
         try:

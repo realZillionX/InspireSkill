@@ -102,7 +102,6 @@ def toml_dumps(data: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-_USERNAME_PLACEHOLDERS = frozenset({"your_username"})
 _BASE_URL_PLACEHOLDER = "https://api.example.com"
 _OBSOLETE_ACCOUNT_TABLES = frozenset(
     {
@@ -117,6 +116,7 @@ _OBSOLETE_ACCOUNT_TABLES = frozenset(
 )
 _OBSOLETE_ACCOUNT_TABLE_FIELDS: dict[str, frozenset[str]] = {
     "api": frozenset({"docker_registry"}),
+    "auth": frozenset({"username", "password"}),
 }
 
 
@@ -142,11 +142,7 @@ ACCOUNT_CONFIG_TEMPLATE = f"""# Inspire CLI Account Configuration
 # Live project/resource catalogs are never copied here.
 #
 # Values here are overridden by environment variables.
-# Sensitive values (passwords, tokens) should use env vars.
-
-[auth]
-username = "your_username"
-# password - use INSPIRE_PASSWORD env var
+# Identity and OAuth tokens live only in web_session.json.
 
 [api]
 base_url = "{DEFAULT_BASE_URL}"
@@ -180,18 +176,9 @@ retry_pause = 2.0
 """
 
 
-def render_account_config(*, username: str, password: str, base_url: str, proxy: str) -> str:
-    """Write a minimal account config.toml using the real schema section names.
-
-    Keys must live under [auth]/[api]/[proxy] — the loader resolves
-    ``auth.username`` / ``api.base_url`` etc. via the flattened TOML path,
-    and a bare top-level ``username = "..."`` silently fails to bind.
-    """
+def render_account_config(*, base_url: str, proxy: str) -> str:
+    """Write account connection settings without login credentials."""
     lines = [
-        "[auth]",
-        f'username = "{_toml_escape_string(username)}"',
-        f'password = "{_toml_escape_string(password)}"',
-        "",
         "[api]",
         f'base_url = "{_toml_escape_string(base_url)}"',
     ]

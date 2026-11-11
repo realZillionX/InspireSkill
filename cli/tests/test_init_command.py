@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import ModuleType
 
 import pytest
 
@@ -105,6 +105,7 @@ def test_init_defaults_to_discover_mode_with_active_account(
         calls["kwargs"] = kwargs
 
     monkeypatch.setattr(init_cmd_module, "run_init_action", fake_run_init_action)
+    monkeypatch.setattr(init_cmd_module, "_login_if_logged_out", lambda *args: None)
     monkeypatch.setattr(init_cmd_module, "emit_init_result", lambda **kwargs: None)
 
     runner = CliRunner()
@@ -136,7 +137,7 @@ def test_init_bootstraps_first_account_before_discover(
     set_fake_home(monkeypatch, tmp_path)
 
     calls: dict[str, object] = {}
-    monkeypatch.setattr(init_cmd_module, "normalize_environment", lambda **kwargs: None)
+    monkeypatch.setattr("inspire.cli.commands.login.run_login", lambda *a, **kw: None)
     monkeypatch.setattr(init_cmd_module, "snapshot_paths", lambda *args, **kwargs: {})
     monkeypatch.setattr(init_cmd_module, "emit_init_result", lambda **kwargs: None)
     monkeypatch.setattr(init_cmd_module, "_stdin_is_interactive", lambda: True)
@@ -146,12 +147,13 @@ def test_init_bootstraps_first_account_before_discover(
         calls["kwargs"] = kwargs
 
     monkeypatch.setattr(init_cmd_module, "run_init_action", fake_run_init_action)
+    monkeypatch.setattr(init_cmd_module, "_login_if_logged_out", lambda *args: None)
 
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
         ["init", "--force", "--username", "zillionx", "--base-url", "https://qz.sii.edu.cn"],
-        input="zillionx\nsecret\nsecret\n\n",
+        input="zillionx\n\n",
     )
 
     assert result.exit_code == EXIT_SUCCESS, result.output
@@ -161,7 +163,7 @@ def test_init_bootstraps_first_account_before_discover(
     account_config = (
         tmp_path / ".inspire" / "accounts" / "zillionx" / "config.toml"
     ).read_text(encoding="utf-8")
-    assert 'username = "zillionx"' in account_config
+    assert "[auth]" not in account_config
     assert 'base_url = "https://qz.sii.edu.cn"' in account_config
 
 
@@ -175,7 +177,7 @@ def test_init_bootstrap_reprompts_empty_account_alias(
     set_fake_home(monkeypatch, tmp_path)
 
     calls: dict[str, object] = {}
-    monkeypatch.setattr(init_cmd_module, "normalize_environment", lambda **kwargs: None)
+    monkeypatch.setattr("inspire.cli.commands.login.run_login", lambda *a, **kw: None)
     monkeypatch.setattr(init_cmd_module, "snapshot_paths", lambda *args, **kwargs: {})
     monkeypatch.setattr(init_cmd_module, "emit_init_result", lambda **kwargs: None)
     monkeypatch.setattr(init_cmd_module, "_stdin_is_interactive", lambda: True)
@@ -184,12 +186,13 @@ def test_init_bootstrap_reprompts_empty_account_alias(
         calls["func"] = func
 
     monkeypatch.setattr(init_cmd_module, "run_init_action", fake_run_init_action)
+    monkeypatch.setattr(init_cmd_module, "_login_if_logged_out", lambda *args: None)
 
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
         ["init", "--force", "--username", "zillionx", "--base-url", "https://qz.sii.edu.cn"],
-        input="\nlocal-account\nsecret\nsecret\n\n",
+        input="\nlocal-account\n\n",
     )
 
     assert result.exit_code == EXIT_SUCCESS, result.output
@@ -201,103 +204,10 @@ def test_init_bootstrap_reprompts_empty_account_alias(
     )
 
 
-def test_discover_relogin_confirms_configured_username(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cfg = type(
-        "Cfg",
-        (),
-        {
-            "username": "仝",
-            "password": "",
-            "base_url": "https://qz.sii.edu.cn",
-        },
-    )()
-    prompts: list[tuple[str, object]] = []
-
-    def fake_prompt(text: str, **kwargs):  # noqa: ANN001
-        prompts.append((text, kwargs.get("default")))
-        if text.startswith("Platform login name"):
-            return "253108120116"
-        if text == "Password":
-            return "secret"
-        raise AssertionError(f"unexpected prompt: {text}")
-
-    monkeypatch.setattr(discover_module.click, "prompt", fake_prompt)
-
-    username, password, base_url = discover_module._resolve_credentials_interactive(
-        cfg,
-        cli_username=None,
-        cli_base_url=None,
-        confirm_config_username=True,
-    )
-
-    assert username == "253108120116"
-    assert password == "secret"
-    assert base_url == "https://qz.sii.edu.cn"
-    assert prompts[0] == ("Platform login name (not display name)", "仝")
 
 
-def test_discover_relogin_ignores_template_username(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cfg = type(
-        "Cfg",
-        (),
-        {
-            "username": "your_username",
-            "password": "",
-            "base_url": "https://qz.sii.edu.cn",
-        },
-    )()
-    prompts: list[tuple[str, object]] = []
-
-    def fake_prompt(text: str, **kwargs):  # noqa: ANN001
-        prompts.append((text, kwargs.get("default")))
-        if text.startswith("Platform login name"):
-            return "253108120116"
-        if text == "Password":
-            return "secret"
-        raise AssertionError(f"unexpected prompt: {text}")
-
-    monkeypatch.setattr(discover_module.click, "prompt", fake_prompt)
-
-    username, password, base_url = discover_module._resolve_credentials_interactive(
-        cfg,
-        cli_username=None,
-        cli_base_url=None,
-        confirm_config_username=True,
-    )
-
-    assert username == "253108120116"
-    assert password == "secret"
-    assert base_url == "https://qz.sii.edu.cn"
-    assert prompts[0] == ("Platform login name (not display name)", None)
 
 
-def test_discover_non_interactive_credentials_never_prompt(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cfg = SimpleNamespace(
-        username="253108120116",
-        password="secret",
-        base_url="https://qz.sii.edu.cn",
-    )
-    monkeypatch.setattr(
-        discover_module.click,
-        "prompt",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("non-interactive init must not prompt")
-        ),
-    )
-
-    assert discover_module._resolve_credentials_interactive(
-        cfg,
-        cli_username=None,
-        cli_base_url=None,
-        confirm_config_username=True,
-        non_interactive=True,
-    ) == ("253108120116", "secret", "https://qz.sii.edu.cn")
 
 
 def test_playwright_install_non_interactive_is_silent_and_captured(
@@ -424,141 +334,16 @@ def test_run_init_action_json_discards_child_error_details(
     assert captured.err == ""
 
 
-def test_discover_runtime_retries_configured_login_after_browser_repair(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from inspire.platform.web.session.models import WebSession
-
-    cfg = type(
-        "Cfg",
-        (),
-        {
-            "username": "253108120116",
-            "password": "secret",
-            "base_url": "https://qz.sii.edu.cn",
-        },
-    )()
-    session = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "abc"}]},
-        workspace_id="ws-real",
-        login_username="253108120116",
-        base_url="https://qz.sii.edu.cn",
-        created_at=0,
-    )
-    calls: list[dict[str, object]] = []
-
-    class FakeWebSessionModule:
-        @staticmethod
-        def get_web_session(**kwargs):  # noqa: ANN001
-            calls.append(kwargs)
-            if len(calls) == 1:
-                raise RuntimeError(
-                    "Playwright Chromium could not start for Inspire login. Repair the "
-                    "browser runtime and Linux container dependencies with:"
-                )
-            return session
-
-        @staticmethod
-        def login_with_playwright(*_args, **_kwargs):  # noqa: ANN001
-            raise AssertionError("configured login retry should avoid prompting")
-
-    repaired: list[bool] = []
-    monkeypatch.setattr(
-        discover_module,
-        "_ensure_playwright_browser",
-        lambda **_kwargs: repaired.append(True),
-    )
-    monkeypatch.setattr(
-        discover_module.click,
-        "prompt",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected prompt")),
-    )
-
-    resolved_session, prompted_credentials, account_key = (
-        discover_module._resolve_discover_runtime(
-            config=cfg,
-            web_session_module=FakeWebSessionModule,
-            default_workspace_id="__default__",
-            cli_username=None,
-            cli_base_url=None,
-        )
-    )
-
-    assert resolved_session is session
-    assert prompted_credentials is None
-    assert account_key == "253108120116"
-    assert repaired == [True]
-    assert calls == [
-        {"require_workspace": True},
-        {"force_refresh": True, "require_workspace": True},
-    ]
 
 
-def test_discover_shows_why_it_is_asking_again_after_a_rejected_login(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """The prompt is the fix path; it should not look like a random re-ask.
-
-    `init` is *the* command for repairing a broken login, so the prompt has to
-    stay -- a different password is submitted straight away. What must not
-    happen is asking again with no explanation and then refusing the identical
-    answer from the credential guard.
-    """
-    from inspire.platform.web.session import AuthenticationError
-
-    cfg = type(
-        "Cfg",
-        (),
-        {"username": "platform-user", "password": "secret", "base_url": "https://qz.sii.edu.cn"},
-    )()
-    submitted: list[tuple[str, str]] = []
-
-    class FakeWebSessionModule:
-        @staticmethod
-        def get_web_session(**_kwargs):  # noqa: ANN001, ANN205
-            raise AuthenticationError("Platform reported: 账号或密码错误")
-
-        @staticmethod
-        def login_with_playwright(username, password, **_kwargs):  # noqa: ANN001, ANN205
-            submitted.append((username, password))
-            raise SystemExit(0)
-
-    monkeypatch.setattr(discover_module, "_ensure_playwright_browser", lambda **_kwargs: None)
-    monkeypatch.setattr(discover_module.click, "prompt", lambda *_a, **_k: "corrected-secret")
-
-    with pytest.raises(SystemExit):
-        discover_module._resolve_discover_runtime(
-            config=cfg,
-            web_session_module=FakeWebSessionModule,
-            default_workspace_id="__default__",
-            cli_username=None,
-            cli_base_url=None,
-        )
-
-    assert "账号或密码错误" in capsys.readouterr().err
-    # The prompted password is a different one, so it is allowed through.
-    assert submitted == [("corrected-secret", "corrected-secret")]
 
 
-def test_persist_prompted_credentials_updates_auth_username() -> None:
-    account_data = {
-        "auth": {"username": "仝", "password": "old-secret"},
+def test_sanitize_drops_old_login_credentials() -> None:
+    data = discover_module._sanitize_account_config({
+        "auth": {"username": "old-user", "password": "old-secret"},
         "api": {"base_url": "https://qz.sii.edu.cn"},
-    }
-
-    discover_module._persist_prompted_credentials(
-        account_data=account_data,
-        prompted_credentials=(
-            "253108120116",
-            "new-secret",
-            "https://qz.sii.edu.cn",
-        ),
-    )
-
-    assert account_data["auth"]["username"] == "253108120116"
-    assert account_data["auth"]["password"] == "new-secret"
-    assert account_data["api"]["base_url"] == "https://qz.sii.edu.cn"
+    })
+    assert data == {"api": {"base_url": "https://qz.sii.edu.cn"}}
 
 
 def test_init_json_report_only_emits_result_and_changed_configs(
@@ -581,3 +366,41 @@ def test_init_json_report_only_emits_result_and_changed_configs(
     payload = parsed.get("data", parsed)
     assert payload == {"status": "updated"}
     assert str(tmp_path) not in rendered
+
+
+
+def test_init_logs_in_before_discovery_when_logged_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from inspire.platform.web.session import auth
+    from inspire.platform.web.session.models import AuthenticationError
+
+    calls: list[str] = []
+
+    def fake_get_web_session(**kwargs: object) -> object:
+        calls.append("session")
+        raise AuthenticationError("Not logged in; run inspire login.")
+
+    monkeypatch.setattr(init_cmd_module, "current_account", lambda: "alice")
+    monkeypatch.setattr(auth, "get_web_session", fake_get_web_session)
+    monkeypatch.setattr(
+        "inspire.cli.commands.login.run_login",
+        lambda account, **kw: calls.append(f"login:{account}"),
+    )
+
+    init_cmd_module._login_if_logged_out()
+    assert calls == ["session", "login:alice"]
+
+
+def test_init_skips_login_when_session_is_valid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from inspire.platform.web.session import auth
+
+    def fail_login(*args: object, **kwargs: object) -> None:
+        raise AssertionError("login must not run")
+
+    monkeypatch.setattr(init_cmd_module, "current_account", lambda: "alice")
+    monkeypatch.setattr(auth, "get_web_session", lambda **kwargs: object())
+    monkeypatch.setattr("inspire.cli.commands.login.run_login", fail_login)
+    init_cmd_module._login_if_logged_out()

@@ -94,7 +94,7 @@ def test_browser_body_failure_keeps_status_classification(caplog, asynchronous, 
                 return response
 
             client = browser_client.AsyncBrowserRequestClient(
-                WebSession(storage_state={}, created_at=1)
+                WebSession(access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999, created_at=1)
             )
             client._context = SimpleNamespace(request=SimpleNamespace(get=get))
             with pytest.raises(expected):
@@ -104,6 +104,7 @@ def test_browser_body_failure_keeps_status_classification(caplog, asynchronous, 
     else:
         client = object.__new__(browser_client._BrowserRequestClient)
         client._closed = False
+        client.session = WebSession(access_token="test", refresh_token="refresh", access_expires_at=9999999999, refresh_expires_at=9999999999, created_at=1)
         client._context = SimpleNamespace(request=SimpleNamespace(get=lambda *a, **kw: response))
         with pytest.raises(expected):
             client.request_json("GET", "https://example.test")
@@ -125,7 +126,7 @@ def test_browser_cleanup_attempts_every_resource(asynchronous):
 
     if asynchronous:
         client = browser_client.AsyncBrowserRequestClient(
-            WebSession(storage_state={}, created_at=1)
+            WebSession(access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999, created_at=1)
         )
         client._context = SimpleNamespace(close=lambda: async_fail("context"))
         client._browser = SimpleNamespace(close=lambda: async_fail("browser"))
@@ -135,6 +136,7 @@ def test_browser_cleanup_attempts_every_resource(asynchronous):
     else:
         client = object.__new__(browser_client._BrowserRequestClient)
         client._closed = False
+        client.session = WebSession(access_token="test", refresh_token="refresh", access_expires_at=9999999999, refresh_expires_at=9999999999, created_at=1)
         client._context = SimpleNamespace(close=lambda: fail("context"))
         client._browser = SimpleNamespace(close=lambda: fail("browser"))
         client._playwright = SimpleNamespace(stop=lambda: fail("runtime"))

@@ -63,23 +63,21 @@ if __name__ == "__main__":
 | `Accounts.current()` | Return the saved default account alias on disk (`None` if unset) |
 | `Accounts.exists(name)` | Return whether the account alias exists |
 | `Accounts.config_path(name)` | Return the `Path` to the account's `config.toml` |
-| `Accounts.add(name, *, username, password, base_url=DEFAULT_BASE_URL, proxy=None, use=False, overwrite=False)` | Create an account profile; the first account becomes the default automatically, and subsequent accounts switch the default only when `use=True` (`overwrite=True` replaces the account directory and its caches) |
+| `Accounts.add(name, *, base_url=DEFAULT_BASE_URL, proxy=None, use=None, overwrite=False)` | Create an account profile; an account becomes active if none is active, unless `use=False`; `use=True` forces activation (`overwrite=True` replaces the account directory and its caches) |
 | `Accounts.use(name)` | Set the persistent default account on disk |
 | `Accounts.rename(old, new)` | Rename an account alias and migrate its Notebook target caches |
-| `Accounts.remove(name)` | **Immediately delete the account directory and its cached state without confirmation** |
+| `Accounts.remove(name)` | **Clear tokens under the refresh lock, then delete the entire local account directory without confirmation**; equivalent to CLI `logout --yes` / `account remove --yes`, including bridge/tunnel state. Workloads keep running |
 
 ```python
 from inspire import Accounts, InspireClient
 
-Accounts.add("research", username="login-name", password="password", use=False)
+Accounts.add("research", use=False)
+# Authorize this profile separately: inspire login --account research
 with InspireClient(account="research") as client:
     identity = client.login()
     result = client.init()
     print(result.config_path, result.changed, result.warnings)
 
-# Or construct directly from credentials (updates local config without changing the default account):
-with InspireClient.from_credentials("login-name", "password", account="research") as client:
-    identity = client.login()
 ```
 
 ### Client Construction, `login()`, and `init()`
@@ -87,13 +85,13 @@ with InspireClient.from_credentials("login-name", "password", account="research"
 - **Constructors:**
   - `InspireClient(account=None, *, username=None, password=None, base_url=None, proxy=None, allow_browser=False, timeout=30, operation_timeout=120, catalog_ttl=60, catalog_disk_cache=False)`
   - `InspireAsyncClient(account=None, *, username=None, password=None, base_url=None, proxy=None, allow_browser=False, timeout=30, operation_timeout=120, catalog_ttl=60, catalog_disk_cache=False, concurrency=None)`
-  - If `username` and `password` are omitted, the client loads the named `account` (or the current default account if `account=None`). If `username` and `password` are provided (as a pair), missing accounts are created and existing accounts update only explicitly changed `auth`/`api`/`proxy` fields (`proxy=""` clears proxy settings; `proxy=None` preserves existing proxy settings). Constructing a client never alters `~/.inspire/current`.
+  - Clients load the named `account` (or the active account if `account=None`). Legacy `username` / `password` keyword arguments on `Accounts.add` and client construction, including `from_credentials`, are optional and ignored with `DeprecationWarning`; they never create an identity or rewrite config. Constructing a client never changes the active account. Create and authorize an account with `inspire login --account NAME`; `inspire account add NAME` remains a compatible CLI entry point. Device authorization stays CLI-driven.
   - `InspireClient` pins its account at construction time; `InspireAsyncClient` performs local config loading when entering `async with` or on its first method call (accessing `.account` or `.base_url` before initialization raises `ConfigurationError`).
 - **`login(*, force=False) -> AccountInfo`** (async: `await client.login(force=False)`):
-  - Reuses a cached disk session if under the 1-hour `SESSION_TTL` and verifies it via `GetUserDetail`; otherwise (or when `force=True`) renews the session under the account refresh lock: re-reads disk cache → tries passwordless SSO cookie renewal → performs credential login guarded by the login circuit breaker (`AuthenticationCooldownError.retry_at`).
-  - Chromium login fallback and browser-backed requests are enabled only when `allow_browser=True`. If a CAPTCHA is required and cannot be satisfied non-interactively, `AuthenticationError` is raised without submitting credentials.
+  - Run `inspire login --account <alias>` before using the SDK. Cached OAuth tokens refresh automatically under a per-account lock with a disk reread; rotated refresh tokens are persisted. The SDK never opens a device login implicitly. Old cookie caches require explicit login. Usernames and passwords are neither stored nor read; displayed identity comes from `WebSession.login_username`.
+  - `allow_browser=True` enables browser-backed requests for non-login operations. Device authorization never needs Chromium, and missing tokens always require an explicit CLI login.
 - **`init(*, force=False) -> InitResult`** (async: `await client.init(force=False)`):
-  - Logs in, verifies at least one accessible Workspace, and atomically writes normalized account config (`force=False` merges discovered fields while preserving custom TOML sections; `force=True` rebuilds from the template). Interactive prompts, Playwright installation, and `ssh-keygen` remain CLI-only (`inspire init`).
+  - Uses an existing OAuth session, verifies at least one accessible Workspace, and atomically writes normalized account config (`force=False` removes `[auth]` username/password while preserving other existing TOML sections; `force=True` rebuilds from the template). Device login prompts and `ssh-keygen` remain CLI-only (`inspire init`); device login does not require Chromium.
 
 ## 3. Concurrency, Cancellation & Lifecycle
 
@@ -224,6 +222,8 @@ The synchronous and asynchronous clients share the resource facades below. Async
 For external images, call `images.register`, push the image to the returned registry address, then call `images.sync(handle.ref)` and `images.wait_ready(handle.ref)`. Registration reserves a `PENDING_SYNC` slot; neither registration nor Docker push implies catalog readiness. The async client provides the same sequence with awaited methods.
 
 ### datasets
+
+The catalogue methods below (`applications`, `get`, `list`, `tags`) currently raise because the Dataset Hub accepts only CAS sign-in, which OAuth device login does not provide; mount validation is unaffected.
 
 | Method | Return Type | Equivalent CLI Command |
 | --- | --- | --- |

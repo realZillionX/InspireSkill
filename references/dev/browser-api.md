@@ -2,7 +2,7 @@
 
 > **Audience:** CLI and SDK maintainers. Do not load this file during normal workload operations — regular CLI usage relies solely on the name-based CLI surface and `--help`.
 >
-> **Scope:** Covers both the main compute console (`/api/v2` Action gateway on `{base_url}`, Sections 1–10) and the Dataset Hub (`plaza`, Section 11). Both share the same CAS single sign-on (SSO) session layer.
+> **Scope:** Covers both the main compute console (`/api/v2` Action gateway on `{base_url}`, Sections 1–10) and the Dataset Hub (`plaza`, Section 11). The compute console uses OAuth device authorization; the separate Dataset Hub protocol is documented below.
 
 ## 1. Sources of Truth & Invariants
 
@@ -24,7 +24,8 @@
 
 ```http
 POST {base_url}/api/v2/{route}?Action={Action}
-Cookie: inspire-session=…
+Authorization: Bearer …
+X-Inspire-Client-Source: inspire-cli/inspireskill-<version>
 Content-Type: application/json
 Referer: {base_url}/{console_page_path}
 
@@ -34,10 +35,10 @@ Referer: {base_url}/{console_page_path}
 | Aspect | Rule |
 | --- | --- |
 | Method & Shape | Always `POST` with a JSON body and `?Action={Action}` in the query string (for non-Action WebSocket/proxy routes, see Section 10). |
-| Authentication | Requires the `inspire-session` cookie (`x-inspire-client-source` is not required on read paths). |
+| Authentication | Requires Bearer authorization and `X-Inspire-Client-Source: inspire-cli/inspireskill-<version>`. |
 | `Referer` | Must match the origin and corresponding console page path; constructed per wrapper. |
 | Field Casing | Protobuf JSON unmarshaling is case- and underscore-insensitive (`ImageId` / `image_id` / `Image_Id` map to the same field), **except** when the underlying field name itself differs (e.g., `image.UpdateImage` requires `id`, whereas `image_id` is silently ignored). |
-| Account Isolation | Every request uses the SSO session and proxy configuration of the selected Account Alias; cross-account commands never fall back to the active default account. |
+| Account Isolation | Every request uses the OAuth token session and proxy configuration of the selected Account Alias; cross-account commands never fall back to the active default account. |
 
 ### Response Envelope
 
@@ -70,14 +71,11 @@ Both successes and business errors return **HTTP 200** with an AWS-style JSON en
 - **`page_size` clamping:** `_clamped_page_size()` caps `page_size` at `5000` (preserving `-1` for "fetch all"). Exception: `train.ListJobs` rejects `page_size >= 1000` with `InvalidParameter: page or page_size too large`, so `jobs.list_jobs` clamps at `999`.
 - **Never conflate request failure with an empty result:** Only a successful response with zero items means "none exist". Wrappers must never swallow `TransientAPIError` or `SessionExpiredError` into `[]`, `None`, or `0`. Fan-out wrappers (such as per-group quota fetches) must track partial completion explicitly (`QuotaCatalog.complete`).
 
-### Session Lifecycle & Login Guard (`session/login_guard.py`)
+### OAuth session lifecycle
 
-`get_web_session()` returns the cached disk session without pre-validating it (1-hour local TTL).
-- **Renewal flow:** On `401` or `3xx` (with `allow_redirects=False`), `_request_json_once()` first attempts a passwordless SSO renewal using existing CAS/Keycloak cookies (verifying that the renewed user ID matches). Only if SSO cookies cannot renew the session does it enter a single credential login guarded by the login circuit breaker, then retries the original request once.
-- **Single-submission login guard:** Because repeated failed logins trigger CAS account lockouts and CAPTCHA challenges Vary by `User-Agent`, at most **one** credential submission is permitted per session expiration:
-  - Both the `requests` CAS flow and the Playwright Chromium flow inspect the login form before submitting credentials. If `requests` encounters a CAPTCHA form, it falls back to Chromium without submitting; if Chromium also requires a CAPTCHA, it aborts before typing credentials and raises `AuthenticationError`.
-  - Once credentials are POSTed, **any** subsequent failure raises `AuthenticationError` and never falls back to a second submission path.
-  - Consecutive credential failures record a per-account circuit-breaker file (`web_session.login-block.json`) with escalating cooldowns (`60s → 5m → 15m → 30m`, reset after 1 hour, a successful login, a newer disk session, or a password change).
+`inspire login` explicitly runs device authorization. `get_web_session()` never starts login; it refreshes access tokens within 60 seconds of expiry. Refresh takes the per-account process lock, rereads disk, and persists both rotating tokens atomically. Missing or rejected refresh credentials require `inspire login`.
+
+Platform requests carry `Authorization: Bearer …` and `X-Inspire-Client-Source: inspire-cli/inspireskill-<version>` only for the configured platform origin. A 401 or authentication redirect refreshes once and retries once. Notebook automation obtains `jupyter_url` from `GetNotebookAccessUrl`, using the application's own cookies without forwarding platform tokens. Old cookie-only caches are logged out.
 
 ## 3. Route Names
 
@@ -513,6 +511,8 @@ Called per service route (`POST /api/v2/{notebook|train|hpc|ray|inference_servin
 ---
 
 ## 11. Dataset Hub (`plaza/`)
+
+The CAS handshake is currently disabled (`CAS_SIGN_IN_ENABLED = False`) because OAuth device sessions have no CAS cookie. Dataset catalogue calls raise `PlazaUnavailable`; qz dataset mounts and `dataset validate` are unaffected. The protocol notes below are retained for a future interactive CAS sign-in.
 
 The Dataset Hub (`PLAZA_BASE_URL` in [`plaza/core.py`](../../cli/inspire/platform/web/plaza/core.py)) is a separate service sharing CAS SSO (`CAS_BASE_URL`), implemented in [`plaza/`](../../cli/inspire/platform/web/plaza/).
 

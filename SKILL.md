@@ -86,4 +86,14 @@ Load only when maintaining the CLI's Browser API wrappers, auditing frontend req
 
 | Topic | Reference |
 | --- | --- |
-| `/api/v2` request/response envelopes, session & login guard, pagination, workspace scoping, probing methodology, per-route Action tables, creation payload contracts, and Dataset Hub (`plaza`) protocol | [`references/dev/browser-api.md`](references/dev/browser-api.md) |
+| `/api/v2` request/response envelopes, OAuth token sessions, pagination, workspace scoping, probing methodology, per-route Action tables, creation payload contracts, and Dataset Hub (`plaza`) protocol | [`references/dev/browser-api.md`](references/dev/browser-api.md) |
+
+## Authentication
+
+An account is a logged-in identity. Run `inspire login --account NAME` to create a missing account and authorize it, or to log in again. Without `--account`, `inspire login` uses the active account; when no account exists at all it creates one named `default` (when accounts exist but none is active it errors). `inspire account add NAME` remains the compatible creation entry point: it rejects existing accounts and supports `--no-login`. The device verification URL and code are printed immediately to stderr; open the URL and approve while the command waits. `--no-browser` disables automatic browser opening; `--json` returns metadata without tokens. New accounts use `--base-url` / `--proxy`; these options warn and are ignored for existing configs. With no active account the selected account becomes active unless `--no-use` is passed; `--use` forces activation. Logging in to an existing account otherwise preserves the active account.
+
+Access and rotating refresh tokens live in the account's `web_session.json`. Access tokens refresh automatically under the account lock; run login again when the refresh token expires. Usernames and passwords are neither stored in config nor read from config or environment variables. Identity display comes from the session. Old config files still load; `inspire init --force` removes retired authentication fields. `inspire init` (discovery mode) starts device login when the active account is logged out; other API commands never initiate authorization. Notebook automation still uses Playwright, but login does not require Chromium.
+
+`inspire logout --account NAME` is equivalent to `inspire account remove NAME`: both delete the entire local account profile, including tokens and local bridge/tunnel state, while platform workloads keep running. Both require confirmation (`--yes` for non-interactive use). Removing the active account clears the saved active pointer.
+
+For agents: to add an account, run `inspire login --account NAME` in the background, relay the printed URL and code to the user immediately, and wait for completion; do not retry login in a loop.

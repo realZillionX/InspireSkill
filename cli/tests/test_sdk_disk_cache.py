@@ -36,10 +36,10 @@ def reject(*a, **kw):
 m.setattr("requests.sessions.Session.send", reject)
 m.setattr("inspire.accounts.account_exists", lambda name: True)
 m.setattr("inspire.config.Config.from_files_and_env", lambda **kw: (
-    Config(base_url=origin, username="fake", password="unused"), None))
+    Config(base_url=origin), None))
 c = InspireClient(account, catalog_ttl=float(ttl), catalog_disk_cache=(disk == "true"))
 c._transport._session = WebSession(
-    storage_state={"cookies": []}, created_at=time.time(),
+    access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999, created_at=time.time(),
     workspace_id="ws-test", account=account, login_username="fake", base_url=origin)
 c._transport._last_success = time.monotonic()
 fake = catalog.__wrapped__(c, m)

@@ -31,8 +31,6 @@ class _Session:
 
 def _config() -> Config:
     return Config(
-        username="user",
-        password="pass",
     )
 
 

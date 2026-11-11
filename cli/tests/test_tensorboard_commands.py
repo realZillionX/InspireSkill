@@ -39,8 +39,6 @@ def _board(**overrides: Any) -> TensorboardInfo:
 
 def _patch_runtime(monkeypatch: pytest.MonkeyPatch, boards: list[TensorboardInfo]) -> None:
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
     for module in (tensorboard_commands, tensorboard_data):

@@ -18,8 +18,8 @@ from inspire.cli.utils.errors import exit_with_error
 # Surface in every command that touches a web session, so users get a
 # consistent next-action regardless of where they hit the wall.
 WEB_AUTH_HINT = (
-    "Run `inspire account add <name>` first; that command captures the platform "
-    "credentials, sets the active account, and provisions Playwright for SSO login."
+    "Run `inspire login` (add `--account <name>` for another account; "
+    "a missing account is created)."
 )
 
 

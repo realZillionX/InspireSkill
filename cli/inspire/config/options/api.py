@@ -42,18 +42,4 @@ PROXY_OPTIONS: list[ConfigOption] = [
     ),
 ]
 
-AUTH_OPTIONS: list[ConfigOption] = [
-    ConfigOption(
-        env_var="INSPIRE_USERNAME",
-        toml_key="auth.username",
-        field_name="username",
-        scope="global",
-    ),
-    ConfigOption(
-        env_var="INSPIRE_PASSWORD",
-        toml_key="auth.password",
-        field_name="password",
-        secret=True,
-        scope="global",
-    ),
-]
+AUTH_OPTIONS: list[ConfigOption] = []

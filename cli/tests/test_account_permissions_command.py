@@ -40,7 +40,7 @@ def test_account_permissions_json_returns_name_only_permissions(monkeypatch) -> 
         "from_files_and_env",
         classmethod(
             lambda cls, **_: (
-                permissions_module.Config(username="user", password="pass"),
+                permissions_module.Config(),
                 {},
             )
         ),
@@ -80,7 +80,7 @@ def test_account_permissions_default_json_is_bounded(monkeypatch) -> None:
         "from_files_and_env",
         classmethod(
             lambda cls, **_: (
-                permissions_module.Config(username="user", password="pass"),
+                permissions_module.Config(),
                 {},
             )
         ),
@@ -119,7 +119,7 @@ def test_account_permissions_all_is_unbounded_without_metadata(monkeypatch) -> N
         "from_files_and_env",
         classmethod(
             lambda cls, **_: (
-                permissions_module.Config(username="user", password="pass"),
+                permissions_module.Config(),
                 {},
             )
         ),
@@ -169,7 +169,7 @@ def test_account_permissions_workspace_all_fans_out_with_workspace_names(
         "from_files_and_env",
         classmethod(
             lambda cls, **_: (
-                permissions_module.Config(username="user", password="pass"),
+                permissions_module.Config(),
                 {},
             )
         ),
@@ -239,7 +239,7 @@ def test_account_permissions_rejects_workspace_id(monkeypatch) -> None:
         "from_files_and_env",
         classmethod(
             lambda cls, **_: (
-                permissions_module.Config(username="user", password="pass"),
+                permissions_module.Config(),
                 {},
             )
         ),

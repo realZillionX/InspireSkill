@@ -83,8 +83,6 @@ def _patch_config_and_session(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> config_module.Config:
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
 

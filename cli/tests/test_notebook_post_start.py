@@ -14,8 +14,6 @@ from inspire.config.models import Config
 
 def _config(*, post_start: str | None = None) -> Config:
     return Config(
-        username="user",
-        password="pass",
         notebook_post_start=post_start,
     )
 

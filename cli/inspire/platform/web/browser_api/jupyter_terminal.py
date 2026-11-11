@@ -409,23 +409,6 @@ def _jupyter_ws_headers(session: WebSession, ws_url: str) -> dict[str, str]:
             "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         ),
     }
-    cookie_pairs: list[str] = []
-    cookies = session.storage_state.get("cookies") if session.storage_state else None
-    if isinstance(cookies, list):
-        for cookie in cookies:
-            if not isinstance(cookie, dict):
-                continue
-            name = str(cookie.get("name") or "").strip()
-            value = str(cookie.get("value") or "").strip()
-            if name and value:
-                cookie_pairs.append(f"{name}={value}")
-    for name, value in (session.cookies or {}).items():
-        if name and value:
-            pair = f"{name}={value}"
-            if pair not in cookie_pairs:
-                cookie_pairs.append(pair)
-    if cookie_pairs:
-        headers["Cookie"] = "; ".join(cookie_pairs)
     return headers
 
 

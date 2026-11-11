@@ -1,34 +1,22 @@
-"""Acquire, persist and renew platform sessions for the owning Transport.
-
-CAS and browser authentication, cookie jars, refresh locks and login cooldowns
-belong here. Request retries and single-send write policy belong to
-inspire.platform.web.transport_core; endpoint payloads belong to
-inspire.platform.web.browser_api. A locally fresh cache is not proof that the
-server still accepts its cookies.
-"""
+"""Acquire, persist and refresh per-account OAuth token sessions."""
 
 
 from __future__ import annotations
 
-import sys
-from inspire.platform.web.flow import Program, workflow, call, enter_context, exit_context
+from inspire.platform.web.flow import Program, workflow, call
 
 import atexit
 import logging
 from pathlib import Path
 from typing import Optional
 
-from inspire.config.models import DEFAULT_BASE_URL
 from inspire.platform.web.session.browser_client import _BrowserRequestClient  # noqa: F401
 from inspire.platform.web.session.browser_client import (
     _close_browser_client,
     _get_browser_client as _get_browser_client,
 )
 from inspire.platform.web.session.auth import (
-    get_credentials as _get_credentials,
     get_web_session as _get_web_session,
-    login_with_playwright as _login_with_playwright,
-    renew_web_session_without_credentials as _renew_web_session_without_credentials,  # noqa: F401
 )
 from inspire.platform.web.session.models import (
     AuthenticationError,
@@ -46,7 +34,6 @@ from inspire.platform.web.session.browser_launch import (
     playwright_install_hint,
 )
 from inspire.platform.web.session.proxy import get_playwright_proxy
-from inspire.platform.web.session.refresh_lock import exclusive_session_refresh
 from inspire.platform.web.session.requests import (
     build_requests_session,
     close_pooled_requests_session,
@@ -61,7 +48,6 @@ __all__ = [
     "refresh_session_in_place",
     "raise_browser_runtime_error",
     "acquire_web_session",
-    "renew_web_session_without_credentials",
     "close_browser_client",
     "get_browser_client",
     "create_browser_client",
@@ -76,11 +62,9 @@ __all__ = [
     "clear_all_session_caches",
     "clear_session_cache",
     "close_pooled_requests_session",
-    "get_credentials",
     "get_playwright_proxy",
     "get_web_session",
     "is_transient_api_error",
-    "login_with_playwright",
     "pooled_requests_session",
     "with_transient_retry",
 ]
@@ -103,8 +87,10 @@ def raise_browser_runtime_error(exc: BaseException) -> None:
 
 def refresh_session_in_place(current: "WebSession", refreshed: "WebSession") -> None:
     """Replace an existing session object's fields with refreshed credentials/state."""
-    current.storage_state = refreshed.storage_state
-    current.cookies = refreshed.cookies
+    current.access_token = refreshed.access_token
+    current.refresh_token = refreshed.refresh_token
+    current.access_expires_at = refreshed.access_expires_at
+    current.refresh_expires_at = refreshed.refresh_expires_at
     current.workspace_id = refreshed.workspace_id
     current.login_username = refreshed.login_username
     current.base_url = refreshed.base_url
@@ -129,11 +115,6 @@ def close_browser_client() -> None:
 
 
 @workflow
-def renew_web_session_without_credentials(session: WebSession) -> Program[WebSession | None]:
-    return (yield call(_renew_web_session_without_credentials, session))
-
-
-@workflow
 def acquire_web_session(
     force_refresh: bool = False,
     require_workspace: bool = False,
@@ -149,43 +130,16 @@ def acquire_web_session(
     ))
 
 
-def get_credentials() -> tuple[str, str]:
-    return _get_credentials()
-
-
-def login_with_playwright(
-    username: str,
-    password: str,
-    base_url: str = DEFAULT_BASE_URL,
-    headless: bool = True,
-) -> WebSession:
-    return _login_with_playwright(
-        username,
-        password,
-        base_url=base_url,
-        headless=headless,
-    )
-
-
 @workflow
 def get_web_session(
     force_refresh: bool = False,
     require_workspace: bool = False,
     account: Optional[str] = None,
+    lock_timeout: float | None = None,
 ) -> Program[WebSession]:
-    # The lock covers *force_refresh* too. That is the call that logs in, so
-    # skipping it was letting every concurrent process past the one gate meant
-    # to make them share a single refresh.
-    context = exclusive_session_refresh(account)
-    yield call(enter_context, context)
-    try:
-        session = yield call(_get_web_session,
-            force_refresh=force_refresh,
-            require_workspace=require_workspace,
-            account=account,
-        )
-    finally:
-        yield call(exit_context, context, *sys.exc_info())
+    session = yield call(_get_web_session, force_refresh=force_refresh,
+                         require_workspace=require_workspace, account=account,
+                         lock_timeout=lock_timeout)
     from inspire.platform.web.runtime import session_transport
 
     adopt = session_transport.get()

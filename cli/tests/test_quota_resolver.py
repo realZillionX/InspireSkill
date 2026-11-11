@@ -84,7 +84,7 @@ def _make_price(
 
 def _cached_group_session() -> WebSession:
     return WebSession(
-        storage_state={},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
         created_at=0,
         base_url="https://inspire.example",
         user_detail={"id": "user-1"},
@@ -1064,3 +1064,8 @@ def test_build_resource_spec_price_cpu_only_omits_gpu_type() -> None:
     assert "gpu_type" not in payload
     assert payload["cpu_count"] == 4
     assert payload["quota_id"] == "q-cpu"
+
+
+@pytest.fixture(autouse=True)
+def mock_priority_levels(monkeypatch):
+    monkeypatch.setattr("inspire.cli.utils.quota_resolver.load_quota_priority_levels", lambda **kwargs: {})

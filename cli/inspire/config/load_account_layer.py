@@ -1,18 +1,7 @@
-"""Per-account config layer — the sole source of identity for the CLI.
+"""Load runtime settings from the selected account's config.toml.
 
-Identity and account-wide settings live at::
-
-    ~/.inspire/accounts/<current>/config.toml
-
-Sections: ``[auth]``, ``[api]``, ``[proxy]``, ``[tunnel]``, ``[job]``,
-``[notebook]``, ``[defaults]`` and ``[remote_env]``. Project names, compute
-groups, images and paths remain explicit command inputs or live catalogs.
-
-One account = one file. Without an active account
-(``~/.inspire/current`` absent or pointing at a missing directory),
-this layer is a no-op and the caller is free to continue — callers that
-require credentials will get a clear "run 'inspire account add'" error
-from :func:`inspire.config.load_runtime._validate_required_config`.
+Legacy identity fields are ignored. Session identity and OAuth tokens live
+separately in web_session.json.
 """
 
 from __future__ import annotations

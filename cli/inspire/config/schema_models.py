@@ -17,8 +17,8 @@ class ConfigOption:
 
     Attributes:
         env_var: Environment variable name
-        toml_key: TOML configuration key (e.g., "auth.username")
-        field_name: Config dataclass field name (e.g., "username")
+        toml_key: TOML configuration key (e.g., "api.base_url")
+        field_name: Config dataclass field name (e.g., "base_url")
         secret: If True, never write the value into a generated config file
         parser: Optional function to parse string value to correct type
         scope: Kept as ``global`` for compatibility with the init generator;

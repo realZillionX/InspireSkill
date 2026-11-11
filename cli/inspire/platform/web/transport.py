@@ -69,13 +69,13 @@ class Transport:
         account: str | None,
         base_url: str,
         *,
-        username: str,
+        username: str = "",
         allow_browser: bool = False,
         timeout: float = 30,
         cli_compat: bool = False,
     ):
         self.account, self.base_url = account, base_url.rstrip("/")
-        self.username, self.allow_browser, self.timeout = username, allow_browser, timeout
+        self.allow_browser, self.timeout = allow_browser, timeout
         self._pid, self._thread = os.getpid(), threading.get_ident()
         self.cli_compat = cli_compat
         self._decisions = SharedState()
@@ -207,11 +207,11 @@ class Transport:
     def _validate_session(self, session):
         if (
             session is None
-            or not session.storage_state.get("cookies")
+            or not session.access_token
             or (session.base_url or "").rstrip("/") != self.base_url
             or session.account not in (None, self.account)
         ):
-            raise AuthenticationError("No matching cached session; initialize this account first.")
+            raise AuthenticationError("No matching cached session; run inspire login.")
         return session
 
     @property

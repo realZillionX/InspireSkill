@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Generator, cast
+from typing import Any, AsyncIterator
 
 from inspire.accounts import cache_lock
 from inspire.services.execution.async_output import _finish_io
@@ -39,7 +39,7 @@ async def cache_lock_async(path: Any, transport: Any) -> AsyncIterator[None]:
 
 @asynccontextmanager
 async def authentication_context(context: Any, transport: Any) -> AsyncIterator[None]:
-    from inspire.platform.web.session import login_guard, refresh_lock
+    from inspire.platform.web.session import refresh_lock
 
     name = context.func.__name__
     if name == "exclusive_session_refresh":
@@ -51,49 +51,5 @@ async def authentication_context(context: Any, transport: Any) -> AsyncIterator[
         async with cache_lock_async(cache_file.with_name(f"{cache_file.name}.refresh"), transport):
             yield
         return
-    if name != "guarded_credential_submission":
-        # Test/integration contexts may supply a no-op context manager.
-        with context:
-            yield
-        return
-    username, password = context.args
-    account = context.kwds["account"]
-    path = await _finish_io(login_guard.block_file, account)
-    if path is None:
+    with context:
         yield
-        return
-    async with cache_lock_async(path, transport):
-        # `_guarded` is the single cooldown/fingerprint decision program.
-        guard = cast(
-            Generator[None, Any, None],
-            login_guard._guarded(
-                username,
-                password,
-                path,
-                account=account,
-                now=context.kwds.get("now"),
-            ),
-        )
-        await _finish_io(next, guard, None)
-        try:
-            yield
-        except BaseException as error:
-            try:
-                await _finish_io(_throw_guard, guard, error)
-            except StopIteration:
-                pass
-            raise
-        else:
-            try:
-                await _finish_io(next, guard, None)
-            except StopIteration:
-                pass
-        finally:
-            await _finish_io(guard.close)
-
-
-def _throw_guard(guard: Generator[None, Any, None], error: BaseException) -> None:
-    try:
-        guard.throw(error)
-    except StopIteration:
-        pass

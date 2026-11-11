@@ -328,7 +328,7 @@ def test_windows_cache_acl_failure_is_reported_once_and_session_still_saves(
 
     monkeypatch.setattr(local_files, "restrict_windows_file", fail)
     session = WebSession(
-        storage_state={"cookies": [], "origins": []}, account="fixture", created_at=time.time()
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999, account="fixture", created_at=time.time()
     )
     session.save()
     session.save()
@@ -424,7 +424,7 @@ def test_async_subprocess_requires_proactor_without_changing_policy(
     assert asyncio.get_event_loop_policy() is policy
 
 
-@pytest.mark.parametrize("kind", ["guard", "ide", "rtunnel", "catalog", "index", "bridges"])
+@pytest.mark.parametrize("kind", ["ide", "rtunnel", "catalog", "index", "bridges"])
 @pytest.mark.usefixtures("windows_directory_acl")
 def test_windows_private_cache_paths_reach_shared_acl(as_windows, monkeypatch, tmp_path, kind):
     from pathlib import Path
@@ -442,11 +442,7 @@ def test_windows_private_cache_paths_reach_shared_acl(as_windows, monkeypatch, t
 
     monkeypatch.setattr(local_files, "restrict_windows_file", protect)
     path = tmp_path / "fixture.json"
-    if kind == "guard":
-        from inspire.platform.web.session.login_guard import _LoginBlock, _store
-
-        _store(path, _LoginBlock(1, 2, 1, "fixture-derived", None, False))
-    elif kind == "ide":
+    if kind == "ide":
         from inspire.platform.web.browser_api.playwright_notebooks import _save_ide_url_cache
 
         _save_ide_url_cache(path, {"notebooks": {}})

@@ -19,8 +19,6 @@ class _FakeSession:
 
 def _patch_job_create_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     config = Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
 

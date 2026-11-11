@@ -17,7 +17,6 @@ from test_sdk import client as client
 from test_sdk_async import tracked as tracked
 from inspire.sdk import (
     AuthenticationError,
-    AuthenticationCooldownError,
     InspireAsyncClient,
     InspireError,
     ImageRef,
@@ -47,10 +46,7 @@ def refused(client, monkeypatch):
         logins.append(session)
         return session
 
-    monkeypatch.setattr(auth, "login_without_browser", login)
-    monkeypatch.setattr(auth, "get_credentials", lambda account: ("test", "unused"))
-    monkeypatch.setattr(auth, "renew_web_session_without_credentials", lambda session: None)
-    monkeypatch.setattr(auth, "_persist", lambda *args, **kwargs: None)
+    monkeypatch.setattr(auth, "refresh_session", login)
     monkeypatch.setattr(WebSession, "load", staticmethod(lambda **kwargs: None))
 
     async def send(self, request, **kwargs):
@@ -271,19 +267,6 @@ def test_logs_single_instance_is_one_pod(client, monkeypatch):
     assert captured == [["worker-0"]]
 
 
-def test_cooldown_keeps_actionable_login_guard_message(client, refused, monkeypatch):
-    message = "Account alpha blocked until 12:00; run inspire init."
-    blocked = auth.AuthenticationError(message)
-    blocked.retry_at = time.time() + 300
-
-    def login(*args, **kwargs):
-        raise blocked
-
-    monkeypatch.setattr(auth, "login_without_browser", login)
-    with pytest.raises(AuthenticationCooldownError) as caught:
-        client.workspaces.list()
-    assert str(caught.value) == message
-    assert caught.value.retry_at == blocked.retry_at
 
 
 @pytest.mark.parametrize(

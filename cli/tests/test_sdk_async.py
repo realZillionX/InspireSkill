@@ -563,21 +563,15 @@ def test_cache_controls_cover_concurrent_calls(tracked, monkeypatch):
     asyncio.run(run())
 
 
-def test_credentials_factory_initializes_once_on_event_loop(tracked, monkeypatch):
-    calls = []
-
-    def credentials(account, **options):
-        calls.append((threading.get_ident(), account, options))
-        return "alpha"
-
-    monkeypatch.setattr("inspire.sdk.client.ensure_credentials", credentials)
-
+def test_credentials_factory_warns_once_on_initialization(tracked, monkeypatch):
     async def run():
-        c = InspireAsyncClient.from_credentials("fake", "unused", concurrency=None)
-        assert calls == [] and tracked == []
-        async with c:
-            assert c.account == "alpha"
-        assert len(calls) == 1 and calls[0][0] == tracked[0].owner
+        c = InspireAsyncClient.from_credentials("fake", "unused", account="alpha")
+        assert tracked == []
+        with pytest.warns(DeprecationWarning, match="ignored") as warnings:
+            async with c:
+                assert c.account == "alpha"
+        assert len(warnings) == 1
+        assert len(tracked) == 1
 
     asyncio.run(run())
 

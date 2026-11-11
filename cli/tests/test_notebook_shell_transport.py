@@ -12,7 +12,7 @@ from inspire.config import Config
 
 def test_shell_uses_jupyter_when_policy_blocks_ssh(monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setattr("inspire.cli.utils.account_option.account_exists", lambda name: name == "alice")
-    config = Config(username="", password="")
+    config = Config()
     policy_calls = {}
     shell_calls = {}
 
@@ -72,7 +72,7 @@ def test_shell_uses_jupyter_when_policy_blocks_ssh(monkeypatch) -> None:  # noqa
 
 
 def test_shell_check_uses_jupyter_probe_when_policy_blocks_ssh(monkeypatch) -> None:  # noqa: ANN001
-    config = Config(username="", password="")
+    config = Config()
 
     monkeypatch.setattr(
         Config,
@@ -108,7 +108,7 @@ def test_shell_check_uses_jupyter_probe_when_policy_blocks_ssh(monkeypatch) -> N
 
 
 def test_shell_check_json_is_compact(monkeypatch) -> None:  # noqa: ANN001
-    config = Config(username="", password="")
+    config = Config()
 
     monkeypatch.setattr(
         Config,
@@ -149,7 +149,7 @@ def test_shell_check_json_is_compact(monkeypatch) -> None:  # noqa: ANN001
 
 
 def test_shell_check_uses_ssh_noninteractive_transport(monkeypatch) -> None:  # noqa: ANN001
-    config = Config(username="", password="")
+    config = Config()
 
     monkeypatch.setattr(
         Config,

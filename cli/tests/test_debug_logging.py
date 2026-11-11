@@ -226,8 +226,6 @@ def test_debug_does_not_expand_account_check_output(
     log_dir = tmp_path / "debug-logs"
     monkeypatch.setenv("INSPIRE_DEBUG_LOG_DIR", str(log_dir))
     cfg = Config(
-        username="alice",
-        password="secret",
         base_url="https://inspire.example",
     )
     monkeypatch.setattr(

@@ -61,8 +61,6 @@ def _patch_runtime(
     """Wire the command onto fakes and record the calls it makes, in order."""
     calls: list[tuple[str, Any]] = []
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
     monkeypatch.setattr(

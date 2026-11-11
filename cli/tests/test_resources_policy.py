@@ -442,7 +442,7 @@ _POLICIES = [
 
 
 def _patch_cli(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    config = config_module.Config(username="user", password="pass")
+    config = config_module.Config()
     calls: list[str] = []
 
     monkeypatch.setattr(

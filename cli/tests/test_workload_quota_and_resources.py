@@ -42,8 +42,6 @@ def _assert_compact_public_payload(value):  # type: ignore[no-untyped-def]
 
 def _patch_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     cfg = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://qz.sii.edu.cn",
     )
     monkeypatch.setattr(

@@ -139,7 +139,7 @@ def test_format_configs_renders_nested_config_shape() -> None:
 def test_serving_configs_single_workspace_keeps_compact_schema(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = config_module.Config(username="user", password="pass")
+    config = config_module.Config()
     monkeypatch.setattr(
         config_module.Config,
         "from_files_and_env",
@@ -188,7 +188,7 @@ def test_serving_configs_refuses_a_workspace_fanout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The config surface is declared per workspace and read one at a time."""
-    config = config_module.Config(username="user", password="pass")
+    config = config_module.Config()
 
     class _AllWorkspaceSession:
         storage_state: dict[str, Any] = {}
@@ -288,7 +288,7 @@ def _patch_serving_cli_deps(
     *,
     resolved_id: str = "sv-internal",
 ) -> list[dict[str, Any]]:
-    config = config_module.Config(username="user", password="pass")
+    config = config_module.Config()
     resolutions: list[dict[str, Any]] = []
     monkeypatch.setattr(
         config_module.Config,
@@ -326,7 +326,7 @@ def _patch_serving_cli_deps(
 
 def _patch_delete_deps(monkeypatch) -> dict[str, Any]:  # noqa: ANN001
     calls: dict[str, Any] = {}
-    config = config_module.Config(username="user", password="pass")
+    config = config_module.Config()
 
     monkeypatch.setattr(
         config_module.Config,
@@ -356,7 +356,7 @@ def _patch_delete_deps(monkeypatch) -> dict[str, Any]:  # noqa: ANN001
 def test_serving_list_all_expands_and_limit_conflict_is_pre_api(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = config_module.Config(username="user", password="pass")
+    config = config_module.Config()
     calls: list[int] = []
     monkeypatch.setattr(
         config_module.Config,
@@ -457,7 +457,7 @@ def test_serving_list_all_expands_and_limit_conflict_is_pre_api(
 def test_serving_list_workspace_all_fans_out_and_uses_visible_names(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = config_module.Config(username="user", password="pass")
+    config = config_module.Config()
 
     class _AllWorkspaceSession:
         storage_state: dict[str, Any] = {}
@@ -535,7 +535,7 @@ def test_serving_list_workspace_all_fans_out_and_uses_visible_names(
 
 
 def test_serving_raw_handle_is_rejected_before_detail_api(monkeypatch) -> None:  # noqa: ANN001
-    config = config_module.Config(username="user", password="pass")
+    config = config_module.Config()
     monkeypatch.setattr(
         config_module.Config,
         "from_files_and_env",
@@ -1088,7 +1088,7 @@ def test_serving_delete_json_requires_yes_before_remote_resolution(
 def test_serving_status_retries_stale_cached_handle_by_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = config_module.Config(username="user", password="pass")
+    config = config_module.Config()
     calls: list[object] = []
     invalidated: list[str] = []
 
@@ -1401,7 +1401,7 @@ def _patch_serving_create_deps(
 ) -> None:
     from inspire.cli.utils import quota_resolver as quota_resolver_module
 
-    config = config_module.Config(username="user", password="pass")
+    config = config_module.Config()
     monkeypatch.setattr(
         config_module.Config,
         "from_files_and_env",

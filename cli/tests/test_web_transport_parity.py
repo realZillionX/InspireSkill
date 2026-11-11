@@ -63,7 +63,7 @@ def test_drivers_have_identical_actions_and_outcome(monkeypatch, cli_compat, sce
             None, "https://example.test", username="", cli_compat=cli_compat, allow_browser=True
         )
         session = ws.WebSession(
-            storage_state={"cookies": [{"name": "session", "value": "old"}]},
+            access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
             created_at=1,
             base_url="https://example.test",
         )
@@ -90,7 +90,7 @@ def test_drivers_have_identical_actions_and_outcome(monkeypatch, cli_compat, sce
         def refresh():
             effects.append(("refresh", session.created_at))
             return ws.WebSession(
-                storage_state={"cookies": [{"name": "session", "value": "new"}]},
+                access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
                 created_at=2,
                 base_url="https://example.test",
             )
@@ -310,14 +310,7 @@ def test_httpx_preserves_prepared_request_and_proxy_settings(
         lambda: ({"https": proxy}, "toml") if proxy_mode == "explicit" else ({}, "system_env"),
     )
     session = ws.WebSession(
-        storage_state={
-            "cookies": [
-                {"name": "same", "value": "root", "domain": "example.test", "path": "/"},
-                {"name": "same", "value": "api", "domain": "example.test", "path": "/api"},
-                {"name": "foreign", "value": "omit", "domain": "elsewhere.test", "path": "/"},
-                {"name": "wrong_path", "value": "omit", "domain": "example.test", "path": "/other"},
-            ]
-        },
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
         created_at=1,
         base_url="https://example.test",
     )
@@ -378,7 +371,8 @@ def test_httpx_preserves_prepared_request_and_proxy_settings(
 
         asyncio.run(run())
         assert captured[0][:5] == captured[1][:5] == captured[2][:5]
-        assert "same=api; same=root" == captured[0][2]["Cookie"]
+        assert captured[0][2]["Authorization"] == "Bearer test-access"
+        assert "Cookie" not in captured[0][2]
         assert captured[0][5] == (17 if cli_compat else (10, 17))
         assert captured[1][5] == {
             "connect": 17 if cli_compat else 10,
@@ -404,7 +398,7 @@ def test_async_native_refresh_preserves_owner_and_browser_affinity(monkeypatch, 
     thread = threading.get_ident()
     events = []
     session = ws.WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "old"}]},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
         created_at=1,
         base_url="https://example.test",
     )
@@ -415,7 +409,7 @@ def test_async_native_refresh_preserves_owner_and_browser_affinity(monkeypatch, 
         assert threading.get_ident() == thread
         worker.check()
         refreshed = ws.WebSession(
-            storage_state={"cookies": [{"name": "session", "value": "new"}]},
+            access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
             created_at=2,
             base_url="https://example.test",
         )

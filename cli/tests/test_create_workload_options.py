@@ -493,8 +493,6 @@ def _patch_create_runtime(
     verdicts: list[DatasetValidation],
 ) -> None:
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
     monkeypatch.setattr(

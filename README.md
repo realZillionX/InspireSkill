@@ -71,10 +71,12 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ## 账号与初始化
 
-账号配置按本地别名（`<name>`）保存在 `~/.inspire/accounts/<name>/config.toml`，与具体代码仓库无关。`account add` 会引导填写平台登录名（手机号、学号或邮箱）、密码、平台地址及代理；未在配置文件中保存密码时，也可通过环境变量 `INSPIRE_PASSWORD` 传入。
+账号就是已登录的身份。运行 `inspire login --account <name>` 即可创建本地账号并启动官方 OAuth 设备授权，打开终端给出的链接并输入验证码完成授权。不带 `--account` 时登录当前活动账号；尚无任何账号时自动创建名为 `default` 的账号。连接配置保存在 `~/.inspire/accounts/<name>/config.toml`，访问令牌和轮换的刷新令牌保存在同目录的 `web_session.json`；访问令牌自动刷新，刷新令牌过期后需重新登录。`account add <name>` 保留为兼容创建入口（重复账号报错，可用 `--no-login` 暂缓授权）。用户名和密码不再存储或读取，包括旧 `[auth]` 配置及 `INSPIRE_USERNAME` / `INSPIRE_PASSWORD`。`inspire init --force` 重写配置时会删除这些旧字段。`inspire init` 发现当前账号未登录时也会启动设备授权。
+
+`inspire logout --account <name> --yes` 与 `inspire account remove <name> --yes` 等价：删除整个本地账号目录，包括令牌、配置及 bridge/tunnel 状态，平台工作负载继续运行。删除活动账号后不再保留活动指针。首个账号默认激活，`--use` 强制激活、`--no-use` 阻止激活；登录已有账号默认不切换活动账号。`login` 的 `--base-url` / `--proxy` 仅用于新配置，已有配置不会被覆盖。
 
 ```bash
-inspire account add <name>
+inspire login --account <name>
 inspire account check
 inspire init
 inspire resources availability --workspace 分布式训练空间 --include-cpu
@@ -199,7 +201,7 @@ inspire uninstall               # 卸载 CLI 与已安装的 Skill 文档
 
 - **镜像管理（`inspire image`）**：`image list / detail / register / sync / set-visibility / delete`，支持 `--keyword` 模糊搜索、`--source all` 并发检索四个可见性目录（`official` / `public` / `project` / `private`）、注册外部 Docker 镜像、push 后同步镜像以及调整自定义镜像可见范围。
 - **模型注册表（`inspire model`）**：`model list / register / status / versions / deploy-config / delete`，支持将共享盘模型目录注册到平台、查询实时 vLLM 兼容性与最小部署硬件规格（`deploy-config`），并在删除模型前自动检查是否仍有推理服务占用。
-- **数据广场官方数据集（`inspire dataset`）**：`dataset list / show / tags / validate / applications` 直接通过 CAS SSO 握手检索数据广场（`aip.sii.edu.cn`）目录、版本、权限与申请进度，并在创建 Notebook、Job、HPC 时通过 `--dataset <数据集名>:<版本名>` 只读挂载至 `/inspire/dataset/<数据集名>/<版本名>`。
+- **数据广场官方数据集（`inspire dataset`）**：数据广场（`aip.sii.edu.cn`）只支持 CAS 登录，改用设备授权后 `dataset list / show / tags / applications` 暂不可用并直接报错，请在网页端检索；`dataset validate` 仍可核验挂载，并可在创建 Notebook、Job、HPC 时通过 `--dataset <数据集名>:<版本名>` 只读挂载至 `/inspire/dataset/<数据集名>/<版本名>`。
 - **项目与预算（`inspire project`）**：`project list / detail / owners` 查看全局项目列表、个人可用点券额度（`My Budget`）与项目总余额（`Project Budget`）、各项支出明细以及项目负责人列表。
 
 </details>

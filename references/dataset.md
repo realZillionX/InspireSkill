@@ -10,6 +10,8 @@ Always follow this order:
 1. Query `inspire dataset` to verify that the dataset and version exist and your account has access.
 2. Pass `--dataset <dataset-name>:<version-name>` when creating the workload.
 
+**Catalogue queries are currently unavailable.** The Dataset Hub (`aip.sii.edu.cn`) only accepts CAS sign-in, which the OAuth device login does not provide, so `inspire dataset list / show / tags / applications` fail fast with `PlazaUnavailable`. Look up dataset slugs and versions in the Dataset Hub web UI; `inspire dataset validate` and `--dataset` mounts still work.
+
 **Access requests must be submitted in the Dataset Hub web UI.** Requesting or approving access triggers notifications to human reviewers, so the CLI only provides read-only status tracking via `inspire dataset applications` (your submitted requests: `pending`, `approved`, `rejected`, or `withdrawn`) and `inspire dataset applications --to-approve` (requests awaiting your approval). Once an application turns `approved`, run `inspire dataset validate <name>:<version> --workspace <workspace>` to confirm mount readiness.
 
 ## 2. Address by Name, Never Numeric ID

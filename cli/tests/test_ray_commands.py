@@ -35,8 +35,6 @@ def _patch_ray_create_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> dict[str, Any]:
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
 
@@ -89,8 +87,6 @@ def _patch_ray_status_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> dict[str, Any]:
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
 
@@ -275,8 +271,6 @@ def test_ray_list_filters_status_and_readable_keyword_locally(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = config_module.Config(
-        username="user",
-        password="pass",
         base_url="https://example.invalid",
     )
     monkeypatch.setattr(

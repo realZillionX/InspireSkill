@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -75,7 +77,7 @@ class _FakePage:
         if "/ide?notebook_id=" in url:
             assert wait_until == "domcontentloaded"
         else:
-            assert wait_until == "commit"
+            assert wait_until == "domcontentloaded"
         self.goto_calls.append(url)
         self.goto_timeouts.append(timeout)
         self.url = url
@@ -89,121 +91,21 @@ class _FakePage:
         self._fake_time[0] += timeout_ms / 1000.0
 
 
-def test_open_notebook_lab_falls_back_early_to_direct_url(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    fake_time = [0.0]
-    page = _FakePage(fake_time)
-    monkeypatch.setattr(notebooks_module, "_get_base_url", lambda: "https://qz.sii.edu.cn")
-    monkeypatch.setattr(notebooks_module.time, "time", lambda: fake_time[0])
-
-    lab = notebooks_module.open_notebook_lab(page, notebook_id="nb-123", timeout=60000)
-
-    assert lab is not None
-    assert len(page.goto_calls) == 2
-    assert page.goto_calls[0] == "https://qz.sii.edu.cn/ide?notebook_id=nb-123"
-    assert page.goto_calls[1] == "https://qz.sii.edu.cn/api/v2/notebook/lab/nb-123"
-    assert page.goto_timeouts[0] == 20000
-    assert page.goto_timeouts[1] > 20000
-    assert fake_time[0] < 20.0
-
-
-def test_open_notebook_lab_prefers_direct_url_for_terminal_operations(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    fake_time = [0.0]
-    page = _FakePage(fake_time)
-    monkeypatch.setattr(notebooks_module, "_get_base_url", lambda: "https://qz.sii.edu.cn")
-    monkeypatch.setattr(notebooks_module.time, "time", lambda: fake_time[0])
-
-    lab = notebooks_module.open_notebook_lab(
-        page,
-        notebook_id="nb-123",
-        timeout=7000,
-        prefer_direct=True,
-    )
-
-    assert lab is not None
-    assert page.goto_calls == ["https://qz.sii.edu.cn/api/v2/notebook/lab/nb-123"]
+@pytest.mark.parametrize("prefer_direct", [False, True])
+def test_open_notebook_uses_access_url(monkeypatch, prefer_direct):
+    from inspire.platform.web.browser_api import jupyter_terminal
+    page = _FakePage([0.0])
+    target = "https://notebook.test/jupyter/lab?token=application-token"
+    calls = []
+    def access(session, notebook_id):
+        calls.append(notebook_id)
+        return target
+    monkeypatch.setattr(jupyter_terminal, "_notebook_jupyter_url", access)
+    assert notebooks_module.open_notebook_lab(page, notebook_id="nb-123", session=object(),
+                                             prefer_direct=prefer_direct, timeout=7000) is page
+    assert calls == ["nb-123"]
+    assert page.goto_calls == [target]
     assert page.goto_timeouts == [7000]
-    assert all("/ide?notebook_id=" not in url for url in page.goto_calls)
-
-
-def test_open_notebook_lab_falls_back_when_ide_entry_times_out(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    fake_time = [0.0]
-
-    class _TimeoutPage(_FakePage):
-        def goto(self, url: str, timeout: int, wait_until: str) -> None:
-            if "/ide?notebook_id=" in url:
-                self.goto_calls.append(url)
-                self.goto_timeouts.append(timeout)
-                self._fake_time[0] += timeout / 1000.0
-                raise TimeoutError("ide entry timed out")
-            super().goto(url, timeout, wait_until)
-
-    page = _TimeoutPage(fake_time)
-    monkeypatch.setattr(notebooks_module, "_get_base_url", lambda: "https://qz.sii.edu.cn")
-    monkeypatch.setattr(notebooks_module.time, "time", lambda: fake_time[0])
-
-    lab = notebooks_module.open_notebook_lab(page, notebook_id="nb-123", timeout=60000)
-
-    assert lab is not None
-    assert page.goto_calls == [
-        "https://qz.sii.edu.cn/ide?notebook_id=nb-123",
-        "https://qz.sii.edu.cn/api/v2/notebook/lab/nb-123",
-    ]
-    assert page.goto_timeouts[0] == 20000
-    assert page.goto_timeouts[1] >= 30000
-
-
-def test_open_notebook_lab_uses_resolved_direct_redirect(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    fake_time = [0.0]
-    page = _FakePage(fake_time)
-    monkeypatch.setattr(notebooks_module, "_get_base_url", lambda: "https://qz.sii.edu.cn")
-    monkeypatch.setattr(notebooks_module.time, "time", lambda: fake_time[0])
-
-    final_lab_url = (
-        "https://nat2-notebook-inspire.sii.edu.cn/ws-1/project-1/user-1/"
-        "jupyter/nb-123/token-123/lab?token=token-123"
-    )
-
-    class _Response:
-        status_code = 301
-        headers = {"location": final_lab_url}
-        url = "https://qz.sii.edu.cn/api/v2/notebook/lab/nb-123"
-
-        def close(self) -> None:
-            return None
-
-    class _Http:
-        def __init__(self) -> None:
-            self.calls: list[tuple[str, object, bool, bool]] = []
-            self.closed = False
-
-        def get(self, url, timeout, allow_redirects, stream):  # noqa: ANN001
-            self.calls.append((url, timeout, allow_redirects, stream))
-            return _Response()
-
-        def close(self) -> None:
-            self.closed = True
-
-    http = _Http()
-    monkeypatch.setattr(notebooks_module, "build_requests_session", lambda *_args: http)
-
-    lab = notebooks_module.open_notebook_lab(
-        page,
-        notebook_id="nb-123",
-        timeout=60000,
-        session=object(),
-    )
-
-    assert lab is not None
-    assert page.goto_calls[1] == final_lab_url
-    assert http.calls == [
-        (
-            "https://qz.sii.edu.cn/api/v2/notebook/lab/nb-123",
-            (5, 15.0),
-            False,
-            True,
-        )
-    ]
-    assert http.closed is True
 
 
 def test_send_command_via_terminal_ws_cleans_up_terminal(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -347,7 +249,7 @@ def test_run_command_in_notebook_sync_falls_back_to_browser_terminal(
         notebooks_module._run_command_in_notebook_sync(
             notebook_id="nb-123",
             command="echo hi",
-            session=SimpleNamespace(storage_state={}),
+            session=SimpleNamespace(account=None),
             timeout=7,
         )
         is True

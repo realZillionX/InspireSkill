@@ -206,7 +206,7 @@ def test_bridge_scp_reads_active_account_notebook_cache(
     local_file = tmp_path / "test.txt"
     local_file.write_text("hello", encoding="utf-8")
 
-    config = Config(username="alice", password="")
+    config = Config()
     tunnel_config = TunnelConfig(account="default")
     tunnel_config.add_bridge(BridgeProfile(name="default", proxy_url="https://proxy.example.com"))
     captured: Dict[str, Any] = {}

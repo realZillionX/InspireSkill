@@ -2,26 +2,14 @@
 
 from __future__ import annotations
 
-import io
-from contextlib import redirect_stderr, redirect_stdout
 
 import click
 
-from inspire.accounts import (
-    AccountError,
-    account_dir,
-    create_account,
-    default_account,
-    ensure_inspire_home,
-    set_current_account,
-    validate_name,
-)
-from inspire.cli.context import Context, EXIT_VALIDATION_ERROR, pass_context
+from inspire.accounts import default_account
+from inspire.cli.context import Context, pass_context
 from inspire.services.utils import json_formatter
-from inspire.cli.utils.errors import exit_with_error
 from inspire.cli.utils.output import emit_success
 from inspire.config import DEFAULT_BASE_URL
-from inspire.services.account.account_config import render_account_config as _render_config
 
 
 @click.command("add")
@@ -29,15 +17,14 @@ from inspire.services.account.account_config import render_account_config as _re
 @click.option(
     "--username",
     metavar="LOGIN",
-    help=(
-        "Platform login username, such as a phone number, student number, "
-        "or email. Defaults to the account name."
-    ),
+    hidden=True,
+    help="Deprecated and ignored.",
 )
 @click.option(
     "--password",
     metavar="PASSWORD",
-    help="Platform password. Asked interactively (with confirmation) if omitted.",
+    hidden=True,
+    help="Deprecated and ignored.",
 )
 @click.option(
     "--base-url",
@@ -58,8 +45,9 @@ from inspire.services.account.account_config import render_account_config as _re
 @click.option(
     "--non-interactive",
     is_flag=True,
-    help="Skip all prompts. Missing fields fall back to defaults; missing --password aborts.",
+    help="Skip all prompts. Missing fields use defaults; device authorization still waits.",
 )
+@click.option("--no-login", is_flag=True, help="Create the profile without logging in.")
 @pass_context
 def add(
     ctx: Context,
@@ -70,124 +58,29 @@ def add(
     proxy: str | None,
     make_active: bool | None,
     non_interactive: bool,
+    no_login: bool,
 ) -> None:
-    """Create a named account profile.
+    """Create an account and authorize it with the official device flow.
 
-    Missing login fields are prompted for unless ``--non-interactive`` is set.
-
-    \b
-    Examples:
-        inspire account add alice
-        inspire account add alice \\
-          --username user-abc123 --password "$INSPIRE_PW" \\
-          --use --non-interactive
+    Compatible creation entry point for login --account NAME; existing names fail.
+    Use --no-login to create only the local profile.
     """
-    non_interactive = non_interactive or ctx.json_output
+    from inspire.cli.commands.login import ensure_account_and_login
 
-    try:
-        validated = validate_name(name)
-    except AccountError as err:
-        exit_with_error(ctx, "AccountError", str(err), EXIT_VALIDATION_ERROR)
-
-    ensure_inspire_home()
-    if account_dir(validated).exists():
-        exit_with_error(
-            ctx,
-            "AccountError",
-            f"Account already exists: {validated}",
-            EXIT_VALIDATION_ERROR,
+    if username is not None or password is not None:
+        # Legacy scripts expect add to return at once; do not block them on a
+        # device approval nobody is watching for.
+        no_login = True
+        click.echo(
+            "Deprecated: --username and --password are ignored; device login skipped. "
+            f"Run `inspire login --account {name.strip()}` to authorize.",
+            err=True,
         )
-
-    if username is None:
-        if non_interactive:
-            username = validated
-        else:
-            username = click.prompt(
-                "Platform login username (not display name)",
-                default=validated,
-                show_default=True,
-            )
-    resolved_username = username.strip()
-    if not resolved_username:
-        exit_with_error(
-            ctx,
-            "AccountError",
-            "Username cannot be empty.",
-            EXIT_VALIDATION_ERROR,
-        )
-
-    if password is None:
-        if non_interactive:
-            exit_with_error(
-                ctx,
-                "AccountError",
-                "--password is required in non-interactive mode.",
-                EXIT_VALIDATION_ERROR,
-            )
-        password = click.prompt(
-            "Platform password",
-            hide_input=True,
-            confirmation_prompt="Confirm password",
-        )
-
-    if base_url is None:
-        if non_interactive:
-            base_url = DEFAULT_BASE_URL
-        else:
-            base_url = click.prompt(
-                "Inspire base URL",
-                default=DEFAULT_BASE_URL,
-                show_default=True,
-            )
-
-    if proxy is None:
-        if non_interactive:
-            proxy = ""
-        else:
-            proxy = click.prompt(
-                "Proxy URL (leave empty for none)",
-                default="",
-                show_default=False,
-            )
-
-    content = _render_config(
-        username=resolved_username,
-        password=password,
-        base_url=base_url.strip(),
-        proxy=(proxy or "").strip(),
+    ensure_account_and_login(
+        ctx, name, base_url=base_url, proxy=proxy, make_active=make_active,
+        non_interactive=non_interactive, no_login=no_login, creating_only=True,
     )
-
-    try:
-        create_account(validated, content)
-    except AccountError as err:
-        exit_with_error(ctx, "AccountError", str(err), EXIT_VALIDATION_ERROR)
-
-    existing_active = default_account()
-    if make_active is None:
-        if existing_active is None:
-            make_active = True  # first account always activates
-        elif non_interactive:
-            make_active = False
-        else:
-            make_active = click.confirm(
-                f"Current active account is '{existing_active}'. Switch to '{validated}'?",
-                default=True,
-            )
-
-    if make_active:
-        set_current_account(validated)
-
-    # Check the browser runtime required by web-side commands. This is
-    # best-effort so account creation still succeeds when Playwright setup is
-    # deferred.
-    from inspire.accounts import normalize_environment
-
-    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-        normalize_environment(
-            interactive=not non_interactive,
-            auto_install_playwright=not non_interactive,
-        )
-
+    validated = name.strip()
     is_active = default_account() == validated
     suffix = " (active)" if is_active else ""
     emit_success(

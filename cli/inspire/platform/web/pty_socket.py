@@ -251,33 +251,14 @@ def build_remote_cmd_ws_url(
     return f"{scheme}://{netloc}{path}?{query}"
 
 
-def cookie_value(session: WebSession, name: str) -> str | None:
-    cookies = session.storage_state.get("cookies") if session.storage_state else None
-    if isinstance(cookies, list):
-        for cookie in cookies:
-            if isinstance(cookie, dict) and cookie.get("name") == name:
-                value = str(cookie.get("value") or "").strip()
-                if value:
-                    return value
-    if session.cookies and session.cookies.get(name):
-        return str(session.cookies[name])
-    return None
-
-
 def build_remote_cmd_headers(session: WebSession, *, base_url: str | None = None) -> dict[str, str]:
-    """Build websocket handshake headers for the remote command service."""
+    """Build platform-only Bearer websocket handshake headers."""
+    from .session.oauth import platform_headers
     base_url = (base_url or _get_base_url()).rstrip("/")
-    cookie = cookie_value(session, "inspire-session")
-    if not cookie:
-        raise JobShellAuthError("Missing inspire-session cookie in cached web session.")
-    return {
-        "Origin": base_url,
-        "Cookie": f"inspire-session={cookie}",
-        "User-Agent": (
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        ),
-    }
+    headers = platform_headers(session.base_url or base_url, base_url, session.access_token)
+    if not headers:
+        raise JobShellAuthError("Platform origin mismatch; run inspire login.")
+    return {"Origin": base_url, **headers}
 
 
 class WebSocketClient:

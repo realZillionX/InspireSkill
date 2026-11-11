@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 from dataclasses import replace
+from copy import deepcopy
 from unittest.mock import Mock
 
 import pytest
@@ -25,7 +25,7 @@ def offline(client, monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("No browser or interactive setup is allowed")
 
-    monkeypatch.setattr(auth, "get_web_session", forbidden)
+    monkeypatch.setattr(auth, "device_login", forbidden)
     monkeypatch.setattr("inspire.accounts.normalize._playwright_chromium_available", forbidden)
     monkeypatch.setattr("inspire.accounts.normalize._install_playwright_chromium", forbidden)
 
@@ -35,9 +35,9 @@ def test_accounts_roundtrip(client, capsys):
     Accounts.remove("beta")
     assert Accounts.list() == ()
     assert Accounts.current() is None
-    assert Accounts.add("one", username="login", password="fake") == "one"
+    assert Accounts.add("one") == "one"
     assert Accounts.current() == "one"
-    Accounts.add("two", username="login", password="fake", use=False)
+    Accounts.add("two", use=False)
     with account_scope("two"):
         assert Accounts.current() == "one"
     Accounts.use("two")
@@ -54,20 +54,21 @@ def test_accounts_roundtrip(client, capsys):
 def test_add_matches_cli(client, proxy):
     from inspire.cli.commands.account import account
 
-    Accounts.add("sdk", username="login", password='fake"password', proxy=proxy)
-    args = ["add", "cli", "--username", "login", "--password", 'fake"password', "--non-interactive"]
+    Accounts.add("sdk", proxy=proxy)
+    args = ["add", "cli", "--username", "login", "--password", 'fake"password', "--non-interactive", "--no-login"]
     if proxy:
         args += ["--proxy", proxy]
     result = CliRunner().invoke(account, args)
     assert result.exit_code == 0, result.output
-    assert Accounts.config_path("sdk").read_bytes() == Accounts.config_path("cli").read_bytes()
+    assert "password" not in Accounts.config_path("cli").read_text()
+    assert Config._load_toml(Accounts.config_path("sdk"))["api"] == Config._load_toml(Accounts.config_path("cli"))["api"]
 
 
 def test_overwrite_and_errors(client):
     with pytest.raises(ValidationError, match="already exists: alpha"):
-        Accounts.add("alpha", username="new", password="fake")
-    Accounts.add("alpha", username="new", password="fake", overwrite=True)
-    assert Config._load_toml(Accounts.config_path("alpha"))["auth"]["username"] == "new"
+        Accounts.add("alpha")
+    Accounts.add("alpha", overwrite=True)
+    assert "auth" not in Config._load_toml(Accounts.config_path("alpha"))
     for call in [
         lambda: Accounts.use("missing"),
         lambda: Accounts.remove("missing"),
@@ -78,27 +79,20 @@ def test_overwrite_and_errors(client):
             call()
 
 
-def test_credentials_create_update_without_pointer(client):
-    Accounts.remove("alpha")
-    Accounts.remove("beta")
-    with InspireClient(username="login", password="fake") as created:
-        assert created.account == "login"
-    assert Accounts.current() is None
-    Accounts.add("active", username="a", password="fake", use=True)
-    path = Accounts.config_path("login")
-    path.write_text(path.read_text() + '\n[custom]\nkeep = "yes"\n')
-    before = Config._load_toml(path)
-    with InspireClient.from_credentials("login", "fake", proxy="http://localhost:7897"):
-        pass
-    after = Config._load_toml(path)
-    assert after.pop("proxy") == dict.fromkeys(
-        ("requests_http", "requests_https", "playwright", "rtunnel"), "http://localhost:7897"
-    )
-    assert before == after
-    assert Accounts.current() == "active"
-    with InspireClient("login", username="login", password="fake"):
-        pass
-    assert "proxy" in Config._load_toml(path)
+def test_deprecated_credentials_are_ignored(client):
+    path = Accounts.config_path("beta")
+    before = path.read_bytes()
+    with pytest.warns(DeprecationWarning, match="ignored"):
+        with InspireClient("beta", username="ignored") as created:
+            assert created.account == "beta"
+    with pytest.warns(DeprecationWarning, match="ignored"):
+        with InspireClient.from_credentials("ignored", "ignored", account="beta"):
+            pass
+    assert path.read_bytes() == before
+    assert Accounts.current() == "alpha"
+    with pytest.warns(DeprecationWarning, match="ignored"):
+        Accounts.add("new", password="ignored")
+    assert "auth" not in Config._load_toml(Accounts.config_path("new"))
 
 
 def test_login_cached(client, monkeypatch):
@@ -108,45 +102,30 @@ def test_login_cached(client, monkeypatch):
     monkeypatch.setattr("inspire.platform.web.browser_api.get_current_user", user)
     result = client.login()
     assert isinstance(result, AccountInfo) and result.user_id == "u"
+    assert result.username == client._transport.session.login_username
     assert user.call_args.kwargs["refresh"] is True
     refresh.assert_not_called()
 
 
-@pytest.mark.parametrize("sso_success", [False, True])
 @pytest.mark.parametrize("force", [False, True])
-def test_login_renewal_ladder(client, monkeypatch, sso_success, force):
-    session = client._transport._session
-    renewed = replace(session)
-    if not force:
-        session.created_at = 0
-    calls = []
-    monkeypatch.setattr(WebSession, "load", lambda **kw: session)
-
-    def sso(old):
-        calls.append("sso")
-        return renewed if sso_success else None
-
-    def credentials(*args, **kwargs):
-        calls.append("credentials")
-        return renewed
-
-    monkeypatch.setattr(auth, "renew_web_session_without_credentials", sso)
-    monkeypatch.setattr(auth, "login_without_browser", credentials)
-    monkeypatch.setattr(auth, "_persist", lambda *a, **kw: calls.append("persist"))
+def test_login_refreshes_expired_tokens(client, monkeypatch, force):
+    old = client._transport.session
+    renewed = replace(old, access_expires_at=9999999999)
+    old.access_expires_at = 0
+    refresh = Mock(return_value=renewed)
+    monkeypatch.setattr(auth, "refresh_session", refresh)
     monkeypatch.setattr("inspire.platform.web.browser_api.get_current_user", lambda **kw: {})
     assert isinstance(client.login(force=force), AccountInfo)
-    assert calls == (["sso", "persist"] if sso_success else ["sso", "credentials"])
+    refresh.assert_called_once_with(old, lock_timeout=refresh.call_args.kwargs["lock_timeout"])
+    assert 0 < refresh.call_args.kwargs["lock_timeout"] <= 120
 
 
 def test_login_no_cache(client, monkeypatch):
-    session = client._transport._session
+    from inspire.sdk import AuthenticationError
     client._transport._session = None
     monkeypatch.setattr(WebSession, "load", lambda **kw: None)
-    login = Mock(return_value=session)
-    monkeypatch.setattr(auth, "login_without_browser", login)
-    monkeypatch.setattr("inspire.platform.web.browser_api.get_current_user", lambda **kw: {})
-    client.login()
-    login.assert_called_once_with("test", "unused", base_url=client.base_url, account="alpha")
+    with pytest.raises(AuthenticationError, match="inspire login"):
+        client.login()
 
 
 def test_init_preserves_legacy_and_unknown_values(client, monkeypatch):
@@ -184,7 +163,9 @@ name = "other"
 """
     )
     expected = deepcopy(Config._load_toml(path))
-    expected["api"]["base_url"] = client.base_url
+    expected["auth"].pop("username")
+    expected["auth"].pop("password")
+    expected.setdefault("api", {})["base_url"] = client.base_url
     result = client.init()
     assert isinstance(result, InitResult) and result.changed and result.warnings == ()
     assert Config._load_toml(path) == expected
@@ -202,15 +183,14 @@ name = "other"
         & data.keys()
     )
     assert "docker_registry" not in data["api"]
-    assert "extra_auth" not in data["auth"]
-    assert data["auth"] == {"username": "test", "password": "unused"}
+    assert "auth" not in data
     assert data["api"]["base_url"] == client.base_url
 
 
 def test_init_unchanged_dict_does_not_reformat(client, monkeypatch):
     monkeypatch.setattr("inspire.platform.web.browser_api.get_current_user", lambda **kw: {})
     path = Accounts.config_path(client.account)
-    initial = path.read_text() + f'\n# Keep formatting\n[api]\nbase_url="{client.base_url}"\n'
+    initial = f'# Keep formatting\n[api]\nbase_url="{client.base_url}"\n'
     path.write_text(initial)
     write = Mock(side_effect=AssertionError("Unchanged dictionaries must not be written"))
     monkeypatch.setattr("inspire.services.account.account_config.atomic_write_text", write)
@@ -235,22 +215,21 @@ def test_init_force_and_missing_credentials(client, monkeypatch):
     path = Accounts.config_path(client.account)
     path.write_text('[custom]\nkeep="yes"\n')
     client.init()
-    assert Config._load_toml(path)["auth"] == {"username": "test", "password": "unused"}
+    assert "auth" not in Config._load_toml(path)
     assert client.init(force=True).changed
     data = Config._load_toml(path)
     assert "custom" not in data and data["tunnel"]["retries"] == 3
-    assert data["auth"]["password"] == "unused"
+    assert "auth" not in data
     assert Accounts.current() == "alpha"
 
 
 def test_add_persists_nondefault_base_url_in_loader_sections(client):
     Accounts.add(
-        "custom", username="login", password="fake", base_url="https://custom.example.invalid",
+        "custom", base_url="https://custom.example.invalid",
         proxy="http://127.0.0.1:7897", use=False,
     )
     data = Config._load_toml(Accounts.config_path("custom"))
     assert data == {
-        "auth": {"username": "login", "password": "fake"},
         "api": {"base_url": "https://custom.example.invalid"},
         "proxy": {
             "requests_http": "http://127.0.0.1:7897",

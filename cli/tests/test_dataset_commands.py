@@ -240,6 +240,26 @@ def test_dataset_list_reports_an_unavailable_catalogue(monkeypatch) -> None:  # 
     assert "/Users/alice/private.log" not in result.output
 
 
+
+@pytest.mark.parametrize(
+    "command",
+    (["dataset", "list"], ["dataset", "show", "demo"], ["dataset", "tags"]),
+)
+def test_dataset_catalogue_reports_cas_only_plaza(monkeypatch, command) -> None:  # noqa: ANN001
+    def _unavailable(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise plaza_module.PlazaUnavailable()
+
+    for name in ("resolve_tag_ids", "list_datasets", "resolve_dataset_by_code", "list_dataset_tags"):
+        monkeypatch.setattr(plaza_module, name, _unavailable)
+
+    result = CliRunner().invoke(cli_main, ["--json", *command])
+
+    error = json.loads(result.output)["error"]
+    assert result.exit_code == 13
+    assert error["type"] == "PlazaUnavailable"
+    assert "only accepts CAS sign-in" in error["message"]
+
+
 # ---------------------------------------------------------------------------
 # show
 # ---------------------------------------------------------------------------

@@ -214,28 +214,29 @@ class TestRenameStorage:
 
 
 def _add(runner: CliRunner, *args: str, input_: str | None = None):
-    return runner.invoke(account, ["add", *args], input=input_)
+    from unittest.mock import patch
+    with patch("inspire.cli.commands.login.stdin_is_interactive", return_value=input_ is not None):
+        return runner.invoke(account, ["add", "--no-login", *args], input=input_)
 
 
 class TestAccountAddCommand:
     def test_interactive_walkthrough_accepts_all_defaults(
         self, home: Path, runner: CliRunner
     ) -> None:
-        """Default path: five prompts (username / password x2 / base URL / proxy).
+        """Default path: base URL and proxy prompts.
         Empty lines accept the shown defaults; proxy stays unset."""
-        # username(accept default), password, confirm, base URL(default), proxy(empty)
-        inputs = "\ns3cr3t\ns3cr3t\n\n\n"
+        inputs = "\n\n"
         result = _add(runner, "alice", input_=inputs)
         assert result.exit_code == 0, result.output
-        assert "Platform login username" in result.output
-        assert "Confirm password" in result.output
+        assert "Platform login username" not in result.output
+        assert "Confirm password" not in result.output
         assert "Inspire base URL" in result.output
         assert "Proxy URL" in result.output
         assert "Account added: alice (active)" in result.output
 
         config = (home / ".inspire" / "accounts" / "alice" / "config.toml").read_text(encoding="utf-8")
-        assert 'username = "alice"' in config
-        assert 'password = "s3cr3t"' in config
+        assert "[auth]" not in config
+        assert "password" not in config
         assert 'base_url = "https://qz.sii.edu.cn"' in config
         assert "proxy" not in config
         assert (home / ".inspire" / "current").read_text(encoding="utf-8").strip() == "alice"
@@ -244,28 +245,16 @@ class TestAccountAddCommand:
         self, home: Path, runner: CliRunner
     ) -> None:
         inputs = (
-            "user-xyz\n"            # username override
-            "s3cr3t\ns3cr3t\n"      # password + confirm
             "https://staging.x\n"   # custom base URL
             "http://127.0.0.1:7897\n"  # proxy
         )
         result = _add(runner, "alice", input_=inputs)
         assert result.exit_code == 0, result.output
         config = storage.account_config_path("alice").read_text(encoding="utf-8")
-        assert 'username = "user-xyz"' in config
+        assert "[auth]" not in config
         assert 'base_url = "https://staging.x"' in config
         assert 'playwright = "http://127.0.0.1:7897"' in config
 
-    def test_interactive_password_mismatch_reprompts(
-        self, home: Path, runner: CliRunner
-    ) -> None:
-        # Two mismatched passwords → Click re-asks; third/fourth succeed.
-        inputs = "\nfirst\nsecond\nagain\nagain\n\n\n"
-        result = _add(runner, "alice", input_=inputs)
-        assert result.exit_code == 0, result.output
-        assert "do not match" in result.output.lower() or "try again" in result.output.lower()
-        config = storage.account_config_path("alice").read_text(encoding="utf-8")
-        assert 'password = "again"' in config
 
     def test_switches_active_when_user_confirms(
         self, home: Path, runner: CliRunner
@@ -273,7 +262,7 @@ class TestAccountAddCommand:
         storage.create_account("alice", "x = 1\n")
         storage.set_current_account("alice")
         # Interactive: answer prompts + 'y' to the switch question.
-        inputs = "\npw\npw\n\n\ny\n"
+        inputs = "\n\ny\n"
         result = _add(runner, "bob", input_=inputs)
         assert result.exit_code == 0, result.output
         assert "Switch to 'bob'" in result.output
@@ -284,7 +273,7 @@ class TestAccountAddCommand:
     ) -> None:
         storage.create_account("alice", "x = 1\n")
         storage.set_current_account("alice")
-        inputs = "\npw\npw\n\n\nn\n"
+        inputs = "\n\nn\n"
         result = _add(runner, "bob", input_=inputs)
         assert result.exit_code == 0, result.output
         assert "Account added: bob" in result.output
@@ -294,8 +283,8 @@ class TestAccountAddCommand:
         self, home: Path, runner: CliRunner
     ) -> None:
         result = _add(runner, "alice", "--non-interactive")
-        assert result.exit_code != 0
-        assert "--password is required" in result.output
+        assert result.exit_code == 0
+        assert "Account added" in result.output
 
     def test_non_interactive_with_all_flags(
         self, home: Path, runner: CliRunner
@@ -314,7 +303,7 @@ class TestAccountAddCommand:
         )
         assert result.exit_code == 0, result.output
         config = storage.account_config_path("alice").read_text(encoding="utf-8")
-        assert 'username = "user-xyz"' in config
+        assert "[auth]" not in config
         assert 'playwright = "http://127.0.0.1:7897"' in config
         assert storage.current_account() == "alice"
 
@@ -373,7 +362,7 @@ class TestAccountAddCommand:
         except ModuleNotFoundError:  # pragma: no cover - py3.10
             import tomli as tomllib  # type: ignore[no-redef]
         parsed = tomllib.loads(config)
-        assert parsed["auth"]["password"] == 'p"w\\x'
+        assert "auth" not in parsed
 
 
 class TestAccountListCommand:
@@ -448,14 +437,14 @@ class TestAccountUseCommand:
         storage.set_current_account("alice")
         browser_core.clear_browser_api_runtime_cache()
         cfg, _ = Config.from_files_and_env(require_credentials=False)
-        assert cfg.username == "alice"
+        assert cfg.username == ""
         assert browser_core._get_base_url() == "https://alice.example"
 
         result = runner.invoke(account, ["use", "bob"])
 
         assert result.exit_code == 0, result.output
         cfg, _ = Config.from_files_and_env(require_credentials=False)
-        assert cfg.username == "bob"
+        assert cfg.username == ""
         assert browser_core._get_base_url() == "https://bob.example"
 
     def test_use_keeps_previous_account_runtime_cache(
@@ -616,9 +605,10 @@ class TestAccountRemoveCommand:
         assert storage.list_accounts() == []
 
     def test_remove_without_yes_requires_confirm(
-        self, home: Path, runner: CliRunner
+        self, home: Path, runner: CliRunner, monkeypatch
     ) -> None:
         storage.create_account("alice", "x = 1\n")
+        monkeypatch.setattr("inspire.cli.commands.login.stdin_is_interactive", lambda: True)
         result = runner.invoke(account, ["remove", "alice"], input="y\n")
         assert result.exit_code == 0
         assert storage.list_accounts() == []
@@ -650,7 +640,7 @@ class TestAccountJsonOutput:
 
         return runner.invoke(
             cli_main,
-            ["--json", "--no-env-file", "account", *args],
+            ["--json", "--no-env-file", "account", *args, *(["--no-login"] if args and args[0] == "add" else [])],
         )
 
     def test_all_account_commands_emit_compact_json(
@@ -670,7 +660,7 @@ class TestAccountJsonOutput:
         assert added.exit_code == 0, added.output
         assert "Platform login username" not in added.output
         assert str(home) not in added.output
-        assert json.loads(added.output) == {
+        assert json.loads(added.stdout) == {
             "success": True,
             "data": {"name": "alice", "status": "created", "active": True},
         }
@@ -684,7 +674,7 @@ class TestAccountJsonOutput:
             "--no-use",
         )
         assert second.exit_code == 0, second.output
-        assert json.loads(second.output) == {
+        assert json.loads(second.stdout) == {
             "success": True,
             "data": {"name": "bob", "status": "created", "active": False},
         }
@@ -739,15 +729,12 @@ class TestAccountJsonOutput:
         home: Path,
         runner: CliRunner,
     ) -> None:
-        missing_password = self._invoke(runner, "add", "alice")
-        assert missing_password.exit_code != 0
-        assert "Platform password:" not in missing_password.output
-        assert str(home) not in missing_password.output
-        password_error = json.loads(missing_password.output)
-        assert password_error["success"] is False
-        assert password_error["error"]["type"] == "AccountError"
+        created = self._invoke(runner, "add", "alice")
+        assert created.exit_code == 0
+        assert "Platform password:" not in created.output
+        assert str(home) not in created.output
+        assert json.loads(created.stdout)["success"] is True
 
-        storage.create_account("alice", "x = 1\n")
         confirmation = self._invoke(runner, "remove", "alice")
         assert confirmation.exit_code != 0
         assert "Remove account" not in confirmation.output

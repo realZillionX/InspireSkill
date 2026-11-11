@@ -43,7 +43,7 @@ def _patch_cli_deps(
     resolved_id: str = "sv-internal",
 ) -> list[dict[str, Any]]:
     """Stub config, session, and name resolution for both command modules."""
-    config = config_module.Config(username="user", password="pass")
+    config = config_module.Config()
     resolutions: list[dict[str, Any]] = []
     monkeypatch.setattr(
         config_module.Config,

@@ -8,7 +8,7 @@ import math
 from copy import deepcopy
 from typing import Any
 
-from .accounts import Accounts, InitResult, ensure_credentials
+from .accounts import Accounts, InitResult, warn_deprecated_credentials
 from .models_resources import AccountInfo
 
 from .exceptions import ConfigurationError, ValidationError
@@ -48,12 +48,7 @@ class InspireClient:
                 or not (math.isfinite(value) and value > 0)
             ):
                 raise ValidationError("Timeouts must be finite positive seconds.")
-        if username is not None or password is not None:
-            if username is None or password is None:
-                raise ValidationError("Username and password must be supplied together.")
-            account = ensure_credentials(
-                account, username=username, password=password, base_url=base_url, proxy=proxy
-            )
+        warn_deprecated_credentials(username, password)
         try:
             selected = validate_name(account if account is not None else current_account() or "")
             if not account_exists(selected):
@@ -82,7 +77,6 @@ class InspireClient:
         self._transport = Transport(
             selected,
             self.base_url,
-            username=config.username,
             allow_browser=allow_browser,
             timeout=timeout,
         )
@@ -125,8 +119,8 @@ class InspireClient:
     @classmethod
     def from_credentials(
         cls,
-        username: str,
-        password: str,
+        username: str | None = None,
+        password: str | None = None,
         *,
         base_url: str | None = None,
         proxy: str | None = None,
@@ -144,7 +138,7 @@ class InspireClient:
         )
 
     def login(self, *, force: bool = False) -> AccountInfo:
-        """Validate a session now; Chromium requires explicit allow_browser=True."""
+        """Validate cached OAuth tokens; authorize first with ``inspire login``."""
         from inspire.platform.web import browser_api
         from inspire.platform.web.session.models import WebSession
         from .exceptions import AuthenticationError
@@ -162,7 +156,7 @@ class InspireClient:
             user = browser_api.get_current_user(session=transport.session, refresh=True)
             return AccountInfo(
                 self.account,
-                self._config.username,
+                transport.session.login_username or "",
                 self.base_url,
                 str(user.get("id") or user.get("user_id") or ""),
                 str(user.get("name") or user.get("user_name") or ""),
@@ -172,7 +166,7 @@ class InspireClient:
         """Login and persist account config. Force rebuilds from the template.
 
         Interactive prompts, Playwright installation and ssh-keygen are CLI-only.
-        Ordinary init preserves all other keys, including legacy and unknown sections.
+        Ordinary init removes login credentials and preserves other existing sections.
         Force drops those sections, like inspire init --force.
         """
         from inspire.platform.web.session import DEFAULT_WORKSPACE_ID
@@ -210,11 +204,12 @@ class InspireClient:
                 if force
                 else deepcopy(existing)
             )
-            auth = data.setdefault("auth", {})
-            if not auth.get("username") or auth.get("username") == "your_username":
-                auth["username"] = session.login_username or self._config.username
-            if not auth.get("password") and self._config.password:
-                auth["password"] = self._config.password
+            auth = data.get("auth")
+            if isinstance(auth, dict):
+                auth.pop("username", None)
+                auth.pop("password", None)
+                if not auth:
+                    data.pop("auth")
             api = data.setdefault("api", {})
             if force or not api.get("base_url") or api.get("base_url") == "https://api.example.com":
                 api["base_url"] = self.base_url

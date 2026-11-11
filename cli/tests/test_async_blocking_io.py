@@ -21,7 +21,6 @@ from inspire.bridge.tunnel import ssh_exec, scp
 from inspire.platform.web.flow import call, run_sync
 from inspire.platform.web.transport import Transport
 from inspire.platform.web.transport_async import AsyncDriver
-from inspire.platform.web.session import auth
 from inspire.platform.web.session.models import WebSession
 from inspire.sdk.cache import CatalogCache
 from inspire.sdk.catalog_store import CatalogStore
@@ -34,7 +33,7 @@ pytestmark = pytest.mark.timeout(15, method="thread")
 def owner():
     transport = Transport("test", "https://example.invalid", username="fake")
     transport._session = WebSession(
-        storage_state={"cookies": [{"name": "x", "value": "fake"}]},
+        access_token="test-access", refresh_token="test-refresh", access_expires_at=9999999999, refresh_expires_at=9999999999,
         created_at=time.time(),
         workspace_id="ws",
         account="test",
@@ -180,7 +179,7 @@ def test_fixed_paths_keep_event_loop_running(tmp_path, monkeypatch, local_ssh):
                     ("catalog hit", lambda: cache._get(key, lambda: pytest.fail("missed cache"))),
                     ("catalog invalidation", cache.clear),
                     ("upload", lambda: sdk_transfer._read_upload(source, 100)),
-                    ("session save", lambda: auth._persist(transport._session, account="test")),
+                    ("session save", lambda: transport._session.save(account="test")),
                     ("session load", lambda: WebSession.load(account="test")),
                 ]:
                     result = await ticker.check(label, invoke(fn))
@@ -331,7 +330,7 @@ def test_request_preparation_warms_netrc_and_certificates(tmp_path, monkeypatch)
     monkeypatch.setattr(proxy, "_load_proxy_toml_values", config)
 
     async def send(self, request, **kw):
-        assert request.headers["authorization"].startswith("Basic ")
+        assert request.headers["authorization"].startswith("Bearer ")
         return httpx.Response(200, json={"ok": True}, request=request)
 
     monkeypatch.setattr(httpx.AsyncClient, "send", send)
@@ -349,146 +348,13 @@ def test_request_preparation_warms_netrc_and_certificates(tmp_path, monkeypatch)
             pulse.cancel()
             await asyncio.gather(pulse, return_exceptions=True)
             transport.close()
-        assert calls.count("netrc") == calls.count("tls") == 1
+        assert calls.count("netrc") == 0
+        assert calls.count("tls") == 1
         assert all(count >= 5 for _, count in ticker.observed), ticker.observed
 
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("rejected", [False, True])
-@pytest.mark.parametrize("verification", [False, True])
-def test_browser_login_same_sequence_messages_and_loop_progress(monkeypatch, rejected, verification):
-    from playwright import async_api, sync_api
-
-    traces = []
-    ticker = Ticker()
-    monkeypatch.setattr(auth, "resolve_playwright_proxy_config", lambda **kw: (None, "none"))
-    monkeypatch.setattr(auth, "describe_effective_proxy_config", lambda **kw: {})
-    monkeypatch.setattr(auth, "_persist", lambda *a, **kw: None)
-
-    def requests_requires_code(*args, **kwargs):
-        raise auth._CasVerificationRequired("requests needs a verification code")
-
-    monkeypatch.setattr(auth, "_login_with_cas_requests", requests_requires_code)
-
-    def runtime(asynchronous):
-        trace = []
-        traces.append(trace)
-
-        class Node:
-            url = "https://example.invalid/login"
-            status = 401 if rejected else 200
-
-            @property
-            def chromium(self):
-                return self
-
-            @property
-            def request(self):
-                return self
-
-            @property
-            def first(self):
-                return self
-
-            def locator(self, value):
-                return self
-
-            def __getattr__(self, name):
-                def invoke(*args, **kwargs):
-                    trace.append((name, args, kwargs))
-                    if name == "wait_for_timeout" and rejected and args == (500,):
-                        # The shared deadline advances without spending 30 real seconds.
-                        clock[0] += 31
-                    if name == "json":
-                        return {"Result": {"id": "synthetic"}}
-                    if name == "storage_state":
-                        return {"cookies": []}
-                    if name == "cookies":
-                        return []
-                    if name == "content" and verification:
-                        return (
-                            '<form id="fm1"><input name="username"><input name="password">'
-                            '<input name="authcode"><img src="/cas/captcha.jpg"></form>'
-                        )
-                    if name == "content":
-                        return '<div class="form-error">rejected</div>'
-                    return self
-
-                if not asynchronous:
-                    return invoke
-
-                async def execute(*args, **kwargs):
-                    before = ticker.count
-                    await asyncio.sleep(0.01)
-                    assert ticker.count > before
-                    return invoke(*args, **kwargs)
-
-                return execute
-
-        node = Node()
-
-        class Context:
-            def __enter__(self):
-                return node
-
-            def __exit__(self, *args):
-                trace.append(("exit",))
-
-        class AsyncContext:
-            async def __aenter__(self):
-                return node
-
-            async def __aexit__(self, *args):
-                trace.append(("exit",))
-
-        return AsyncContext() if asynchronous else Context()
-
-    clock = [time.time()]
-    monkeypatch.setattr(auth.time, "time", lambda: clock[0])
-    monkeypatch.setattr(sync_api, "sync_playwright", lambda: runtime(False))
-    monkeypatch.setattr(async_api, "async_playwright", lambda: runtime(True))
-    options = dict(base_url="https://example.invalid", headless=True, account="test")
-
-    def sync():
-        try:
-            return auth._submit_credentials("fake", "unused", **options)
-        except Exception as error:
-            return type(error), str(error), getattr(error, "credential_rejection", None)
-
-    expected = sync()
-
-    async def run():
-        ticker.loop = asyncio.get_running_loop()
-        pulse = asyncio.create_task(ticker.run())
-        transport = owner()
-        try:
-            async with AsyncDriver(transport) as driver:
-                try:
-                    actual = await driver.execute(
-                        call(auth._submit_credentials, "fake", "unused", **options)
-                    )
-                except Exception as error:
-                    actual = type(error), str(error), getattr(error, "credential_rejection", None)
-            if rejected or verification:
-                assert actual == expected
-            else:
-                assert actual.storage_state == expected.storage_state
-                assert actual.user_detail == expected.user_detail
-            assert traces[0] == traces[1]
-            for trace in traces:
-                actions = [event[0] for event in trace]
-                assert actions.count("fill") == (0 if verification else 2)
-                assert actions.count("press") == (0 if verification else 1)
-                if verification:
-                    assert actual[0] is auth._CasVerificationRequired
-                    assert actions.count("close") == 1
-        finally:
-            pulse.cancel()
-            await asyncio.gather(pulse, return_exceptions=True)
-            transport.close()
-
-    asyncio.run(run())
 
 
 @pytest.mark.skipif(
@@ -564,45 +430,6 @@ def test_shared_ssh_transfer_uses_async_processes_and_publishes(
     asyncio.run(run())
 
 
-def test_authentication_lock_and_guard_steps_do_not_block(tmp_path, monkeypatch):
-    from inspire.platform.web.async_context import authentication_context
-    from inspire.platform.web.session import login_guard
-    from inspire.accounts import cache_lock
-
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    ticker = Ticker()
-    fingerprint = login_guard.credential_fingerprint
-    try_acquire = cache_lock._try_acquire
-    attempts = []
-
-    def slow_fingerprint(*args):
-        ticker.slow("fingerprint")
-        return fingerprint(*args)
-
-    def contend(descriptor):
-        ticker.slow("lock_attempt")
-        attempts.append(descriptor)
-        return False if len(attempts) < 3 else try_acquire(descriptor)
-
-    monkeypatch.setattr(login_guard, "credential_fingerprint", slow_fingerprint)
-    monkeypatch.setattr(cache_lock, "_try_acquire", contend)
-
-    async def run():
-        ticker.loop = asyncio.get_running_loop()
-        pulse = asyncio.create_task(ticker.run())
-        transport = owner()
-        context = login_guard.guarded_credential_submission("fake", "unused", account="test")
-        try:
-            async with authentication_context(context, transport):
-                assert ticker.count >= 5
-            assert len(attempts) == 3
-            assert all(n >= 5 for _, n in ticker.observed), ticker.observed
-        finally:
-            pulse.cancel()
-            await asyncio.gather(pulse, return_exceptions=True)
-            transport.close()
-
-    asyncio.run(run())
 
 
 @pytest.mark.parametrize("stream", [False, True])
