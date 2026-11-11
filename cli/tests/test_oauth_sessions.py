@@ -353,7 +353,10 @@ def test_removed_account_is_not_recreated(
     account_path = accounts.account_dir(account)
 
     def remove(*args: object) -> TokenResponse:
-        shutil.rmtree(account_path)
+        # Windows cannot delete the refresh lock file the refresh stage holds open;
+        # the account is gone once its config.toml is.
+        shutil.rmtree(account_path, ignore_errors=True)
+        assert not accounts.account_exists(account)
         return TokenResponse("new-access", "new-refresh", time.time() + 3600, time.time() + 6000)
 
     def discover(target: WebSession, base_url: str) -> None:
@@ -372,7 +375,8 @@ def test_removed_account_is_not_recreated(
             auth.device_login(account, lambda *args: None)
         else:
             auth.get_web_session(account=account, require_workspace=stage == "catalog")
-    assert not account_path.exists()
+    assert not accounts.account_exists(account)
+    assert not (account_path / "web_session.json").exists()
 
 
 @pytest.mark.parametrize("cached", [True, False])
