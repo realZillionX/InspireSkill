@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -17,8 +18,9 @@ from .browser_launch import (
     is_playwright_browser_runtime_error,
     playwright_install_hint,
 )
-from .cas import CAS_HOST, LOGIN_URL, USER_AGENT, CasError, CasSession, cache_path
+from .cas import CAS_HOST, LOGIN_URL, USER_AGENT, CasError, CasSession, cache_path, existing_account_write
 from .proxy import get_playwright_proxy
+from .models import AuthenticationError
 
 
 EXPIRED_QR_SELECTOR = ".qr-box-refresh, .scan-refresh-icon"
@@ -87,10 +89,28 @@ def render_qr(path: Path) -> str | None:
     return "\n".join(lines)
 
 
+def _publish_qr(account: str, path: Path | None, png: bytes) -> Path:
+    with existing_account_write(account):
+        directory = cache_path(account, "cas_qr.png").parent
+        # The random staging name also reserves this login's destination name.
+        fd, name = tempfile.mkstemp(dir=directory, prefix="cas_qr-", suffix=".png")
+        temporary = Path(name)
+        destination = path or temporary.with_name(temporary.stem + "-live.png")
+        try:
+            with os.fdopen(fd, "wb") as output:
+                output.write(png)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, destination)
+            return destination
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
 def feishu_qr_login(
     show_qr: Callable[[Path], None], account: str, timeout: float = 300
 ) -> CasSession:
-    path = cache_path(account, "cas_qr.png")
+    path: Path | None = None
     deadline = time.monotonic() + timeout
     captured = False
 
@@ -185,11 +205,7 @@ def feishu_qr_login(
                             frame = fresh.content_frame()
                             png = fresh.screenshot(timeout=remaining_ms(5))
                         if png != previous:
-                            path.parent.mkdir(parents=True, exist_ok=True)
-                            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                            with os.fdopen(fd, "wb") as output:
-                                os.chmod(path, 0o600)
-                                output.write(png)
+                            path = _publish_qr(account, path, png)
                             show_qr(path)
                             previous = png
                         refreshed = time.monotonic()
@@ -197,7 +213,7 @@ def feishu_qr_login(
                 raise CasError("Feishu QR login timed out; run inspire login --cas feishu again.")
             finally:
                 browser.close()
-    except CasError:
+    except AuthenticationError:
         raise
     except Exception as error:
         if is_playwright_browser_runtime_error(error):
@@ -206,4 +222,5 @@ def feishu_qr_login(
             ) from None
         raise CasError("Feishu QR login failed; retry inspire login --cas feishu.") from None
     finally:
-        path.unlink(missing_ok=True)
+        if path is not None:
+            path.unlink(missing_ok=True)

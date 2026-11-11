@@ -80,6 +80,7 @@ def exclusive_cache_lock(
     *,
     timeout: float | None = None,
     on_wait: Callable[[], None] | None = None,
+    create_parent: bool = True,
 ) -> Iterator[None]:
     """Hold an exclusive lock covering *cache_path* for the block's duration.
 
@@ -89,7 +90,8 @@ def exclusive_cache_lock(
     than proceeding unserialized. *on_wait* runs once, before blocking, when
     the lock is contended, so callers can explain the pause.
     """
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    if create_parent:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = cache_path.with_name(f"{cache_path.name}.lock")
     descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:

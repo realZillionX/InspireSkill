@@ -19,5 +19,5 @@ def exclusive_session_refresh(account: str | None, *, timeout: float | None = No
         return
 
     refresh_target = cache_file.with_name(f"{cache_file.name}.refresh")
-    with exclusive_cache_lock(refresh_target, timeout=timeout):
+    with exclusive_cache_lock(refresh_target, timeout=timeout, create_parent=False):
         yield

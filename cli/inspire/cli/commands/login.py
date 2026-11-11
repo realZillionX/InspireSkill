@@ -21,12 +21,12 @@ from inspire.accounts import (
     set_current_account,
     validate_name,
 )
-from inspire.cli.context import EXIT_VALIDATION_ERROR, Context, pass_context
+from inspire.cli.context import EXIT_AUTH_ERROR, EXIT_VALIDATION_ERROR, Context, pass_context
 from inspire.config import DEFAULT_BASE_URL
 from inspire.services.account.account_config import render_account_config
 from inspire.cli.utils.errors import exit_with_error
 from inspire.platform.web.session.auth import device_login
-from inspire.platform.web.session.models import WebSession
+from inspire.platform.web.session.models import AuthenticationError, WebSession
 from inspire.platform.web.session import cas
 from inspire.platform.web.session.auth import _load_runtime_config
 from inspire.platform.web.session.cas_qr import render_qr
@@ -234,14 +234,34 @@ def login(
     interactive = not ctx.json_output and stdin_is_interactive()
     if cas_method == "choose":
         if not interactive:
-            raise click.ClickException(
-                "Specify --cas sms or --cas feishu in non-interactive/JSON mode."
+            exit_with_error(
+                ctx,
+                "ValidationError",
+                "Specify --cas sms or --cas feishu in non-interactive/JSON mode.",
+                EXIT_VALIDATION_ERROR,
+                json_to_stdout=True,
             )
         cas_method = click.prompt(
             "CAS login method", type=click.Choice(["sms", "feishu"]), default="feishu", err=True
         )
-    if (phone or sms_code) and cas_method != "sms":
-        raise click.ClickException("--phone and --sms-code require --cas sms.")
+    if (phone is not None or sms_code is not None) and cas_method != "sms":
+        exit_with_error(
+            ctx, "ValidationError", "--phone and --sms-code require --cas sms.",
+            EXIT_VALIDATION_ERROR, json_to_stdout=True,
+        )
+    if cas_method == "sms":
+        if not phone and not interactive:
+            exit_with_error(
+                ctx, "ValidationError", "--phone NUMBER is required for SMS login.",
+                EXIT_VALIDATION_ERROR, json_to_stdout=True,
+            )
+        if phone:
+            try:
+                cas.validate_phone(phone)
+            except cas.CasError as error:
+                exit_with_error(
+                    ctx, "ValidationError", str(error), EXIT_VALIDATION_ERROR, json_to_stdout=True
+                )
     metadata: dict = {"cas": False, "cas_method": None}
 
     def runner(name: str) -> WebSession | None:
@@ -266,8 +286,12 @@ def login(
             no_browser=no_browser,
             login_runner=runner,
         )
+    except cas.CasValidationError as error:
+        exit_with_error(ctx, "ValidationError", str(error), EXIT_VALIDATION_ERROR, json_to_stdout=True)
+    except AuthenticationError as error:
+        exit_with_error(ctx, "AuthenticationError", str(error), EXIT_AUTH_ERROR, json_to_stdout=True)
     except ValueError as error:
-        raise click.ClickException(str(error)) from None
+        exit_with_error(ctx, "ValidationError", str(error), EXIT_VALIDATION_ERROR, json_to_stdout=True)
     if session is None:
         if ctx.json_output:
             click.echo(

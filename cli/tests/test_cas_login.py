@@ -271,6 +271,7 @@ def test_login_auto_approval_or_manual_fallback(monkeypatch, capsys, approved):
 @pytest.mark.parametrize("expired", [True, False])
 def test_silent_renewal_without_relocking(monkeypatch, expired):
     cached = WebSession(
+        login_username="tester",
         access_token="old",
         refresh_token="old-refresh",
         access_expires_at=0,
@@ -297,11 +298,12 @@ def test_silent_renewal_without_relocking(monkeypatch, expired):
         def refresh(self, token):
             raise auth.AuthenticationError("refused")
 
-        def login(self, notify):
+        def login(self, notify, *, deadline=None):
             notify("https://keycloak.test/device", "code", 300)
             return tokens
 
     monkeypatch.setattr(auth, "DeviceAuthorization", Device)
+    monkeypatch.setattr(auth, "token_login_username", lambda token: "tester")
     monkeypatch.setattr(
         auth, "exclusive_session_refresh", Mock(side_effect=AssertionError("must not relock"))
     )
@@ -415,6 +417,7 @@ def test_ticket_validation_and_foreign_redirect(monkeypatch):
 
 def test_silent_approval_failure_does_not_save_or_poll(monkeypatch):
     cached = WebSession(
+        login_username="tester",
         access_token="old",
         refresh_token="old-refresh",
         access_expires_at=0,
@@ -428,7 +431,7 @@ def test_silent_approval_failure_does_not_save_or_poll(monkeypatch):
     monkeypatch.setattr(auth, "cas_ticket_valid", lambda *a: True)
     monkeypatch.setattr(auth, "approve_device", lambda *a: False)
 
-    def login(notify):
+    def login(notify, *, deadline=None):
         notify("https://keycloak.test/device", "code", 300)
         pytest.fail("Must not poll when approval failed")
 
@@ -478,3 +481,259 @@ def test_requests_proxy_is_account_scoped(monkeypatch):
         assert http.proxies["https"] == "http://proxy.test:1234"
         assert not http.trust_env
     resolve.assert_called_once_with(account="tester")
+
+
+@pytest.mark.parametrize("inline", [False, True])
+def test_cas_argv_secrets_absent_from_written_debug_log(monkeypatch, tmp_path, inline):
+    from inspire.cli.logging_setup import configure_debug_logging, clear_debug_logging
+
+    monkeypatch.setenv("INSPIRE_DEBUG_LOG_DIR", str(tmp_path / "logs"))
+    args = [f"--phone={PHONE}", f"--sms-code={CODE}"] if inline else ["--phone", PHONE, "--sms-code", CODE]
+    path = configure_debug_logging(argv=["inspire", "--debug", "login", "--cas", "sms", *args])
+    clear_debug_logging()
+    text = Path(path).read_text()
+    assert "argv=" in text
+    assert PHONE not in text and CODE not in text
+
+
+@pytest.mark.parametrize("old,new,discovered", [
+    ("A", "B", None), ("A", "A", None), (None, "A", None),
+    ("A", None, None), ("A", None, "B"), ("A", None, "A"),
+])
+def test_silent_renewal_requires_same_known_identity(monkeypatch, old, new, discovered):
+    cached = WebSession("old", "refresh", 0, 0, 1, account="tester", login_username=old,
+                        base_url="https://platform.test", user_detail={"old": True})
+    cas.CasSession([COOKIE], time.time(), "sms").save("tester")
+    monkeypatch.setattr(auth, "cas_ticket_valid", lambda *a: True)
+    monkeypatch.setattr(auth, "token_login_username", lambda token: new)
+    tokens = SimpleNamespace(access_token="new", refresh_token="refresh", access_expires_at=10,
+                             refresh_expires_at=20)
+    device = Mock()
+    device.login.return_value = tokens
+    monkeypatch.setattr(auth, "DeviceAuthorization", Mock(return_value=device))
+
+    def discover(session, base_url, **kwargs):
+        assert session.user_detail is None
+        assert session.login_username is None
+        session.login_username = discovered
+
+    monkeypatch.setattr(auth, "_discover_identity", discover)
+    save = Mock()
+    monkeypatch.setattr(auth, "_save_existing_account", save)
+    if old and old == (new or discovered):
+        assert auth._renew_with_cas(cached, "tester").login_username == old
+        save.assert_called_once()
+    else:
+        with pytest.raises(auth.AuthenticationError, match="inspire login"):
+            auth._renew_with_cas(cached, "tester")
+        save.assert_not_called()
+    assert cached.access_token == "old"
+
+
+def test_explicit_cas_login_rebuilds_identity_even_if_discovery_fails(monkeypatch):
+    old = WebSession("old", "refresh", 10, 20, 1, account="tester", login_username="A",
+                     user_detail={"old": True}, all_workspace_ids=["old-workspace"])
+    old.save(account="tester")
+    cas.CasSession([COOKIE], time.time(), "sms").save("tester")
+    monkeypatch.setattr(cas, "cas_ticket_valid", lambda *a: True)
+    monkeypatch.setattr(cas, "approve_device", lambda *a: True)
+    monkeypatch.setattr(auth, "token_login_username", lambda token: "B")
+    device = Mock()
+    device.login.return_value = SimpleNamespace(access_token="new", refresh_token="new-refresh",
+                                               access_expires_at=time.time()+100, refresh_expires_at=time.time()+200)
+    monkeypatch.setattr(auth, "DeviceAuthorization", Mock(return_value=device))
+    monkeypatch.setattr(auth, "_discover_identity", lambda *a: None)
+    result = commands.run_login("tester")
+    assert result.login_username == "B"
+    assert not result.user_detail and not result.all_workspace_ids
+    stored = WebSession.load(account="tester")
+    assert stored.login_username == "B"
+    assert not stored.user_detail and not stored.all_workspace_ids
+
+
+@pytest.mark.parametrize("kind", ["session", "pending", "qr"])
+def test_logout_interleaved_before_cas_publication(monkeypatch, kind):
+    from contextlib import contextmanager
+    from inspire.platform.web.session import cas_qr
+    from inspire.services.account.lifecycle import delete_local_account
+
+    original = cas.exclusive_session_refresh
+
+    @contextmanager
+    def logout_first(account):
+        delete_local_account(account)
+        with original(account):
+            yield
+
+    monkeypatch.setattr(cas, "exclusive_session_refresh", logout_first)
+    with pytest.raises(auth.AuthenticationError, match="Account tester was removed"):
+        if kind == "session":
+            cas.CasSession([COOKIE], time.time(), "sms").save("tester")
+        elif kind == "pending":
+            cas.SmsPending([], {"execution": "e"}, time.time()).save("tester")
+        else:
+            cas_qr._publish_qr("tester", None, b"qr")
+    assert not accounts.account_dir("tester").exists()
+
+
+def test_qr_logins_have_independent_atomic_private_files(monkeypatch):
+    from inspire.platform.web.session import cas_qr
+
+    first = cas_qr._publish_qr("tester", None, b"first")
+    second = cas_qr._publish_qr("tester", None, b"second")
+    assert first != second
+    replace = os.replace
+
+    def checked_replace(source, target):
+        assert target.read_bytes() == b"first"
+        assert source.read_bytes() == b"updated"
+        replace(source, target)
+
+    monkeypatch.setattr(cas_qr.os, "replace", checked_replace)
+    assert cas_qr._publish_qr("tester", first, b"updated") == first
+    first.unlink()
+    assert second.read_bytes() == b"second"
+    if os.name != "nt":
+        assert second.stat().st_mode & 0o777 == 0o600
+    for name in ("cas_session.json.lock", "cas_pending.json.lock"):
+        cas.cache_path("tester", name).touch()
+    assert not inspect_account_state()
+    second.unlink()
+
+
+@pytest.mark.parametrize("args,code", [
+    (["--cas"], 12), (["--cas", "sms", "--phone", "invalid"], 12),
+    (["--phone", PHONE], 12), (["--sms-code", CODE], 12),
+    (["--cas", "feishu", "--phone", PHONE], 12), (["--cas", "sms"], 12),
+    (["--cas", "sms", "--phone", PHONE, "--sms-code", CODE], 11),
+    (["--cas", "feishu"], 11),
+])
+def test_cas_errors_are_json_on_stdout(monkeypatch, args, code):
+    monkeypatch.setattr(cas, "feishu_qr_login", Mock(side_effect=cas.CasError("CAS failed")))
+    result = CliRunner().invoke(main, ["login", "--account", "tester", "--json", *args])
+    assert result.exit_code == code, result.output
+    envelope = json.loads(result.stdout)
+    assert envelope["success"] is False
+    assert envelope["error"]["type"] == ("ValidationError" if code == 12 else "AuthenticationError")
+
+
+def test_expired_pending_json():
+    cas.SmsPending([], {"execution": "e"}, time.time()-601).save("tester")
+    result = CliRunner().invoke(main, ["--json", "login", "--account", "tester", "--cas", "sms",
+                                       "--phone", PHONE, "--sms-code", CODE])
+    assert result.exit_code == 11
+    assert "expired" in json.loads(result.stdout)["error"]["message"]
+
+
+def test_overlapping_qr_logins_cancel_only_their_own_file(monkeypatch):
+    from inspire.platform.web.session import cas_qr
+
+    clock = [0.0]
+    monkeypatch.setattr(cas_qr.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(cas_qr, "get_playwright_proxy", lambda account: None)
+
+    def playwright_factory():
+        playwright = Mock()
+        playwright.__enter__ = Mock(return_value=playwright)
+        playwright.__exit__ = Mock(return_value=False)
+        context = playwright.chromium.launch.return_value.new_context.return_value
+        page = context.new_page.return_value
+        element = page.wait_for_selector.return_value
+        element.content_frame.return_value.query_selector.return_value = None
+        element.screenshot.return_value = b"png"
+        page.wait_for_timeout.side_effect = lambda ms: clock.__setitem__(0, clock[0] + ms / 1000)
+        return playwright
+
+    monkeypatch.setattr(cas_qr, "sync_playwright", playwright_factory)
+    paths = []
+
+    def cancel_second(path):
+        paths.append(path)
+        assert paths[0] != path and paths[0].read_bytes() == b"png"
+        raise ValueError("cancel second")
+
+    def show_first(path):
+        paths.append(path)
+        with pytest.raises(cas.CasError):
+            cas_qr.feishu_qr_login(cancel_second, "tester", timeout=10)
+        assert path.read_bytes() == b"png"
+        assert not paths[1].exists()
+        raise ValueError("cancel first")
+
+    with pytest.raises(cas.CasError):
+        cas_qr.feishu_qr_login(show_first, "tester", timeout=10)
+    assert len(paths) == 2 and all(not path.exists() for path in paths)
+
+
+def test_silent_renewal_caps_the_whole_flow_and_restores_budget(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(auth.time, "monotonic", lambda: clock[0])
+    cached = WebSession("old", "refresh", 0, 0, 1, account="tester", login_username="A",
+                        base_url="https://platform.test")
+    cas.CasSession([COOKIE], time.time(), "sms").save("tester")
+
+    def valid(*args):
+        assert cas.request_timeout(300) == 60
+        clock[0] += 20
+        return True
+
+    def login(notify, *, deadline):
+        assert deadline == 160
+        assert cas.request_timeout(300) == 40
+        clock[0] = deadline
+        return SimpleNamespace(access_token="new", refresh_token="refresh",
+                               access_expires_at=100, refresh_expires_at=200)
+
+    monkeypatch.setattr(auth, "cas_ticket_valid", valid)
+    monkeypatch.setattr(auth, "token_login_username", lambda token: "A")
+    device = Mock()
+    device.login.side_effect = login
+    monkeypatch.setattr(auth, "DeviceAuthorization", Mock(return_value=device))
+    save = Mock()
+    monkeypatch.setattr(auth, "_save_existing_account", save)
+    with pytest.raises(auth.AuthenticationError, match="timed out"):
+        auth._renew_with_cas(cached, "tester")
+    save.assert_not_called()
+    assert cas.renewal_deadline.get() is None
+
+
+def test_cas_success_oauth_failure_cannot_later_switch_identity(monkeypatch):
+    old = WebSession("old", "refresh", 0, 0, 1, account="tester", login_username="A",
+                     base_url="https://platform.test", user_detail={"identity": "A"})
+    old.save(account="tester")
+    monkeypatch.setattr(cas, "feishu_qr_login", lambda *args: cas.CasSession([COOKIE], time.time(), "feishu"))
+    monkeypatch.setattr(cas, "cas_ticket_valid", lambda *args: True)
+    monkeypatch.setattr(auth, "cas_ticket_valid", lambda *args: True)
+    device = Mock()
+    device.login.side_effect = auth.AuthenticationError("OAuth failed")
+    monkeypatch.setattr(auth, "DeviceAuthorization", Mock(return_value=device))
+    result = CliRunner().invoke(main, ["login", "--account", "tester", "--cas", "feishu", "--json"])
+    assert result.exit_code == 11
+    assert cas.CasSession.load("tester") is not None
+    cached = WebSession.load(account="tester", allow_expired=True)
+    assert cached.login_username == "A" and cached.access_token == "old"
+    device.login.side_effect = None
+    device.login.return_value = SimpleNamespace(access_token="new", refresh_token="new-refresh",
+                                               access_expires_at=10, refresh_expires_at=20)
+    monkeypatch.setattr(auth, "token_login_username", lambda token: "B")
+    with pytest.raises(auth.AuthenticationError, match="inspire login"):
+        auth._renew_with_cas(cached, "tester")
+    saved = WebSession.load(account="tester", allow_expired=True)
+    assert saved.access_token == "old" and saved.user_detail == {"identity": "A"}
+
+
+@pytest.mark.parametrize("kind", ["session", "pending"])
+def test_cas_writer_never_recreates_directory_after_existence_check(monkeypatch, kind):
+    original = cas.atomic_write_text
+
+    def removed_before_write(path, content, **kwargs):
+        accounts.remove_account("tester")
+        return original(path, content, **kwargs)
+
+    monkeypatch.setattr(cas, "atomic_write_text", removed_before_write)
+    with pytest.raises(auth.AuthenticationError, match="Account tester was removed"):
+        if kind == "session":
+            cas.CasSession([COOKIE], time.time(), "sms").save("tester")
+        else:
+            cas.SmsPending([], {"execution": "e"}, time.time()).save("tester")
+    assert not accounts.account_dir("tester").exists()

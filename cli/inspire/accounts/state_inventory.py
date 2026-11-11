@@ -132,6 +132,8 @@ def _scan(
             if name not in owned_dirs:
                 orphans.append(OrphanEntry(path=entry, is_dir=True))
             continue
+        if "cas_qr.png" in owned_files and entry.match("cas_qr-*.png"):
+            continue
         if name in owned_files or _is_lock_for(name, owned_files):
             continue
         orphans.append(OrphanEntry(path=entry, is_dir=False))

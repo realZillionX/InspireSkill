@@ -31,13 +31,14 @@ def emit_error(
     exit_code: int = EXIT_GENERAL_ERROR,
     *,
     hint: str | None = None,
+    json_to_stdout: bool = False,
     human_lines: Iterable[str] | None = None,
 ) -> int:
     """Emit a formatted error without exiting. Returns exit_code."""
     if ctx.json_output:
         click.echo(
             json_formatter.format_json_error(error_type, message, exit_code, hint=hint),
-            err=True,
+            err=not json_to_stdout,
         )
         return exit_code
 
@@ -84,9 +85,10 @@ def exit_with_error(
     exit_code: int = EXIT_GENERAL_ERROR,
     *,
     hint: str | None = None,
+    json_to_stdout: bool = False,
 ) -> None:
     """Print a formatted error and exit with the given code."""
-    emit_error(ctx, error_type, message, exit_code, hint=hint)
+    emit_error(ctx, error_type, message, exit_code, hint=hint, json_to_stdout=json_to_stdout)
     sys.exit(exit_code)
 
 

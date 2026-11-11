@@ -22,7 +22,7 @@ from inspire.platform.web.flow import (
 )
 
 from . import models
-from .cas import CasSession, approve_device, cas_ticket_valid
+from .cas import CasSession, approve_device, cas_ticket_valid, renewal_deadline, request_timeout
 from .envelope import _v2_result
 from .identity import token_login_username
 from .models import AuthenticationError, WebSession
@@ -113,6 +113,15 @@ def refresh_cached(account: str | None, observed: float | None = None) -> WebSes
 
 def _renew_with_cas(cached: WebSession, account: str | None) -> WebSession:
     """Caller owns the refresh lock; silent renewal never prompts or relocks."""
+    deadline = time.monotonic() + 60
+    token = renewal_deadline.set(deadline)
+    try:
+        return _renew_with_cas_before(cached, account, deadline)
+    finally:
+        renewal_deadline.reset(token)
+
+
+def _renew_with_cas_before(cached: WebSession, account: str | None, deadline: float) -> WebSession:
     cas = CasSession.load(account)
     if cas is None or not cas_ticket_valid(cas, account):
         raise login_required(account)
@@ -124,9 +133,24 @@ def _renew_with_cas(cached: WebSession, account: str | None) -> WebSession:
                 raise login_required(account)
 
         try:
-            tokens = DeviceAuthorization(base_url, http).login(notify)
+            tokens = DeviceAuthorization(base_url, http).login(notify, deadline=deadline)
         except (AuthenticationError, requests.RequestException):
             raise login_required(account) from None
+    principal = token_login_username(tokens.access_token)
+    if not principal:
+        discovered = WebSession(
+            access_token=tokens.access_token,
+            refresh_token=tokens.refresh_token,
+            access_expires_at=tokens.access_expires_at,
+            refresh_expires_at=tokens.refresh_expires_at,
+            created_at=time.time(),
+            account=account,
+            base_url=base_url,
+        )
+        _discover_identity(discovered, base_url, include_workspaces=False)
+        principal = discovered.login_username
+    if not principal or not cached.login_username or principal != cached.login_username:
+        raise login_required(account)
     renewed = replace(
         cached,
         access_token=tokens.access_token,
@@ -135,6 +159,7 @@ def _renew_with_cas(cached: WebSession, account: str | None) -> WebSession:
         refresh_expires_at=tokens.refresh_expires_at,
         created_at=time.time(),
     )
+    request_timeout()
     _save_existing_account(renewed, account)
     return renewed
 
@@ -193,7 +218,9 @@ def refresh_session(
         yield call(exit_context, context, *sys.exc_info())
 
 
-def _discover_identity(session: WebSession, base_url: str) -> None:
+def _discover_identity(
+    session: WebSession, base_url: str, *, include_workspaces: bool = True
+) -> None:
     """Fill user detail and the workspace catalog; failures leave the tokens usable."""
     try:
         with build_requests_session(session, base_url) as http:
@@ -201,7 +228,7 @@ def _discover_identity(session: WebSession, base_url: str) -> None:
                 detail = http.post(
                     base_url.rstrip("/") + USER_DETAIL_PATH,
                     json={},
-                    timeout=30,
+                    timeout=request_timeout(),
                     allow_redirects=False,
                 )
                 detail.raise_for_status()
@@ -213,11 +240,13 @@ def _discover_identity(session: WebSession, base_url: str) -> None:
                         session.login_username = login_name.strip()
             except Exception:
                 logger.warning("User detail discovery failed; tokens remain usable.")
+            if not include_workspaces:
+                return
             try:
                 workspaces = http.post(
                     base_url.rstrip("/") + ACCESSIBLE_WORKSPACES_PATH,
                     json={},
-                    timeout=30,
+                    timeout=request_timeout(),
                     allow_redirects=False,
                 )
                 workspaces.raise_for_status()

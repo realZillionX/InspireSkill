@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
@@ -14,11 +16,13 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 import requests
 
-from inspire.accounts.cache_lock import exclusive_cache_lock
 from inspire.local_files import atomic_write_text
 from inspire.platform.web.flow import blocking_io
 from .models import AuthenticationError, _is_finite_number, get_session_cache_file
 from .proxy import resolve_requests_proxy_config
+from .refresh_lock import exclusive_session_refresh
+
+renewal_deadline: ContextVar[float | None] = ContextVar("cas_renewal_deadline", default=None)
 
 CAS_HOST = "cas.sii.edu.cn"
 CAS_BASE_URL = f"https://{CAS_HOST}"
@@ -29,6 +33,10 @@ USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Ge
 
 class CasError(AuthenticationError):
     """A sanitized CAS authentication failure."""
+
+
+class CasValidationError(CasError):
+    """Invalid user input, before attempting CAS authentication."""
 
 
 class CasTicketExpired(CasError):
@@ -44,6 +52,23 @@ def cache_path(account: str | None, filename: str) -> Path:
     if path is None:
         raise CasError("Select an account before CAS login.")
     return path.with_name(filename)
+
+
+@contextmanager
+def existing_account_write(account: str | None) -> Iterator[None]:
+    """Serialize publication with logout without recreating a removed account."""
+    from inspire.accounts import account_exists
+    from .models import _resolve_account_for_storage
+
+    name = _resolve_account_for_storage(account)
+    message = f"Account {name} was removed; run inspire login --account {name}."
+    try:
+        with exclusive_session_refresh(name):
+            if not name or not account_exists(name):
+                raise AuthenticationError(message)
+            yield
+    except FileNotFoundError:
+        raise AuthenticationError(message) from None
 
 
 def _cookies(http: requests.Session) -> list[dict[str, Any]]:
@@ -100,8 +125,8 @@ class CasSession:
     @blocking_io
     def save(self, account: str | None = None) -> None:
         path = cache_path(account, "cas_session.json")
-        with exclusive_cache_lock(path):
-            atomic_write_text(path, json.dumps(asdict(self)), private=True)
+        with existing_account_write(account):
+            atomic_write_text(path, json.dumps(asdict(self)), private=True, create_parent=False)
 
     @classmethod
     @blocking_io
@@ -137,7 +162,13 @@ def request_timeout(limit: float = 30) -> float:
     from inspire.platform.web.runtime import active_transport
 
     owner = active_transport.get()
-    return min(limit, owner.remaining()) if owner is not None else limit
+    remaining = min(limit, owner.remaining()) if owner is not None else limit
+    deadline = renewal_deadline.get()
+    if deadline is not None:
+        remaining = min(remaining, deadline - time.monotonic())
+    if remaining <= 0:
+        raise CasError("CAS renewal timed out; run inspire login.")
+    return remaining
 
 
 def mint_ticket(http: requests.Session, timeout: float = 30) -> str:
@@ -184,7 +215,7 @@ class Forms(HTMLParser):
 
 def validate_phone(phone: str) -> str:
     if not re.fullmatch(r"(?:\+86)?1\d{10}", phone, flags=re.ASCII):
-        raise CasError(
+        raise CasValidationError(
             "A mobile phone number is required: 11 digits starting with 1, optionally +86."
         )
     return phone.removeprefix("+86")
@@ -204,8 +235,8 @@ class SmsPending:
         data["fields"] = {
             k: v for k, v in self.fields.items() if k in ("execution", "_eventId", "loginType")
         }
-        with exclusive_cache_lock(path):
-            atomic_write_text(path, json.dumps(data), private=True)
+        with existing_account_write(account):
+            atomic_write_text(path, json.dumps(data), private=True, create_parent=False)
 
     @classmethod
     @blocking_io
