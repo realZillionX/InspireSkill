@@ -1,7 +1,11 @@
 """HPC Slurm submission and platform observations."""
 
 from __future__ import annotations
-from .models import Instance
+
+from typing import Literal, overload
+
+from inspire.platform.web.session.envelope import _v2_error_metadata
+from .models import Instance, StatusResult
 from .instances import sdk_instances
 from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget
 from typing import Callable
@@ -43,6 +47,43 @@ def metric_group(detail: object) -> str | None:
 
 
 class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
+
+    @overload
+    def status(
+        self,
+        refs: Sequence[str | HPCJobRef],
+        *,
+        workspace: str | WorkspaceRef | None = None,
+        allow_partial: Literal[False] = False,
+    ) -> tuple[HPCJob, ...]: ...
+
+    @overload
+    def status(
+        self,
+        refs: Sequence[str | HPCJobRef],
+        *,
+        workspace: str | WorkspaceRef | None = None,
+        allow_partial: Literal[True],
+    ) -> tuple[StatusResult[HPCJob], ...]: ...
+
+    @overload
+    def status(
+        self,
+        refs: Sequence[str | HPCJobRef],
+        *,
+        workspace: str | WorkspaceRef | None = None,
+        allow_partial: bool,
+    ) -> tuple[HPCJob, ...] | tuple[StatusResult[HPCJob], ...]: ...
+
+    @operation
+    def status(
+        self,
+        refs: Sequence[str | HPCJobRef],
+        *,
+        workspace: str | WorkspaceRef | None = None,
+        allow_partial: bool = False,
+    ) -> tuple[HPCJob, ...] | tuple[StatusResult[HPCJob], ...]:
+        return self._batch_status(refs, workspace=workspace, allow_partial=allow_partial)
 
     @operation
     def exec(
@@ -243,7 +284,7 @@ class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
             result = self._binding.create(plan.create_kwargs, session=session)
         key = self._binding.created_id(result)
         if not key:
-            raise SubmissionUncertainError(identifier, inspect="HPC jobs")
+            raise SubmissionUncertainError(identifier, inspect="HPC jobs", **_v2_error_metadata(result))
         return HPCJobHandle(
             plan.name, self._make_ref(HPCJobRef, plan.name, key, plan.workspace.ref.key), identifier
         )

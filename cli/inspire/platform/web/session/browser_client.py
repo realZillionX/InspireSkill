@@ -21,17 +21,25 @@ from .models import (
 )
 from .browser_launch import chromium_launch_kwargs
 from .proxy import get_playwright_proxy
-from .retry import retry_after_seconds
+from .envelope import _ResponseEnvelope, _response_metadata
+from inspire.platform.errors import APIError, _error_metadata
+from inspire.services.utils.json_formatter import sanitize_text
 
 
 logger = logging.getLogger(__name__)
 
 
-class _BrowserHTTPError(ValueError):
-    def __init__(self, status: int, body: str):
-        super().__init__(f"API returned {status}: {body}")
+class _BrowserHTTPError(APIError):
+    status: int
+
+    def __init__(self, status: int, body: str, headers: dict[str, str] | None = None):
+        try:
+            data = json.loads(body)
+        except ValueError:
+            data = None
+        context = _response_metadata(status, headers or {}, data)
+        super().__init__(f"API returned {status}: {sanitize_text(body)}", **context)
         self.status = status
-        self.body = body
 
 
 class _BrowserRequestClient:
@@ -74,10 +82,17 @@ class _BrowserRequestClient:
             logger.debug("Browser error response body unavailable; classifying HTTP status", exc_info=True)
             body_text = ""
         _classify_response(
-            resp.status, resp.headers if resp.status in TRANSIENT_HTTP_STATUSES else {}, body_text
+            resp.status, resp.headers, body_text
         )
 
-        return resp.json()
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+            failed_json = True
+        else:
+            failed_json = False
+        return _browser_result(resp.status, resp.headers, data, failed_json=failed_json)
 
     def close(self) -> None:
         if self._closed:
@@ -203,17 +218,28 @@ def _request_options(method: str, headers: dict[str, str] | None,
 
 
 def _classify_response(status: int, headers: dict[str, str], body_text: str) -> None:
+    if status < 300:
+        return
+    error = _BrowserHTTPError(status, body_text, headers)
     if status == 401 or 300 <= status < 400:
-        raise SessionExpiredError("Session expired or invalid")
+        raise SessionExpiredError("Session expired or invalid", **_error_metadata(error))
     if status >= 400:
-        message = f"API returned {status}: {body_text}"
+        message = str(error)
         if status in TRANSIENT_HTTP_STATUSES:
             raise TransientAPIError(
                 message,
-                status=status,
-                retry_after=retry_after_seconds(headers),
+                **_error_metadata(error),
             )
-        raise _BrowserHTTPError(status, body_text)
+        raise error
+
+
+def _browser_result(
+    status: int, headers: dict[str, str], data: Any, *, failed_json: bool = False,
+) -> dict:
+    context = _response_metadata(status, headers, data)
+    if failed_json:
+        raise APIError("Response was not valid JSON.", **context)
+    return _ResponseEnvelope(data, **context) if isinstance(data, dict) else data
 
 
 class AsyncBrowserRequestClient:
@@ -263,9 +289,16 @@ class AsyncBrowserRequestClient:
             logger.debug("Browser error response body unavailable; classifying HTTP status", exc_info=True)
             body_text = ""
         _classify_response(
-            resp.status, resp.headers if resp.status in TRANSIENT_HTTP_STATUSES else {}, body_text
+            resp.status, resp.headers, body_text
         )
-        return await resp.json()
+        try:
+            data = await resp.json()
+        except ValueError:
+            data = None
+            failed_json = True
+        else:
+            failed_json = False
+        return _browser_result(resp.status, resp.headers, data, failed_json=failed_json)
 
     async def close(self) -> None:
         if self._closed:

@@ -1,6 +1,8 @@
 """TensorBoard lifecycle and scalar data, sharing the CLI service cores."""
 
 from __future__ import annotations
+
+from inspire.platform.web.session.envelope import _v2_error_metadata
 import time
 from inspire.platform.web.flow import call, perform_sync
 from typing import Sequence
@@ -169,7 +171,7 @@ class Tensorboards(Service):
         hours = 24.0 if spec.auto_stop_hours is None else spec.auto_stop_hours
         session = self.session
         with self.client._transport.single_send(identifier, create=True, inspect="TensorBoards"):
-            api.create_tensorboard(
+            result = api.create_tensorboard(
                 name=spec.name,
                 workspace_id=ws.ref.key,
                 project_id=project.ref.key,
@@ -182,9 +184,9 @@ class Tensorboards(Service):
         try:
             board = core.find_created_board(session, workspace_id=ws.ref.key, name=spec.name)
         except Exception as exc:
-            raise SubmissionUncertainError(identifier, inspect="TensorBoards") from exc
+            raise SubmissionUncertainError(identifier, inspect="TensorBoards", **_v2_error_metadata(result)) from exc
         if board is None or not board.tb_id:
-            raise SubmissionUncertainError(identifier, inspect="TensorBoards")
+            raise SubmissionUncertainError(identifier, inspect="TensorBoards", **_v2_error_metadata(result))
         return TensorboardHandle(
             board.name,
             self._make_ref(TensorboardRef, board.name, board.tb_id, ws.ref.key),

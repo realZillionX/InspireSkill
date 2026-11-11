@@ -102,9 +102,9 @@ _SENSITIVE_ASSIGNMENT_RE = re.compile(
     r"access[_-]?token|account[_-]?id|api[_-]?key|"
     r"authorization|cookie|set[_-]?cookie|inspire[_-]?session|"
     r"login(?:[_-]?(?:id|name|username))?|password|passwd|"
-    r"refresh[_-]?token|token|user[_-]?id|username"
+    r"refresh[_-]?token|auth[_-]?token|api[_-]?token|client[_-]?secret|secret|token|user[_-]?id|username"
     r")"
-    r"(\s*[:=]\s*)[^\s,;&]+"
+    r"([\"']?\s*[:=]\s*)(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s,;&]+)"
 )
 _SENSITIVE_HEADER_RE = re.compile(
     r"(?im)(\b(?:set-cookie|cookie|authorization)\s*[:=]\s*).*$"
@@ -220,6 +220,28 @@ def _sanitize_public_text(
     redact_urls: bool = False,
     redact_platform_paths: bool = False,
 ) -> str:
+    # Server diagnostics may contain JSON, including JSON encoded inside a
+    # Message string. Reuse the same sensitive-key and text rules recursively.
+    if value.lstrip().startswith(("{", "[")):
+        try:
+            decoded = json.loads(value)
+        except ValueError:
+            pass
+        else:
+            def scrub(item: Any) -> Any:
+                if isinstance(item, dict):
+                    return {key: "<redacted>" if _is_sensitive_field(key) else scrub(child)
+                            for key, child in item.items()}
+                if isinstance(item, list):
+                    return [scrub(child) for child in item]
+                if isinstance(item, str):
+                    return _sanitize_public_text(
+                        item, redact_paths=redact_paths, redact_urls=redact_urls,
+                        redact_platform_paths=redact_platform_paths,
+                    )
+                return item
+            sanitized_json = scrub(decoded)
+            return value if sanitized_json == decoded else json.dumps(sanitized_json, ensure_ascii=False)
     sanitized = scrub_raw_ids(value)
     sanitized = _URL_RE.sub(
         lambda match: _sanitize_url(match.group(0), redact=redact_urls),

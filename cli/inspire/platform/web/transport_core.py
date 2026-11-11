@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any, Generator, NoReturn
 
 from inspire.platform.errors import (
+    _error_metadata,
     AuthenticationError,
     TransportError,
     ValidationError,
@@ -50,10 +51,10 @@ def _classify_after_dispatch(error: Exception) -> Exception | None:
     # platform envelope's "API error:" prefix; HTTP status alone is insufficient.
     if isinstance(error, PlazaRejected):
         if error.status == 403:
-            return AuthenticationError(str(error))
+            return AuthenticationError(str(error), **_error_metadata(error))
         if error.status is not None and error.status >= 500:
             return None
-        return ValidationError(str(error))
+        return ValidationError(str(error), **_error_metadata(error))
     if isinstance(error, (AuthenticationError, TransportError)):
         return error
     # TransientAPIError is also a ValueError; classify it before business errors.
@@ -61,12 +62,12 @@ def _classify_after_dispatch(error: Exception) -> Exception | None:
         # Messages may be redacted; use the envelope code, not its rendered text.
         code = (error.code or "").strip().lower().replace("_", "")
         if error.status == 429 or code in _THROTTLING_V2_ERROR_CODES:
-            return TransportError(str(error))
+            return TransportError(str(error), **_error_metadata(error))
         return None
     if isinstance(error, ValidationError) or (
         isinstance(error, ValueError) and str(error).startswith("API error:")
     ):
-        return ValidationError(str(error))
+        return ValidationError(str(error), **_error_metadata(error))
     return None
 
 
@@ -147,9 +148,11 @@ def claim_write(state: dict[str, Any] | None) -> None:
 def uncertain(state: dict[str, Any], error: Exception) -> NoReturn:
     if state["create"]:
         raise SubmissionUncertainError(
-            state["operation_id"], inspect=state.get("inspect", "jobs")
+            state["operation_id"], inspect=state.get("inspect", "jobs"), **_error_metadata(error)
         ) from error
-    raise MutationUncertainError("Mutation may have succeeded; inspect state.") from error
+    raise MutationUncertainError(
+        "Mutation may have succeeded; inspect state.", **_error_metadata(error)
+    ) from error
 
 
 def remaining(timeout: float, deadline: float | None, now: float) -> float:
@@ -263,7 +266,7 @@ class RequestCore:
     ) -> Program:
         from inspire.platform.web.transport_policy import is_request_error
         from inspire.platform.web.session.models import SessionExpiredError, TransientAPIError
-        from inspire.platform.web.session.envelope import _is_transient_v2_error_code
+        from inspire.platform.web.session.envelope import _is_transient_v2_error_code, _v2_error_metadata
         from inspire.platform.web.session.retry import backoff_delay
 
         state = self.shared.write
@@ -291,7 +294,7 @@ class RequestCore:
                     ):
                         raise TransientAPIError(
                             str(envelope_error.get("Message") or envelope_error.get("Code")),
-                            code=str(envelope_error.get("Code") or ""),
+                            **_v2_error_metadata(payload),
                         )
                 yield Return(payload, observed)
                 return
@@ -330,7 +333,7 @@ class RequestCore:
                     continue
                 if isinstance(error, SessionExpiredError):
                     if refreshed:
-                        raise AuthenticationError(str(error)) from error
+                        raise AuthenticationError(str(error), **_error_metadata(error)) from error
                     logger.debug("Web session expired; trying session renewal", exc_info=True)
                     yield Refresh(observed, True)
                     refreshed = True
@@ -343,13 +346,22 @@ class RequestCore:
                         logger.debug("HTTP request failed; trying browser fallback", exc_info=True)
                         browser = True
                 elif not isinstance(error, TransientAPIError):
-                    raise TransportError(str(error)) from error
+                    raise TransportError(str(error), **_error_metadata(error)) from error
                 if attempt == 2:
-                    raise TransportError(str(error)) from error
+                    raise TransportError(str(error), **_error_metadata(error)) from error
+                transient = error if isinstance(error, TransientAPIError) else None
                 clock: Observation = yield Observe()
-                yield Sleep(
-                    min(0.1 * (2**attempt), remaining(self.timeout, self.deadline, clock.now))
+                delay = backoff_delay(
+                    attempt, transient or TransientAPIError(str(error)),
+                    jitter=clock.jitter, honor_retry_after=True,
                 )
+                if self.deadline is not None and delay >= self.deadline - clock.now:
+                    raise WaitTimeoutError(
+                        f"Retry wait of {delay:g}s exceeds the remaining operation deadline; "
+                        "request was not replayed.",
+                        **_error_metadata(error),
+                    ) from error
+                yield Sleep(delay)
                 attempt += 1
         raise AssertionError("unreachable")
 
@@ -376,7 +388,7 @@ def refresh(self: Any, *, require_cas_ticket: bool = False) -> FlowProgram[Any]:
             raise
         except Exception as error:
             self.check_deadline()
-            raise AuthenticationError(str(error)) from error
+            raise AuthenticationError(str(error), **_error_metadata(error)) from error
         finally:
             if self._browser is not None:
                 # Browser cleanup must not replace the renewal result or error.

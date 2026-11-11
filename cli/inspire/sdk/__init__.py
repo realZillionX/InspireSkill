@@ -71,6 +71,7 @@ from .models_resources import (
     WorkloadSchedulePolicy,
 )
 from .models import (
+    StatusResult,
     ResourceRef,
     WorkspaceRef,
     ProjectRef,
@@ -257,6 +258,7 @@ __all__ = [
     "QuotaOption",
     "ImageSelector",
     "Job",
+    "StatusResult",
     "JobHandle",
     "Page",
     "JobCreateSpec",

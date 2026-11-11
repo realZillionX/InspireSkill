@@ -109,6 +109,7 @@ def test_write_outcome_matches_http_and_envelope(
         sent.append(1)
         return SimpleNamespace(
             status_code=status,
+            headers={},
             json=lambda: {
                 "ResponseMetadata": {"Error": {"Code": code, "Message": "backend fault"}}
             },
@@ -126,7 +127,7 @@ def test_write_outcome_matches_http_and_envelope(
     assert caught.value.retryable is retryable
     cause = caught.value.__cause__
     assert isinstance(cause, TransientAPIError)
-    assert cause.status == (None if status == 200 else status)
+    assert cause.status == status
     assert cause.code == code
     assert sent == [1]
 

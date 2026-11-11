@@ -5,7 +5,7 @@ from __future__ import annotations
 from ._sync_handle import SyncHandle
 
 from dataclasses import dataclass, field, asdict
-from typing import Any, Generic, TypeVar, ClassVar
+from typing import Any, Generic, TypeVar, ClassVar, Literal, Protocol
 
 from .exceptions import ValidationError
 from inspire.platform.web.browser_api.datasets import DatasetMount
@@ -67,6 +67,35 @@ class JobRef(ResourceRef):
 class Resource(Generic[R]):
     name: str
     ref: R
+
+
+class _StatusValue(Protocol):
+    def to_dict(self) -> dict[str, Any]: ...
+
+
+S = TypeVar("S", bound=_StatusValue)
+
+
+@dataclass(frozen=True)
+class StatusResult(Generic[S]):
+    """One batch entry; missing is not a workload lifecycle status."""
+
+    ref: ResourceRef
+    outcome: Literal["status", "missing", "error"]
+    value: S | None = None
+    error: ValidationError | None = None
+
+    @property
+    def name(self) -> str:
+        return self.ref.name
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "outcome": self.outcome,
+            "value": self.value.to_dict() if self.value is not None else None,
+            "error": str(self.error) if self.error is not None else None,
+        }
 
 
 @dataclass(frozen=True)

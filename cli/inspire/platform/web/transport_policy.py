@@ -2,7 +2,9 @@
 
 from typing import Any, NoReturn
 from dataclasses import dataclass
-from inspire.platform.errors import AuthenticationError, ValidationError
+from inspire.platform.errors import APIError, AuthenticationError, ValidationError, _error_metadata
+from inspire.services.utils.json_formatter import sanitize_text
+from inspire.platform.web.session.envelope import _ResponseEnvelope, _response_metadata
 
 
 class _NonJSONResponse(ValueError):
@@ -13,26 +15,37 @@ class _SDKResponsePolicy:
     def response(self, response: Any) -> Any:
         from inspire.platform.web.session.models import SessionExpiredError, TransientAPIError
 
+        try:
+            data = response.json()
+        except (ValueError, AttributeError):
+            data = None
+            failed_json = True
+        else:
+            failed_json = False
+        context = _response_metadata(response.status_code, getattr(response, "headers", {}), data)
         if response.status_code == 401 or 300 <= response.status_code < 400:
-            raise SessionExpiredError("Authentication expired.")
+            raise SessionExpiredError("Authentication expired.", **context)
         if response.status_code == 429 or response.status_code >= 500:
-            raise TransientAPIError("Temporary platform failure.", status=response.status_code)
+            raise TransientAPIError("Temporary platform failure.", **context)
         if response.status_code == 403:
-            raise AuthenticationError("Platform access denied.")
+            raise AuthenticationError("Platform access denied.", **context)
         if response.status_code >= 400:
-            raise ValidationError(f"HTTP {response.status_code}: {response.text[:500]}")
-        return response.json()
+            raise ValidationError(f"HTTP {response.status_code}: {sanitize_text(response.text)[:500]}", **context)
+        if failed_json:
+            raise APIError("Response was not valid JSON.", **context)
+        return _ResponseEnvelope(data, **context) if isinstance(data, dict) else data
 
     def browser_error(self, error: Exception) -> NoReturn:
         from inspire.platform.web.session.browser_client import _BrowserHTTPError
         from inspire.platform.web.session.models import TransientAPIError
 
         if isinstance(error, _BrowserHTTPError):
+            context = _error_metadata(error)
             if error.status == 403:
-                raise AuthenticationError(str(error)) from error
+                raise AuthenticationError(str(error), **context) from error
             if error.status == 429 or error.status >= 500:
-                raise TransientAPIError(str(error), status=error.status) from error
-            raise ValidationError(f"HTTP {error.status}: {error.body[:500]}") from error
+                raise TransientAPIError(str(error), **context) from error
+            raise ValidationError(f"HTTP {error.status}: {str(error)[:500]}", **context) from error
         raise error
 
 
@@ -124,4 +137,4 @@ def classify_application_response(response: Any) -> None:
     if response.status_code == 403:
         raise AuthenticationError("Application access denied.")
     if response.status_code >= 400:
-        raise ValidationError(f"HTTP {response.status_code}: {response.text[:500]}")
+        raise ValidationError(f"HTTP {response.status_code}: {sanitize_text(response.text)[:500]}")

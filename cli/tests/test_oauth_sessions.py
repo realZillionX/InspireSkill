@@ -201,7 +201,7 @@ def test_browser_request_headers_only_for_platform(account):
     captured = []
     def get(url, **kwargs):
         captured.append(kwargs["headers"])
-        return SimpleNamespace(status=200, json=lambda: {})
+        return SimpleNamespace(status=200, headers={}, json=lambda: {})
     client._context = SimpleNamespace(request=SimpleNamespace(get=get))
     client.request_json("GET", "https://platform.test/api")
     client.request_json("GET", "https://notebook.test/api")

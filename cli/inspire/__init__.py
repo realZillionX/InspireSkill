@@ -17,6 +17,7 @@ def __getattr__(name: str):
 
 if TYPE_CHECKING:
     from .sdk import (
+        StatusResult as StatusResult,
         AsyncJobHandle as AsyncJobHandle,
         AsyncNotebookHandle as AsyncNotebookHandle,
         AsyncHPCJobHandle as AsyncHPCJobHandle,

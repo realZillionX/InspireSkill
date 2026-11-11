@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from inspire.platform.web.session.envelope import _v2_error_metadata
+
+from inspire.platform.errors import _error_metadata
+
 import base64
 import json
 from functools import wraps
@@ -44,7 +48,10 @@ def operation(fn: F) -> F:
                 self.client._catalog_context = {}
             try:
                 return fn(self, *args, **kwargs)
-            except InspireError:
+            except InspireError as error:
+                for name, value in _error_metadata(error).items():
+                    if getattr(error, name) is None:
+                        setattr(error, name, value)
                 raise
             except Exception as error:
                 from inspire.platform.web.session.models import (
@@ -52,18 +59,18 @@ def operation(fn: F) -> F:
                 )
 
                 if isinstance(error, (SessionAuthenticationError, SessionExpiredError)):
-                    raise AuthenticationError(str(error)) from error
+                    raise AuthenticationError(str(error), **_error_metadata(error)) from error
                 cause = error.__cause__
                 while cause is not None:
                     if isinstance(cause, InspireError):
                         raise cause from None
                     cause = cause.__cause__
                 if isinstance(error, TransientAPIError):
-                    raise TransportError(str(error)) from error
+                    raise TransportError(str(error), **_error_metadata(error)) from error
                 if isinstance(error, ValueError):
-                    raise ValidationError(str(error)) from None
+                    raise ValidationError(str(error), **_error_metadata(error)) from None
                 if type(error).__module__.startswith("inspire.platform"):
-                    raise ResolutionIncompleteError(str(error)) from None
+                    raise ResolutionIncompleteError(str(error), **_error_metadata(error)) from None
                 raise
             finally:
                 if outer:
@@ -612,7 +619,9 @@ class Images(Service):
                     raise
                 failed.append(error)
         if failed and (require_complete or not rows):
-            raise ResolutionIncompleteError("An image catalog could not be read.") from failed[0]
+            raise ResolutionIncompleteError(
+                "An image catalog could not be read.", **_error_metadata(failed[0])
+            ) from failed[0]
         rows = images.dedupe_images_by_id(rows)
         return [
             Image(
@@ -755,7 +764,7 @@ class Images(Service):
         data = result.get("image") or {}
         key = data.get("image_id") or result.get("image_id")
         if not key:
-            raise SubmissionUncertainError(identifier, inspect="images")
+            raise SubmissionUncertainError(identifier, inspect="images", **_v2_error_metadata(result))
         label = f"{name}:{version or 'v1'}"
         return ImageRegisterHandle(
             label,
@@ -823,9 +832,9 @@ class Images(Service):
                     poll_interval=poll_interval,
                 )
             except TimeoutError as exc:
-                raise WaitTimeoutError(str(exc)) from exc
+                raise WaitTimeoutError(str(exc), **_error_metadata(exc)) from exc
             except ValueError as exc:
-                raise ValidationError(str(exc)) from exc
+                raise ValidationError(str(exc), **_error_metadata(exc)) from exc
 
     @operation
     @image_mutation

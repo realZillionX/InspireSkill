@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from inspire.platform.web.session.envelope import _v2_error_metadata
+
 import builtins
 from typing import Any, Sequence
 from inspire.platform.web import browser_api
@@ -230,7 +232,7 @@ class Models(Service):
             )
         key = created_model_id(result)
         if not key:
-            raise SubmissionUncertainError(identifier, inspect="model versions")
+            raise SubmissionUncertainError(identifier, inspect="model versions", **_v2_error_metadata(result))
         return ModelRegisterHandle(name, self._make_ref(ModelRef, name, key, ws.ref.key), identifier)
 
     @operation

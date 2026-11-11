@@ -294,9 +294,50 @@ The catalogue methods below (`applications`, `get`, `list`, `tags`) require a st
 | `jobs.metrics(ref, *, workspace=None, metric='core', window='1h', start=None, end=None, interval='1m', group=None)` | `tuple[MetricGroup, ...]` | `job metrics` |
 | `jobs.plan(spec)` | `JobPlan` | `job create --dry-run` |
 | `jobs.quotas(workspace, *, group=None, include_empty=False, limit=20, cursor=None)` | `Page[QuotaOption]` | `job quota` |
-| `jobs.status(refs, *, workspace=None)` | `tuple[Job, ...]` | `job status` |
+| `jobs.status(refs, *, workspace=None, allow_partial=False)` | `tuple[Job, ...]` or opt-in `tuple[StatusResult[Job], ...]` | `job status` |
 | `jobs.stop(ref, *, workspace=None)` | `None` | `job stop` |
 | `jobs.wait(ref, *, workspace=None, timeout=3600, poll_interval=10, raise_on_failure=False)` | `Job` | `job wait` |
+
+### Partial batch status (jobs and HPC)
+
+By default, `client.jobs.status(refs)` and `client.hpc.status(refs)` remain strict:
+they return a tuple of `Job` / `HPCJob` snapshots, or raise
+`ResourceNotFoundError` when any resolved reference is absent from the batch response.
+
+Pass `allow_partial=True` to return one frozen `StatusResult[Job]` /
+`StatusResult[HPCJob]` per input, preserving input order and duplicate references.
+`StatusResult` is exported from both `inspire` and `inspire.sdk`:
+
+- `.ref` and `.name` identify the requested resource.
+- `.outcome == "status"`: `.value` is the normal resource snapshot; `.error` is `None`.
+- `.outcome == "missing"`: the batch response omitted the resource; both `.value`
+  and `.error` are `None`. This does not imply a successful or stopped workload.
+- `.outcome == "error"`: the returned detail failed workspace ownership validation;
+  `.error` is a `ValidationError` and `.value` is `None`. Strict mode still raises.
+- `.to_dict()` returns the public name, outcome, sanitized snapshot (or `None`),
+  and error message (or `None`), without serializing opaque reference IDs.
+
+```python
+results = client.jobs.status(refs, allow_partial=True)
+for result in results:
+    if result.outcome == "status":
+        print(result.name, result.value.status)
+    elif result.outcome == "missing":
+        print(result.name, "missing or no longer visible")
+    else:
+        print(result.name, result.error)
+
+# The same contract applies to native async polling and HPC:
+results = await async_client.hpc.status(hpc_refs, allow_partial=True)
+```
+
+Both modes use the existing workspace-grouped batch endpoints and their chunking;
+missing entries never trigger per-item detail requests. Empty input returns `()`.
+Reference account, base URL, type, explicit workspace, and name-resolution validation
+still run before the batch requests and raise on failure. Network, authentication,
+permission, rate-limit, and other whole-batch failures still raise, including when an
+earlier workspace batch succeeded; they are never converted to missing entries.
+Partial mode does not catch arbitrary response-conversion or programming errors.
 
 Like `HPCJob`, `RayJob`, and `Serving`, `Job` exposes `.view` (the sanitized public projection matching `inspire --json job status`, also returned by `.to_dict()`) and `.raw` (the full platform payload). `instances()` on `jobs`, `hpc`, `ray`, and `servings` returns frozen `Instance` objects where `.label` is the human-readable instance label and `.handle` is the opaque namespaced pod identifier (hidden from `repr()`); both `exec(instance=...)` and `logs(instance=...)` accept either `.label` or `.handle`.
 
@@ -346,7 +387,7 @@ Like `HPCJob`, `RayJob`, and `Serving`, `Job` exposes `.view` (the sanitized pub
 | `hpc.metrics(ref, *, workspace=None, metric='core', window='1h', start=None, end=None, interval=None, group=None)` | `tuple[MetricGroup, ...]` | `hpc metrics` |
 | `hpc.plan(spec)` | `HPCJobPlan` | `hpc create --dry-run` |
 | `hpc.quotas(workspace, *, group=None, include_empty=False, limit=20, cursor=None)` | `Page[QuotaOption]` | `hpc quota` |
-| `hpc.status(refs, *, workspace=None)` | `tuple[HPCJob, ...]` | `hpc status` |
+| `hpc.status(refs, *, workspace=None, allow_partial=False)` | `tuple[HPCJob, ...]` or opt-in `tuple[StatusResult[HPCJob], ...]` | `hpc status` |
 | `hpc.stop(ref, *, workspace=None)` | `None` | `hpc stop` |
 | `hpc.wait(ref, *, timeout=3600, poll_interval=10, raise_on_failure=False, workspace=None)` | `HPCJob` | `hpc status` (poll until terminal) |
 
@@ -514,9 +555,63 @@ All SDK JSON mutation calls execute inside `single_send`: each write is sent at 
 | Rate-limited or transient server refusal (`TransientAPIError` / HTTP 429) | `TransportError(retryable=True)` | Safe for the caller to retry explicitly |
 | Ambiguous outcome after send (post-send HTTP 401/3xx/5xx, network drop, timeout, or missing ID) | `SubmissionUncertainError` (creates) / `MutationUncertainError` (mutations), `retryable=False` | Inspect the target catalog (`err.inspect`) before retrying to avoid duplicate creation |
 
+### Structured Error Context
+
+All public SDK exceptions expose optional `code: str`, `status: int`,
+`service: str`, `action: str`, `request_id: str`, and `retry_after: float`
+attributes (`retry_after` is in seconds). Missing fields are `None`.
+The synchronous and asynchronous clients preserve the same context through
+validation, transport, authentication, and uncertain-outcome conversions.
+Requests and browser responses use the same v2 metadata fields. Wrapping errors
+fill missing fields from their causes without replacing existing values. Non-JSON
+responses retain observed HTTP status and retry hints; missing-ID submissions
+retain available envelope context. Existing exception catch relationships are preserved.
+
+`code`, `service`, `action`, and `request_id` come from the v2 response envelope;
+`status` comes from an observed HTTP response, including HTTP 200 business errors.
+Unwrapping a standalone envelope without HTTP context leaves `status=None`:
+no status or invalid-field diagnosis is inferred from an error code or message.
+Only these scalar fields are copied; request bodies, credentials, cookies, and
+request/response objects are not attached as structured metadata. Server error
+messages pass through the shared text redactor before truncation; sensitive JSON
+fields, Authorization headers, and cookie echoes are masked, and browser errors
+do not retain raw response bodies. Ordinary diagnostic text stays readable.
+
+```python
+from inspire.sdk import InspireError, SubmissionUncertainError
+
+try:
+    handle = client.jobs.create(spec, operation_id="example-operation")
+except SubmissionUncertainError as error:
+    # Inspect the catalog before deciding whether to submit again.
+    print(error.operation_id, error.inspect, error.request_id)
+except InspireError as error:
+    print(error.code, error.status, error.service, error.action, error.request_id)
+```
+
+Metadata and retry hints do not authorize automatic write replay.
+`SubmissionUncertainError.operation_id`, `.inspect`, and `retryable=False`
+retain their existing meaning; a server fault after dispatch remains uncertain.
+
+### Retry timing and operation deadlines
+
+Synchronous and asynchronous SDK safe reads make at most three attempts for transient
+failures. HTTP 429 and 5xx responses preserve `Retry-After` (seconds or HTTP-date).
+A valid server delay is honored in full, including delays longer than the local
+backoff cap. Missing or invalid headers use exponential backoff with jitter,
+starting at 0.5 seconds and capped at 8 seconds.
+
+If the next wait would exhaust the remaining operation deadline, the SDK raises
+`WaitTimeoutError` immediately without sleeping or resending early. This error and
+`TransportError` after exhausted retries expose `status` and `retry_after` (or
+`None` when unavailable), so callers can schedule a later query. A server refusal
+of a single-send write with HTTP 429 also preserves these fields. Submit, stop,
+and create operations remain single-send; ambiguous write outcomes still require
+inspection before any explicit retry.
+
 ### Public Exports (`inspire.sdk.__all__`)
 
-`inspire.sdk.__all__` exports **131 symbols** (all re-exported at top-level `inspire`):
+`inspire.sdk.__all__` defines the public exports (also available at top-level `inspire`):
 - **Entrypoints & Accounts (3):** `Accounts`, `InspireAsyncClient`, `InspireClient`
 - **Typed References (19):** `APIKeyRef`, `ComputeGroupRef`, `DatasetApplicationRef`, `DatasetRef`, `DatasetTagRef`, `DatasetVersionRef`, `HPCJobRef`, `ImageRef`, `JobRef`, `ModelRef`, `NotebookRef`, `ProjectOwnerRef`, `ProjectRef`, `QuotaRef`, `RayJobRef`, `ResourceRef`, `ServingRef`, `TensorboardRef`, `WorkspaceRef`
 - **Creation Specs (6):** `HPCJobCreateSpec`, `JobCreateSpec`, `NotebookCreateSpec`, `RayJobCreateSpec`, `ServingCreateSpec`, `TensorboardCreateSpec`

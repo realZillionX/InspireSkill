@@ -14,6 +14,7 @@ from inspire.services.catalog.quotas import parse_quota
 from inspire.services.catalog.workload_quota import selected_groups, match_quota_rows, quota_values
 from .resources import Service, operation, exact, positive, platform_page
 from .models import (
+    StatusResult,
     ResourceRef,
     Resource,
     WorkspaceRef,
@@ -241,18 +242,18 @@ class ComputeJobs(Service, Generic[R, J, V]):
             raise ValidationError("Job reference workspace does not match platform detail.")
         return self._job(data, resolved.workspace_id, resolved)
 
-    @operation
-    def status(
+    def _batch_status(
         self,
         refs: Sequence[str | R],
         *,
         workspace: str | WorkspaceRef | None = None,
-    ) -> tuple[J, ...]:
+        allow_partial: bool = False,
+    ) -> tuple[J, ...] | tuple[StatusResult[J], ...]:
         if isinstance(refs, str):
             raise ValidationError("refs must be a sequence, not a string.")
         get_details = self._binding.get_details_by_ids
         if get_details is None:
-            return tuple(self.get(ref, workspace=workspace) for ref in refs)
+            raise ValidationError("Batch status requires a batch status endpoint.")
         resolved = [self._resolve(ref, workspace) for ref in refs]
         groups: dict[str, builtins.list[str]] = {}
         for ref in resolved:
@@ -262,18 +263,29 @@ class ComputeJobs(Service, Generic[R, J, V]):
             for ws, keys in groups.items()
         }
         jobs = []
+        results: builtins.list[StatusResult[J]] = []
         for ref in resolved:
             data = records[ref.workspace_id].get(ref.key)
             if not data:
+                if allow_partial:
+                    results.append(StatusResult(ref, "missing"))
+                    continue
                 raise ResourceNotFoundError("Job no longer exists or is not visible.")
             if (
                 ref.workspace_id
                 and data.get("workspace_id")
                 and data["workspace_id"] != ref.workspace_id
             ):
-                raise ValidationError("Job reference workspace does not match platform detail.")
-            jobs.append(self._job(data, ref.workspace_id, ref))
-        return tuple(jobs)
+                error = ValidationError("Job reference workspace does not match platform detail.")
+                if allow_partial:
+                    results.append(StatusResult(ref, "error", error=error))
+                    continue
+                raise error
+            job = self._job(data, ref.workspace_id, ref)
+            jobs.append(job)
+            if allow_partial:
+                results.append(StatusResult(ref, "status", value=job))
+        return tuple(results) if allow_partial else tuple(jobs)
 
     def wait(
         self,

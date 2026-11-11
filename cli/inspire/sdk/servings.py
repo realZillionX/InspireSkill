@@ -1,6 +1,8 @@
 """Inference serving creation, lifecycle, observations and invocation metadata."""
 
 from __future__ import annotations
+
+from inspire.platform.web.session.envelope import _v2_error_metadata
 from .models import Instance
 from .instances import sdk_instances, label_selectors
 from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget
@@ -380,7 +382,7 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
             result = api.create_serving(**plan.create_kwargs, session=session)
         key = core.created_serving_id(result)
         if not key:
-            raise SubmissionUncertainError(identifier, inspect="servings")
+            raise SubmissionUncertainError(identifier, inspect="servings", **_v2_error_metadata(result))
         return ServingHandle(
             plan.name, self._make_ref(ServingRef, plan.name, key, plan.workspace.ref.key), identifier
         )
