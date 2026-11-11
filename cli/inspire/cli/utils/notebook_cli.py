@@ -18,8 +18,8 @@ from inspire.cli.utils.errors import exit_with_error
 # Surface in every command that touches a web session, so users get a
 # consistent next-action regardless of where they hit the wall.
 WEB_AUTH_HINT = (
-    "Run `inspire login` (add `--account <name>` for a non-default account); create the "
-    "account first with `inspire account add <name>` if it does not exist."
+    "Run `inspire login` (add `--account <name>` for another account; "
+    "a missing account is created)."
 )
 
 

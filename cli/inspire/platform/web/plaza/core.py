@@ -97,8 +97,8 @@ class PlazaNotSignedIn(PlazaError):
 PLAZA_UNAVAILABLE_MESSAGE = (
     "The data plaza (aip.sii.edu.cn) only accepts CAS sign-in, which the OAuth device "
     "login does not provide, so dataset catalogue queries (dataset list/show/tags/"
-    "applications) are unavailable for now. Browse https://aip.sii.edu.cn/ instead; "
-    "--dataset mounts and `inspire dataset validate` still work."
+    "applications) are unavailable for now. Use the Dataset Hub web UI (aip.sii.edu.cn) "
+    "instead; --dataset mounts and `inspire dataset validate` still work."
 )
 
 # The CAS handshake below is kept for a future interactive CAS sign-in; device
