@@ -1992,7 +1992,7 @@ def create_serving(
         # default so an untouched create stays byte-for-byte what it was.
         if auto_scaling is not None:
             payload["enable_auto_scaling"] = bool(auto_scaling)
-        payload.update(public_path_mount_fields(public_path_mount_mode, public_path_readonly))
+        payload.update(public_path_mount_fields(public_path_mount_mode))
 
         if dry_run:
             plan = sanitize_public_data(

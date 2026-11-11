@@ -133,7 +133,6 @@ _PUBLIC_FIELDS_BY_KIND = {
         ("description", "description"),
         ("keep_after_success", "keep_after_success_hours"),
         ("keep_after_failure", "keep_after_failure_hours"),
-        ("public_path_readonly", "public_path_readonly"),
         ("command", "command"),
     ),
     "hpc": (
@@ -150,7 +149,6 @@ _PUBLIC_FIELDS_BY_KIND = {
         ("auto_stop", "auto_stop"),
         ("auto_stop_after", "auto_stop_after_minutes"),
         ("enable_notification", "notifications"),
-        ("public_path_readonly", "public_path_readonly"),
         ("project_path_readonly", "project_path_readonly"),
         ("wait", "wait"),
         ("post_start", "post_start"),
@@ -513,6 +511,7 @@ def _public_batch_plan(
     *,
     kind: str,
     name: str,
+    payload: dict[str, Any],
     overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     output: dict[str, Any] = {"name": name}
@@ -523,7 +522,6 @@ def _public_batch_plan(
         ("quota", "quota"),
         ("image", "image"),
         ("model", "model"),
-        ("public_path_mount_mode", "public_path_mount_mode"),
     )
     for source, target in (*common_fields, *_PUBLIC_FIELDS_BY_KIND[kind]):
         value = item.get(source)
@@ -534,6 +532,8 @@ def _public_batch_plan(
             output.pop(key, None)
         else:
             output[key] = value
+    if "publicpath_mount_mode" in payload:
+        output["public_path_mount_mode"] = payload["publicpath_mount_mode"]
     return json_formatter.sanitize_json_data(output)
 
 
@@ -783,7 +783,6 @@ def _prepare_training_item(
         description=_optional_str(item, "description"),
         keep_after_success_hours=_optional_hours(item, "keep_after_success"),
         keep_after_failure_hours=_optional_hours(item, "keep_after_failure"),
-        public_path_readonly=_tristate_bool(item, "public_path_readonly"),
         public_path_mount_mode=_batch_public_path_mode(item),
         fault_tolerance_retry_interval_sec=_optional_int(
             item, "fault_tolerance_retry_interval", min_value=1
@@ -893,7 +892,6 @@ def _prepare_hpc_item(
         ),
         description=_optional_str(item, "description"),
         keep_after_finish_hours=_optional_hours(item, "keep_after_finish"),
-        public_path_readonly=_tristate_bool(item, "public_path_readonly"),
         public_path_mount_mode=_batch_public_path_mode(item),
         session=session,
     )
@@ -1246,7 +1244,6 @@ def _prepare_ray_item(
         group=_require_condition_str(item, "group", kind="ray"),
         quota=_require_condition_str(item, "quota", kind="ray"),
         shm_size=_optional_int(item, "shm_size", min_value=1),
-        public_path_readonly=_tristate_bool(item, "public_path_readonly"),
         public_path_mount_mode=_batch_public_path_mode(item),
         workers=_ray_worker_specs(
             item,
@@ -1532,6 +1529,7 @@ def job_batch(
                         item,
                         kind="job",
                         name=str(plan.create_kwargs["name"]),
+                        payload=plan.create_kwargs,
                         overrides={
                             "workspace": workspace_label(
                                 session,
@@ -1654,6 +1652,7 @@ def hpc_batch(
                         item,
                         kind="hpc",
                         name=str(create_kwargs["job_name"]),
+                        payload=create_kwargs,
                         overrides={
                             "priority": create_kwargs.get("task_priority"),
                             "instances": create_kwargs.get("instance_count"),
@@ -1766,6 +1765,7 @@ def notebook_batch(
                         item,
                         kind="notebook",
                         name=str(plan["name"]),
+                        payload=plan["create_kwargs"],
                         overrides={
                             "workspace": plan["workspace_name"],
                             "project": plan["project_name"],
@@ -1870,6 +1870,7 @@ def ray_batch(
                         item,
                         kind="ray",
                         name=str(body["name"]),
+                        payload=body,
                     )
                 )
             else:
@@ -1966,6 +1967,7 @@ def serving_batch(
                         item,
                         kind="serving",
                         name=str(payload["name"]),
+                        payload=payload,
                     )
                 )
             else:

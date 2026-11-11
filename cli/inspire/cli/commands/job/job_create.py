@@ -738,6 +738,5 @@ def create(
         description=description,
         keep_after_success=keep_after_success,
         keep_after_failure=keep_after_failure,
-        public_path_readonly=public_path_readonly,
         public_path_mount_mode=public_path_mount_mode,
     )

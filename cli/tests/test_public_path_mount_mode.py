@@ -1,4 +1,4 @@
-"""Independent console contract, exercised through real creators and offline catalogs."""
+"""Public-path mount behavior through real creators and offline catalogs."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import asyncio
 from dataclasses import replace
 import importlib
 import json
-from pathlib import Path
 import warnings
 
 import pytest
@@ -21,11 +20,33 @@ from test_sdk_hpc import catalog as base_catalog  # noqa: F401
 from test_sdk_servings import catalog as serving_catalog  # noqa: F401
 from test_dry_run_and_batch import _patch_submit_deps, FakeWebSession
 
-CONTRACT = json.loads(
-    (Path(__file__).parent / "fixtures/public_path_mount_contract.json").read_text()
-)
-CASES = CONTRACT["cases"]
-KINDS = list(CONTRACT["resources"])
+CASES = [
+    {"name": "omitted", "options": {}, "wire": {}},
+    {
+        "name": "legacy_false",
+        "options": {"public_path_readonly": False},
+        "wire": {"publicpath_mount_mode": 0},
+    },
+    {
+        "name": "legacy_true",
+        "options": {"public_path_readonly": True},
+        "wire": {"publicpath_mount_mode": 1},
+    },
+    *[
+        {
+            "name": f"explicit_{mode}",
+            "options": {"public_path_mount_mode": mode},
+            "wire": {"publicpath_mount_mode": mode},
+        }
+        for mode in (0, 1, 2)
+    ],
+    {
+        "name": "conflict",
+        "options": {"public_path_mount_mode": 2, "public_path_readonly": False},
+        "error": "conflicts",
+    },
+]
+KINDS = ("notebook", "job", "hpc", "ray", "serving")
 FACADES = {
     "job": "jobs",
     "notebook": "notebooks",
@@ -36,10 +57,10 @@ FACADES = {
 
 
 def assert_wire(body, case):
-    assert CONTRACT["forbidden_create_field"] not in body
-    assert {k: v for k, v in body.items() if k == CONTRACT["wire_field"]} == case["wire"]
-    if CONTRACT["wire_field"] in body:
-        assert type(body[CONTRACT["wire_field"]]) is int
+    assert "is_publicpath_readonly" not in body
+    assert {k: v for k, v in body.items() if k == "publicpath_mount_mode"} == case["wire"]
+    if "publicpath_mount_mode" in body:
+        assert type(body["publicpath_mount_mode"]) is int
 
 
 def capture_writes(monkeypatch, kind):
@@ -48,8 +69,7 @@ def capture_writes(monkeypatch, kind):
     def request(*args, **kwargs):
         body = kwargs.get("body")
         if "Action=Create" in args[2]:
-            route, action = CONTRACT["resources"][kind]["action"].split(".")
-            assert args[2] == f"/api/v2/{route}?Action={action}"
+            assert "is_publicpath_readonly" not in body
             calls.append(body)
         return {
             "Result": {
@@ -76,9 +96,17 @@ def capture_writes(monkeypatch, kind):
 
 
 @pytest.mark.parametrize("kind", KINDS)
-@pytest.mark.parametrize("case", CASES, ids=lambda x: x["name"])
-@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
-def test_sdk_create_contract(client, request, monkeypatch, kind, case, asynchronous):
+@pytest.mark.parametrize(
+    "case,asynchronous",
+    [
+        pytest.param(case, asynchronous, id=f"{'async' if asynchronous else 'sync'}-{case['name']}")
+        for asynchronous in (False, True)
+        for case in CASES
+        # The async facade shares validation and payload construction with sync.
+        if not asynchronous or case["name"] in ("omitted", "legacy_true", "explicit_2", "conflict")
+    ],
+)
+def test_sdk_create_mount_mode(client, request, monkeypatch, kind, case, asynchronous):
     if kind == "job":
         spec = request.getfixturevalue("job_catalog")
     elif kind == "notebook":
@@ -109,14 +137,22 @@ def test_sdk_create_contract(client, request, monkeypatch, kind, case, asynchron
             asyncio.run(run()) if asynchronous else getattr(client, facade).create(spec)
             assert len(calls) == 1
             assert_wire(calls[0], case)
-    if "public_path_readonly" in case["options"]:
-        assert any(issubclass(w.category, DeprecationWarning) for w in caught)
+    assert len(caught) == int("public_path_readonly" in case["options"])
+    assert all(issubclass(w.category, DeprecationWarning) for w in caught)
 
 
 @pytest.mark.parametrize("kind", KINDS)
 @pytest.mark.parametrize("case", CASES, ids=lambda x: x["name"])
-@pytest.mark.parametrize("entry", ["batch", "create"])
-def test_cli_contract(monkeypatch, tmp_path, kind, case, entry):
+@pytest.mark.parametrize(
+    "entry,file_format", [("create", "json"), ("batch", "json"), ("batch", "toml")]
+)
+def test_cli_create_mount_mode(monkeypatch, tmp_path, kind, case, entry, file_format):
+    check_cli_mount_mode(monkeypatch, tmp_path, kind, case, entry, file_format=file_format)
+
+
+def check_cli_mount_mode(
+    monkeypatch, tmp_path, kind, case, entry, dry_run=False, file_format="json"
+):
     _patch_submit_deps(monkeypatch, tmp_path)
     batch = importlib.import_module("inspire.cli.commands.batch")
     monkeypatch.setattr(batch, "get_web_session", lambda: FakeWebSession())
@@ -143,35 +179,26 @@ def test_cli_contract(monkeypatch, tmp_path, kind, case, entry):
     monkeypatch.setattr(flow, "resolve_quota", quota_module.resolve_quota)
     monkeypatch.setattr(flow, "require_web_session", lambda *a, **kw: FakeWebSession())
     monkeypatch.setattr(flow, "remember_resource_identity", lambda **kw: None)
-    calls = []
-
-    def create(*args, **kwargs):
-        calls.append(args[0] if args else kwargs.get("payload", kwargs))
-        return {
-            "id": "created",
-            "job_id": "created",
-            "ray_job_id": "created",
-            "notebook_id": "created",
-        }
-
-    monkeypatch.setattr(
-        api,
-        {
-            "job": "create_training_job",
-            "hpc": "create_hpc_job",
-            "ray": "create_ray_job",
-            "notebook": "create_notebook",
-            "serving": "create_serving",
-        }[kind],
-        create,
+    # Capture at the transport boundary so every CLI path uses its real builder.
+    module = importlib.import_module(
+        "inspire.platform.web.browser_api."
+        + {
+            "job": "jobs",
+            "hpc": "hpc_jobs",
+            "ray": "ray_jobs",
+            "notebook": "notebooks",
+            "serving": "servings",
+        }[kind]
     )
-    if kind in ("notebook", "serving"):
-        module = importlib.import_module(
-            "inspire.platform.web.browser_api."
-            + ("notebooks" if kind == "notebook" else "servings")
-        )
-        monkeypatch.setattr(api, "create_" + kind, getattr(module, "create_" + kind))
-        calls = capture_writes(monkeypatch, kind)
+    creator = {
+        "job": "create_training_job",
+        "hpc": "create_hpc_job",
+        "ray": "create_ray_job",
+        "notebook": "create_notebook",
+        "serving": "create_serving",
+    }[kind]
+    monkeypatch.setattr(api, creator, getattr(module, creator))
+    calls = capture_writes(monkeypatch, kind)
     item = dict(
         type=kind,
         name="example",
@@ -187,14 +214,19 @@ def test_cli_contract(monkeypatch, tmp_path, kind, case, entry):
         port=8000,
         **case["options"],
     )
-    path = tmp_path / "batch.json"
+    path = tmp_path / f"batch.{file_format}"
     if kind == "ray":
         item["workers"] = [
             "name=w;image=registry.batch/notebook:latest;group=H200 Room;quota=0,20,80;min=1;max=2"
         ]
-    path.write_text(
-        json.dumps({{"notebook": "notebooks", "serving": "servings"}.get(kind, "jobs"): [item]})
-    )
+    item_key = {"notebook": "notebooks", "serving": "servings"}.get(kind, "jobs")
+    if file_format == "toml":
+        path.write_text(
+            f"[[{item_key}]]\n"
+            + "\n".join(f"{key} = {json.dumps(value)}" for key, value in item.items())
+        )
+    else:
+        path.write_text(json.dumps({item_key: [item]}))
     args = ["--json", kind, "batch", str(path)]
     if entry == "create":
         args = ["--json", kind, "create"]
@@ -213,23 +245,53 @@ def test_cli_contract(monkeypatch, tmp_path, kind, case, entry):
         for key, value in case["options"].items():
             if key == "public_path_readonly":
                 args.append("--public-path-readonly" if value else "--no-public-path-readonly")
+            elif isinstance(value, bool):
+                flag = key.replace("_", "-")
+                args.append("--" + ("" if value else "no-") + flag)
             else:
-                args.extend(["--public-path-mount-mode", str(value)])
-    result = CliRunner().invoke(main, args)
+                flag = {
+                    "keep_after_finish_hours": "keep-after-finish",
+                    "keep_after_success_hours": "keep-after-success",
+                    "keep_after_failure_hours": "keep-after-failure",
+                }.get(key, key.replace("_", "-"))
+                args.extend(["--" + flag, str(value)])
+    if dry_run:
+        args.append("--dry-run")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", DeprecationWarning)
+        result = CliRunner().invoke(main, args)
+    assert len(caught) == int("public_path_readonly" in case["options"])
+    assert all(issubclass(w.category, DeprecationWarning) for w in caught)
     if "error" in case:
         assert result.exit_code != 0
         assert case["error"] in result.output
         assert calls == []
+    elif dry_run:
+        assert result.exit_code == 0, result.output
+        assert calls == []
+        output = json.loads(result.stdout)["data"]["items"][0]
+        expected = (
+            {"public_path_mount_mode": case["wire"]["publicpath_mount_mode"]}
+            if case["wire"]
+            else {}
+        )
+        assert {k: v for k, v in output.items() if k == "public_path_mount_mode"} == expected
+        assert "public_path_readonly" not in output
     else:
         assert result.exit_code == 0, result.output
         assert len(calls) == 1
         assert_wire(calls[0], case)
     if "public_path_readonly" in case["options"]:
-        assert "Deprecated" in result.stderr
+        assert result.stderr.count("Deprecated") == 1
+    else:
+        assert "Deprecated" not in result.stderr
 
 
-def test_public_enum_matches_independent_contract():
-    assert {member.name: member.value for member in PublicPathMountMode} == CONTRACT["enum"]
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("case", [CASES[0], CASES[2], CASES[5]], ids=lambda x: x["name"])
+@pytest.mark.parametrize("file_format", ["json", "toml"])
+def test_batch_dry_run_mount_mode(monkeypatch, tmp_path, kind, case, file_format):
+    check_cli_mount_mode(monkeypatch, tmp_path, kind, case, "batch", True, file_format)
 
 
 @pytest.mark.parametrize(

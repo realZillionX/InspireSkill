@@ -320,7 +320,6 @@ def create_notebook_cmd(
         dataset_mounts=dataset_mounts,
         enable_notification=enable_notification,
         auto_stop_after=auto_stop_after,
-        public_path_readonly=public_path_readonly,
         public_path_mount_mode=public_path_mount_mode,
         project_path_readonly=project_path_readonly,
     )

@@ -991,7 +991,6 @@ def create_hpc(
             dataset_info=dataset_info,
             description=description,
             keep_after_finish_hours=keep_after_finish,
-            public_path_readonly=public_path_readonly,
             public_path_mount_mode=public_path_mount_mode,
             session=session,
         )

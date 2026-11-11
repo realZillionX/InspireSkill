@@ -944,7 +944,6 @@ def create_ray(
             quota=quota,
             shm_size=shm_size,
             workers=workers,
-            public_path_readonly=public_path_readonly,
             public_path_mount_mode=public_path_mount_mode,
         )
 
