@@ -200,6 +200,23 @@ def test_qr_grid_and_fallback(tmp_path):
     assert render_qr(path) is None
 
 
+def test_qr_grid_with_fractional_module_size(tmp_path):
+    """Browser captures scale a module to a fractional pixel width (234 px / 33)."""
+    size = 33
+    grid = Image.new("L", (size, size), 255)
+    for ox, oy in ((0, 0), (size - 7, 0), (0, size - 7)):
+        for y in range(7):
+            for x in range(7):
+                if x in (0, 6) or y in (0, 6) or (2 <= x <= 4 and 2 <= y <= 4):
+                    grid.putpixel((ox + x, oy + y), 0)
+    grid.putpixel((size - 1, size - 1), 0)
+    path = tmp_path / "qr.png"
+    grid.resize((234, 234), Image.Resampling.NEAREST).save(path)
+    result = render_qr(path)
+    assert result is not None
+    assert len(result.splitlines()) == (size + 8 + 1) // 2
+
+
 def test_bare_cas_json_errors_before_login():
     result = CliRunner().invoke(main, ["login", "--cas", "--json"])
     assert result.exit_code != 0 and "Specify --cas sms or --cas feishu" in result.output

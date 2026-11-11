@@ -21,6 +21,10 @@ from .cas import CAS_HOST, LOGIN_URL, USER_AGENT, CasError, CasSession, cache_pa
 from .proxy import get_playwright_proxy
 
 
+EXPIRED_QR_SELECTOR = ".qr-box-refresh, .scan-refresh-icon"
+QR_CHECK_INTERVAL = 2.0
+
+
 def render_qr(path: Path) -> str | None:
     """Sample a verified QR grid; retain a four-module white quiet zone."""
     with Image.open(path) as source:
@@ -148,7 +152,18 @@ def feishu_qr_login(
                         if any(c["name"] == "CASTGC" and c["value"] for c in cookies):
                             return CasSession(cookies, time.time(), "feishu")
                         raise CasError("Feishu login did not return a CAS session.")
-                    if time.monotonic() - refreshed >= 60:
+                    # Feishu codes expire after about 60 s behind a refresh mask;
+                    # click it so the user always sees a live code.
+                    expired = frame.query_selector(EXPIRED_QR_SELECTOR) if frame else None
+                    if expired is not None:
+                        try:
+                            expired.click(timeout=remaining_ms(5))
+                        except PlaywrightError:
+                            pass
+                        page.wait_for_timeout(remaining_ms(1.5))
+                        refreshed = float("-inf")
+                        continue
+                    if time.monotonic() - refreshed >= QR_CHECK_INTERVAL:
                         target = element
                         if frame:
                             candidate = frame.query_selector(
