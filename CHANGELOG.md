@@ -2,6 +2,11 @@
 
 各版本条目记录该版本发布时的用户可见变化；当前用法以 README 和 CLI Help 为准。
 
+## Unreleased
+
+新增与修复：
+- 修复 `inspire login --cas feishu` 扫码确认后必定失败（`Feishu QR login failed`）：确认后飞书 iframe 跳转到 CAS，轮询中的页面查询会抛出 “Execution context was destroyed”；现在跳转期间的查询视为暂未匹配并继续轮询，直到拦截到回跳并保存 CAS 会话（#105）。
+
 ## v7.2.0
 
 不兼容变化：
