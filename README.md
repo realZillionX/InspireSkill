@@ -83,7 +83,8 @@ CAS credentials are stored separately in the account's private `cas_session.json
 
 ```bash
 inspire login --account <name>
-inspire account check
+inspire account check                    # 实时验证 OAuth 与 CAS，显示有效期和刷新结果
+inspire account check --offline          # 只读本地状态，不联网或刷新
 inspire init
 inspire resources availability --workspace 分布式训练空间 --include-cpu
 ```
@@ -277,7 +278,7 @@ with InspireClient(account="research") as client:
 
 账号 proxy 也可以直接写 `socks5://127.0.0.1:<port>`。CLI 的 HTTP 请求会自动改用 `socks5h://`，由代理端解析域名，因此只能在 VPN 内解析的平台域名也能访问；浏览器仍使用原地址。远程 Shell / exec 的 WebSocket 目前只支持 HTTP(S) 代理，需要这些功能时请配置 HTTP 代理端口。
 
-账号配置中的 `proxy` 优先于 Shell 环境变量；未设置账号 `proxy` 时，`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 仍会生效，直连环境下可通过 `NO_PROXY=.sii.edu.cn` 绕过系统代理。可随时运行 `inspire account check --details` 检查当前生效的代理配置与路由状态。
+账号配置中的 `proxy` 优先于 Shell 环境变量；未设置账号 `proxy` 时，`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 仍会生效，直连环境下可通过 `NO_PROXY=.sii.edu.cn` 绕过系统代理。账号列表也会显示本地 OAuth／CAS 状态；`account check --offline` 不验证平台认证（JSON `authenticated: null`），有效或可刷新时退出 0，其余登录状态退出认证错误码。有效期时间含本地时区偏移，剩余秒数过期后归零。可随时运行 `inspire account check --details` 检查当前生效的代理配置与路由状态。
 
 > 代理凭据（Host / User / Password）**请向所在实验室或组织管理员获取**，切勿提交到公开仓库或对话记录中。
 

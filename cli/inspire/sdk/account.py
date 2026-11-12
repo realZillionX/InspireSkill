@@ -11,6 +11,7 @@ from inspire.platform.web import browser_api
 from inspire.platform.web.browser_api import api_keys
 from inspire.platform.web.session import SessionExpiredError
 from inspire.services.account import account_check, account_context
+from inspire.services.account.auth_status import inspect_auth_status
 from .exceptions import AuthenticationError
 from .models import Page, WorkspaceRef
 from .models_resources import (
@@ -41,6 +42,7 @@ class AccountInformation(Service):
         cfg, sources = perform_sync(blocking_call(
             Config.from_files_and_env, require_credentials=False, account=self.client.account
         ))
+        before = perform_sync(blocking_call(inspect_auth_status, self.client.account))
         issues = []
         placeholder = account_check.find_placeholder_host_issues(cfg, sources)
         if placeholder:
@@ -50,17 +52,25 @@ class AccountInformation(Service):
         except ConfigError as error:
             issues.append(str(error))
         if issues:
-            return AccountCheck(False, None, None, tuple(issues))
+            return AccountCheck(False, None, None, tuple(issues), **before, refreshed=False)
         try:
             session = self.session
             user = browser_api.get_current_user(session=session, refresh=True)
         except (SessionExpiredError, ValueError, AuthenticationError) as error:
-            return AccountCheck(False, None, None, (str(error),))
+            after = perform_sync(blocking_call(inspect_auth_status, self.client.account))
+            return AccountCheck(
+                False, None, None, (str(error),), **after,
+                refreshed=before["oauth"]["issued_at"] != after["oauth"]["issued_at"],
+            )
         # Return identity fields only: authentication material is never metadata.
         identity = {
             k: user[k] for k in ("id", "user_id", "name", "user_name", "username") if k in user
         }
-        return AccountCheck(True, identity, session.created_at, ())
+        after = perform_sync(blocking_call(inspect_auth_status, self.client.account))
+        return AccountCheck(
+            True, identity, session.created_at, (), **after,
+            refreshed=before["oauth"]["issued_at"] != after["oauth"]["issued_at"],
+        )
 
     @operation
     def context(self, *, limit: int | None = None) -> AccountContext:

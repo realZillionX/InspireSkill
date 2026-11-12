@@ -175,7 +175,8 @@ def main(
     # `uninstall` is excluded for a different reason than `update`: the check
     # writes ~/.inspire/update-status.json, which the uninstall is on its way
     # to delete, and a detached child would outlive the venv it runs from.
-    if not (len(sys.argv) > 1 and sys.argv[1] in {"update", "uninstall"}):
+    # Account inspection must not launch background network or cache writes.
+    if click_ctx.invoked_subcommand not in {"account", "update", "uninstall"}:
         # Optional update checks must not prevent the requested command from running.
         with contextlib.suppress(Exception):
             if not json_output:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import click
 
+from inspire.services.account.auth_status import inspect_auth_status, format_duration, login_hint
 from inspire.accounts import default_account, list_accounts
 from inspire.cli.context import Context, pass_context
 from inspire.services.utils import json_formatter
@@ -38,6 +39,16 @@ def list_cmd(ctx: Context, limit: int | None, show_all: bool) -> None:
         [{"name": name, "active": name == active} for name in names],
         limit=output_limit,
     )
+    statuses = {}
+    for item in page.items:
+        name = str(item["name"])
+        status = inspect_auth_status(name)
+        statuses[name] = status
+        item.update(
+            oauth_state=status["oauth"]["state"],
+            refresh_expires_at=status["oauth"]["refresh_expires_at"],
+            cas_state=status["cas"]["state"],
+        )
     payload = {"items": page.items, **page.metadata()}
     if not names:
         emit_success(
@@ -46,10 +57,16 @@ def list_cmd(ctx: Context, limit: int | None, show_all: bool) -> None:
             text="No accounts configured.",
         )
         return
-    lines = [
-        f" {'*' if item['active'] else ' '} {item['name']}"
-        for item in page.items
-    ]
+    lines = []
+    for item in page.items:
+        remaining = statuses[str(item["name"])]["oauth"]["refresh_expires_in"]
+        detail = f" (refresh {format_duration(remaining)})" if remaining is not None else ""
+        if item["oauth_state"] == "legacy":
+            detail = f" (run {login_hint(str(item['name']))})"
+        lines.append(
+            f" {'*' if item['active'] else ' '} {item['name']}"
+            f"   oauth: {item['oauth_state']}{detail}   cas: {item['cas_state']}"
+        )
     notice = truncation_notice(page)
     if notice:
         lines.append(notice)

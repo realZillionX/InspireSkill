@@ -2,6 +2,12 @@
 
 各版本条目记录该版本发布时的用户可见变化；当前用法以 README 和 CLI Help 为准。
 
+## Unreleased
+
+新增与修复：
+- `account check` 展示 OAuth 访问／刷新令牌有效期、登录身份、本次刷新结果及 CAS 数据广场登录状态；新增 `--offline`，仅检查本地会话，不联网、不刷新、不写文件。旧会话明确提示重新 OAuth 登录。
+- `account list` 增加本地 OAuth／CAS 状态与刷新有效期；SDK `AccountCheck` 增加可选 `oauth`、`cas` 和 `refreshed` 字段。
+
 ## v7.2.0
 
 不兼容变化：
