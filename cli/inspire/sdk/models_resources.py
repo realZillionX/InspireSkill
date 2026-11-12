@@ -75,6 +75,9 @@ class AccountCheck:
     user: dict[str, Any] | None
     session_created_at: float | None
     issues: tuple[str, ...]
+    oauth: dict[str, Any] | None = None
+    cas: dict[str, Any] | None = None
+    refreshed: bool | None = None
 
 
 @dataclass(frozen=True)

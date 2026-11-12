@@ -379,7 +379,10 @@ class TestAccountListCommand:
         result = runner.invoke(account, ["list"])
         assert result.exit_code == 0
         lines = [line for line in result.output.splitlines() if line.strip()]
-        assert lines == ["   alice", " * bob"]
+        assert lines == [
+            "   alice   oauth: missing   cas: missing",
+            " * bob   oauth: missing   cas: missing",
+        ]
 
     def test_list_is_bounded_and_supports_all(self, home: Path, runner: CliRunner) -> None:
         for index in range(22):
@@ -685,8 +688,10 @@ class TestAccountJsonOutput:
             "success": True,
             "data": {
                 "items": [
-                    {"name": "alice", "active": True},
-                    {"name": "bob", "active": False},
+                    {"name": "alice", "active": True, "oauth_state": "missing",
+                     "refresh_expires_at": None, "cas_state": "missing"},
+                    {"name": "bob", "active": False, "oauth_state": "missing",
+                     "refresh_expires_at": None, "cas_state": "missing"},
                 ]
             },
         }

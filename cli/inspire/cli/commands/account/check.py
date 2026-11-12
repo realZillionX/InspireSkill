@@ -34,6 +34,14 @@ from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 from inspire.platform.web.session.proxy import describe_effective_proxy_config
 
+from inspire.services.account.auth_status import (
+    inspect_auth_status,
+    legacy_message,
+    format_auth_status,
+    login_hint,
+)
+from inspire.platform.web.session.cas import CasSession, cas_ticket_valid
+
 from .proxy_output import (
     format_effective_proxy_lines,
     public_effective_proxy_summary,
@@ -74,8 +82,11 @@ def _build_base_url_resolution(
     is_flag=True,
     help="Show source precedence, proxy routing, and config-file presence.",
 )
+@click.option(
+    "--offline", is_flag=True, help="Inspect local login state without network or writes."
+)
 @pass_context
-def check(ctx: Context, details: bool) -> None:
+def check(ctx: Context, details: bool, offline: bool) -> None:
     """Check the active account's settings and platform authentication.
 
     Verifies required account settings, validates host-shaped values, and
@@ -107,16 +118,33 @@ def check(ctx: Context, details: bool) -> None:
 
         validate_required_credentials(cfg)
 
+        account = current_account()
+        before = inspect_auth_status(account)
         auth_ok = True
         auth_error = None
-        try:
-            session = get_web_session()
-            # A health check must prove the session against the platform; the
-            # cached identity used by normal owner-filtered lists is not enough.
-            browser_api_module.get_current_user(session=session, refresh=True)
-        except (SessionExpiredError, ValueError) as e:
-            auth_ok = False
-            auth_error = str(e)
+        if offline:
+            auth_ok = before["oauth"]["state"] in {"valid", "refreshable"}
+        else:
+            try:
+                session = get_web_session()
+                browser_api_module.get_current_user(session=session, refresh=True)
+            except (SessionExpiredError, ValueError) as e:
+                auth_ok = False
+                auth_error = str(e)
+        status = before if offline else inspect_auth_status(account)
+        refreshed = before["oauth"]["issued_at"] != status["oauth"]["issued_at"]
+        if not auth_ok and before["oauth"]["state"] == "legacy":
+            auth_error = legacy_message(account)
+        if not offline and status["cas"]["state"] == "present":
+            try:
+                cached_cas = CasSession.load(account=account)
+                cas_ok = cached_cas is not None and cas_ticket_valid(cached_cas, account=account)
+            except Exception:
+                # CAS is advisory and must never change the OAuth check outcome.
+                cas_ok = False
+            status["cas"]["state"] = "valid" if cas_ok else "expired"
+            if not cas_ok:
+                status["cas"]["note"] = f"Run {login_hint(account, cas=True)}."
 
         # A failed check has to say why without a second run: the reason the
         # login did not go through and the route the request actually took are
@@ -124,9 +152,7 @@ def check(ctx: Context, details: bool) -> None:
         # means re-running against a platform that just refused you.
         verbose = show_details or not auth_ok
         effective_proxy = (
-            public_effective_proxy_summary(
-                describe_effective_proxy_config(base_url=cfg.base_url)
-            )
+            public_effective_proxy_summary(describe_effective_proxy_config(base_url=cfg.base_url))
             if verbose
             else None
         )
@@ -142,8 +168,12 @@ def check(ctx: Context, details: bool) -> None:
         result: dict[str, object] = {
             "account": active_account,
             "configured": True,
-            "authenticated": auth_ok,
+            "authenticated": None if offline else auth_ok,
+            "mode": "offline" if offline else "live",
+            **status,
         }
+        if not offline:
+            result["refreshed"] = refreshed
         if verbose:
             result["effective_proxy"] = effective_proxy
             if auth_error:
@@ -163,18 +193,20 @@ def check(ctx: Context, details: bool) -> None:
         else:
             click.echo(f"Account: {active_account or '-'}")
             click.echo(human_formatter.format_success("Configuration: OK"))
-            if auth_ok:
-                click.echo(human_formatter.format_success("Authentication: OK"))
+            if offline:
+                click.echo("Authentication: not verified (offline)")
+            elif auth_ok:
+                suffix = " (refreshed now)" if refreshed else ""
+                click.echo(human_formatter.format_success("Authentication: OK" + suffix))
             else:
                 click.echo(human_formatter.format_error("Authentication: FAILED"))
+            for line in format_auth_status(status, account):
+                click.echo(line)
             if show_details:
                 click.echo(
-                    "Source: "
-                    f"{base_url_resolution['source']} (environment overrides account TOML)"
+                    f"Source: {base_url_resolution['source']} (environment overrides account TOML)"
                 )
-                click.echo(
-                    "Config file: " f"account={'yes' if account_path else 'no'}"
-                )
+                click.echo(f"Config file: account={'yes' if account_path else 'no'}")
                 if default_base_url_hint:
                     click.echo(click.style(f"Note: {default_base_url_hint}", fg="yellow"))
             if auth_error:

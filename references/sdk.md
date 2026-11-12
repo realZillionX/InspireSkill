@@ -259,7 +259,7 @@ The catalogue methods below (`applications`, `get`, `list`, `tags`) require a st
 
 | Method | Return Type | Equivalent CLI Command |
 | --- | --- | --- |
-| `account_info.check()` | `AccountCheck` | `account check` |
+| `account_info.check()` | `AccountCheck`（附带可选 `oauth`、本地 `cas`、`refreshed`；CAS 不联网探测） | `account check` |
 | `account_info.context(*, limit=None)` | `AccountContext` | `account context` |
 | `account_info.current()` | `AccountInfo` | `account current` |
 | `account_info.permissions(workspace=None)` | `tuple[Permission, ...]` | `account permissions` |
