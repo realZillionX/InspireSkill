@@ -871,3 +871,50 @@ def test_feishu_mask_appearing_during_capture_is_never_published(monkeypatch):
     assert publish.call_args.args[2] == b"fresh"
     mask.click.assert_called_once()
     browser.close.assert_called_once()
+
+
+def test_feishu_navigation_after_scan_keeps_polling(monkeypatch):
+    """Issue #105: queries racing the post-scan iframe navigation must not abort login."""
+    from playwright.sync_api import Error as PlaywrightError
+
+    from inspire.platform.web.session import cas_qr
+
+    clock = [0.0]
+    monkeypatch.setattr(cas_qr.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(cas_qr, "get_playwright_proxy", lambda account: None)
+    playwright = Mock()
+    playwright.__enter__ = Mock(return_value=playwright)
+    playwright.__exit__ = Mock(return_value=False)
+    browser = playwright.chromium.launch.return_value
+    context = browser.new_context.return_value
+    page = context.new_page.return_value
+    element = page.wait_for_selector.return_value
+    frame = element.content_frame.return_value
+    scanned = [False]
+    navigating_queries = []
+
+    def frame_query(selector):
+        if not scanned[0]:
+            return None
+        navigating_queries.append(selector)
+        if len(navigating_queries) == 3:
+            # The aip.sii.edu.cn redirect arrives after a few failed queries.
+            context.route.call_args.args[1](Mock())
+        raise PlaywrightError(
+            "Frame.query_selector: Execution context was destroyed, "
+            "most likely because of a navigation"
+        )
+
+    frame.query_selector.side_effect = frame_query
+    element.screenshot.return_value = b"qr"
+    page.query_selector.side_effect = PlaywrightError("Execution context was destroyed")
+    page.wait_for_timeout.side_effect = lambda ms: clock.__setitem__(0, clock[0] + ms / 1000)
+    monkeypatch.setattr(cas_qr, "sync_playwright", lambda: playwright)
+
+    def show(path):
+        scanned[0] = True
+
+    context.cookies.return_value = [dict(COOKIE, expires=-1)]
+    stored = cas_qr.feishu_qr_login(show, "tester", timeout=30)
+    assert stored.method == "feishu"
+    assert len(navigating_queries) >= 3
