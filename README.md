@@ -56,7 +56,7 @@ curl -fsSL https://raw.githubusercontent.com/realZillionX/InspireSkill/main/scri
 
 安装脚本会从 PyPI 安装 `inspire-skill`，并将 `SKILL.md` 与 `references/` 写入自动检测到的 Agent 客户端目录。可通过 `bash -s -- --harness codex,claude` 指定目标客户端；`--no-cli` 仅安装 Skill 文档，`--no-schedule` 跳过 macOS 每日更新检查。
 
-未检测到 Agent 客户端时，脚本仍会安装 CLI，跳过 Skill 文件并提示；之后可重新运行脚本并传入 `--harness <name>` 补装。若同时传入 `--no-cli` 且未检测到或指定客户端，则报错退出。
+未检测到 Agent 客户端时，脚本仍会安装 CLI，跳过 Skill 文件并提示；安装 Agent 后运行 `inspire update`，或重新运行脚本并传入 `--harness <name>` 补装。若同时传入 `--no-cli` 且未检测到或指定客户端，则报错退出。
 
 Python 包首次下载约 90 MB，Playwright Chromium 运行时约 150 MB（随平台、版本和缓存而变化），慢速网络下可能需要数分钟。可用 `--index-url URL` 为本次 CLI 安装指定较近的 PyPI 镜像，例如：
 

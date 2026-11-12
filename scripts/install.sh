@@ -279,7 +279,7 @@ if [[ -z "$HARNESSES" ]]; then
   if [[ -n "$HARNESSES" ]]; then
     log "auto-detected harnesses: $(bold "$HARNESSES")"
   elif (( INSTALL_CLI )); then
-    warn "no agent harness detected; installing CLI only. Skill was not installed. Rerun with --harness <name> to add it later."
+    warn "no agent harness detected; installing CLI only. Skill was not installed; after installing an agent run inspire update, or rerun with --harness <name>."
   else
     die "no agent harness detected; nothing to install with --no-cli. Pass --harness explicitly."
   fi
