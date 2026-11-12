@@ -18,6 +18,7 @@
 #   --harness codex[,claude,cursor,opencode,zcode,kimi-code,kimi-work,
 #                qoder,qoder-work,antigravity,openclaw,pi,deepseek]
 #                                     explicit harness list (default: auto-detect)
+#   --index-url URL                   package index for uv / pipx (default: existing environment or PyPI)
 #   --no-cli                          skip installing the Python package (skill-only)
 #   --no-schedule                     skip the macOS launchd update-check agent
 #   --uninstall                       remove everything this script installs
@@ -42,6 +43,7 @@ HARNESSES=""
 INSTALL_CLI=1
 INSTALL_SCHEDULE=1
 INSTALLER=""
+INDEX_URL=""
 UNINSTALL=0
 PURGE=0
 PURGE_RUNTIME=0
@@ -81,6 +83,13 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --harness)       HARNESSES="$2";       shift 2 ;;
     --harness=*)     HARNESSES="${1#*=}";  shift ;;
+    --index-url)
+      [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || die "--index-url requires a URL"
+      INDEX_URL="$2"; shift 2 ;;
+    --index-url=*)
+      INDEX_URL="${1#*=}"
+      [[ -n "$INDEX_URL" ]] || die "--index-url requires a URL"
+      shift ;;
     --no-cli)        INSTALL_CLI=0;        shift ;;
     --no-schedule)   INSTALL_SCHEDULE=0;   shift ;;
     --uninstall)     UNINSTALL=1;          shift ;;
@@ -267,30 +276,58 @@ detect_harnesses() {
 
 if [[ -z "$HARNESSES" ]]; then
   HARNESSES="$(detect_harnesses)"
-  [[ -n "$HARNESSES" ]] \
-    || die "no agent harness detected (checked \$HOME/.codex, .claude, .cursor, \$OPENCODE_CONFIG_DIR or \$HOME/.config/opencode, .zcode, \$KIMI_CODE_HOME or \$HOME/.kimi-code, Kimi Work's Application Support directory, .qoder, .qoderwork, .gemini, .openclaw, \$PI_CODING_AGENT_DIR or \$HOME/.pi/agent, \$DSH_HOME or \$HOME/.dsh). Pass --harness explicitly."
-  log "auto-detected harnesses: $(bold "$HARNESSES")"
+  if [[ -n "$HARNESSES" ]]; then
+    log "auto-detected harnesses: $(bold "$HARNESSES")"
+  elif (( INSTALL_CLI )); then
+    warn "no agent harness detected; installing CLI only. Skill was not installed; after installing an agent run inspire update, or rerun with --harness <name>."
+  else
+    die "no agent harness detected; nothing to install with --no-cli. Pass --harness explicitly."
+  fi
 fi
 
-IFS=',' read -r -a HARNESS_LIST <<<"$HARNESSES"
-for h in "${HARNESS_LIST[@]}"; do
-  known_harness "$h" || die "unknown harness: $h (pick from $ALL_HARNESSES)"
-done
+if [[ -n "$HARNESSES" ]]; then
+  IFS=',' read -r -a HARNESS_LIST <<<"$HARNESSES"
+  for h in "${HARNESS_LIST[@]}"; do
+    known_harness "$h" || die "unknown harness: $h (pick from $ALL_HARNESSES)"
+  done
+fi
 
 # ---- prerequisites ---------------------------------------------------------
 need() { command -v "$1" >/dev/null 2>&1 || die "need '$1' on PATH."; }
-need curl
-need tar
-need mktemp
+if [[ -n "$HARNESSES" ]]; then
+  need curl
+  need tar
+  need mktemp
+fi
+
+# Strip userinfo before displaying a custom index, including passwords with @.
+show_index() {
+  local url="$1" scheme authority suffix
+  [[ -n "$url" ]] || return 0
+  if [[ "$url" == *"://"* ]]; then
+    scheme="${url%%://*}://"
+    authority="${url#*://}"
+    suffix="${authority#"${authority%%[/?#]*}"}"
+    authority="${authority%%[/?#]*}"
+    log "package index: ${scheme}${authority##*@}${suffix}"
+  else
+    log "package index: [custom index]"
+  fi
+}
 
 # ---- install CLI via uv tool / pipx ----------------------------------------
 # Install from PyPI, so the user path stays on published releases.
 SPEC="$PACKAGE"
-SPEC_LABEL="$(bold "$PACKAGE") (PyPI)"
+SPEC_LABEL="$(bold "$PACKAGE")"
 
 if (( INSTALL_CLI )); then
+  if [[ -n "$INDEX_URL" ]]; then
+    export UV_DEFAULT_INDEX="$INDEX_URL" PIP_INDEX_URL="$INDEX_URL"
+  fi
+  log "Python packages: approximately 90 MB; on slow networks choose a closer PyPI mirror with --index-url URL."
   if command -v uv >/dev/null 2>&1; then
     INSTALLER="uv"
+    show_index "${UV_DEFAULT_INDEX:-${UV_INDEX_URL:-}}"
     log "installing $SPEC_LABEL via $(bold 'uv tool')"
     uv tool install --force --refresh "$SPEC" || die "uv tool install failed — check the spec '$SPEC' and try again."
     # If a previous run installed the same package via pipx, leaving it around
@@ -301,6 +338,7 @@ if (( INSTALL_CLI )); then
     fi
   elif command -v pipx >/dev/null 2>&1; then
     INSTALLER="pipx"
+    show_index "${PIP_INDEX_URL:-}"
     log "installing $SPEC_LABEL via $(bold pipx)"
     pipx install --force "$SPEC" || die "pipx install failed — check the spec '$SPEC' and try again."
   else
@@ -346,58 +384,61 @@ if (( INSTALL_CLI )); then
     die "installed inspire command was not found. Add ~/.local/bin to PATH or rerun the installer."
   fi
 
-  log "preparing Playwright Chromium runtime"
+  log "preparing Playwright Chromium runtime (approximately 150 MB download; this may take several minutes)"
   INSPIRE_SKIP_UPDATE_CHECK=1 "$INSPIRE_BIN" _ensure-playwright-runtime \
     || die "Playwright Chromium runtime setup failed — check network and local browser support, then rerun this installer."
   ok "Playwright Chromium runtime ready"
 fi
 
 # ---- fetch SKILL.md + references/ ------------------------------------------
-TMP="$(mktemp -d -t inspire-skill.XXXXXX)"
-trap 'rm -rf "$TMP"' EXIT
+if [[ -n "$HARNESSES" ]]; then
+  TMP="$(mktemp -d -t inspire-skill.XXXXXX)"
+  trap 'rm -rf "$TMP"' EXIT
 
-TAR_URL="https://codeload.github.com/${REPO_SLUG}/tar.gz/${DEFAULT_REF}"
-log "fetching skill bundle $(dim "$TAR_URL")"
-if ! curl -fsSL "$TAR_URL" | tar -xzf - -C "$TMP"; then
-  die "tarball fetch failed — check network / proxy and retry."
-fi
-
-TOP="$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -n1)"
-[[ -n "$TOP" && -f "$TOP/SKILL.md" ]] \
-  || die "tarball layout unexpected (no SKILL.md under $TOP)."
-
-install_skill() {
-  local harness="$1"
-  local target
-  target="$(skill_target "$harness")"
-
-  # Wipe prior install (handles real dirs and stale symlink layouts).
-  if [[ -L "$target" || -e "$target" ]]; then
-    rm -rf "$target"
-  fi
-  mkdir -p "$target"
-
-  cp "$TOP/SKILL.md" "$target/SKILL.md"
-  if [[ -d "$TOP/references" ]]; then
-    cp -R "$TOP/references" "$target/references"
+  TAR_URL="https://codeload.github.com/${REPO_SLUG}/tar.gz/${DEFAULT_REF}"
+  log "fetching skill bundle $(dim "$TAR_URL")"
+  if ! curl -fsSL "$TAR_URL" | tar -xzf - -C "$TMP"; then
+    die "tarball fetch failed — check network / proxy and retry."
   fi
 
-  if [[ "$harness" == "codex" ]]; then
-    mkdir -p "$target/agents"
-    cat >"$target/agents/openai.yaml" <<'YAML'
+  TOP="$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+  [[ -n "$TOP" && -f "$TOP/SKILL.md" ]] \
+    || die "tarball layout unexpected (no SKILL.md under $TOP)."
+
+  install_skill() {
+    local harness="$1"
+    local target
+    target="$(skill_target "$harness")"
+
+    # Wipe prior install (handles real dirs and stale symlink layouts).
+    if [[ -L "$target" || -e "$target" ]]; then
+      rm -rf "$target"
+    fi
+    mkdir -p "$target"
+
+    cp "$TOP/SKILL.md" "$target/SKILL.md"
+    if [[ -d "$TOP/references" ]]; then
+      cp -R "$TOP/references" "$target/references"
+    fi
+
+    if [[ "$harness" == "codex" ]]; then
+      mkdir -p "$target/agents"
+      cat >"$target/agents/openai.yaml" <<'YAML'
 interface:
   display_name: "Inspire"
   short_description: "Operate Inspire with focused references and live platform data."
   default_prompt: "Use $inspire to plan and execute this Inspire platform task safely."
 YAML
-  fi
+    fi
 
-  ok "skill → $(dim "$target")"
-}
+    ok "skill → $(dim "$target")"
+  }
 
-for h in "${HARNESS_LIST[@]}"; do
-  install_skill "$h"
-done
+  for h in "${HARNESS_LIST[@]}"; do
+    install_skill "$h"
+  done
+
+fi
 
 # ---- schedule background update check (macOS launchd) ----------------------
 install_launch_agent() {
@@ -462,13 +503,15 @@ echo
 bold "InspireSkill installed."
 echo
 cat <<EOF
-  1) Configure accounts & proxy:
-        inspire account add <name>
+  1) Create / authorize your account:
+        inspire login
   2) Verify auth and resource visibility:
         inspire account check
         inspire init
         inspire resources availability --workspace <name> --include-cpu
-  3) Check / apply upgrades anytime:
+  3) Optional: authorize dataset commands:
+        inspire login --cas feishu
+  4) Check / apply upgrades anytime:
         inspire update --check     # report only
         inspire update             # CLI + SKILL in one shot
 EOF

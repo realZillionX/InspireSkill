@@ -200,8 +200,16 @@ def refresh_skills(silent: bool) -> None:
     # `_post-update` also refreshes skills, but bundled with a version audit and
     # the browser runtime setup. An installer told to skip the browser still
     # needs the skills, so the step has its own entry point.
-    from inspire.cli.commands.update import _refresh_skill_files
+    from inspire.cli.commands.update import _detect_harnesses, _refresh_skill_files
 
+    if not _detect_harnesses():
+        if not silent:
+            click.secho(
+                "No agent harness detected; skill was not installed. "
+                "Run `inspire update` after installing an agent to add it later.",
+                fg="yellow",
+            )
+        return
     if not _refresh_skill_files(silent):
         raise SystemExit(1)
 
