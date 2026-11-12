@@ -1154,3 +1154,24 @@ def test_check_reports_actionable_failure_reason(
     if debug:
         assert "local debug log" in result.output
         assert "Retry with" not in result.output
+
+
+@pytest.mark.parametrize("silent", [False, True])
+def test_refresh_skills_hook_without_harness(
+    monkeypatch: pytest.MonkeyPatch, silent: bool,
+) -> None:
+    monkeypatch.setattr(update_module, "_detect_harnesses", lambda: [])
+
+    def unexpected_download() -> None:
+        pytest.fail("CLI-only installation must not download a skill bundle")
+
+    monkeypatch.setattr(update_module, "_download_tarball", unexpected_download)
+    args = ["_refresh-skills", "--silent"] if silent else ["_refresh-skills"]
+    result = CliRunner().invoke(cli_main, args)
+    assert result.exit_code == 0, result.output
+    if silent:
+        assert not result.output
+    else:
+        assert "No agent harness detected" in result.output
+        assert "skill was not installed" in result.output
+        assert "inspire update" in result.output

@@ -56,6 +56,16 @@ curl -fsSL https://raw.githubusercontent.com/realZillionX/InspireSkill/main/scri
 
 安装脚本会从 PyPI 安装 `inspire-skill`，并将 `SKILL.md` 与 `references/` 写入自动检测到的 Agent 客户端目录。可通过 `bash -s -- --harness codex,claude` 指定目标客户端；`--no-cli` 仅安装 Skill 文档，`--no-schedule` 跳过 macOS 每日更新检查。
 
+未检测到 Agent 客户端时，脚本仍会安装 CLI，跳过 Skill 文件并提示；之后可重新运行脚本并传入 `--harness <name>` 补装。若同时传入 `--no-cli` 且未检测到或指定客户端，则报错退出。
+
+Python 包首次下载约 90 MB，Playwright Chromium 运行时约 150 MB（随平台、版本和缓存而变化），慢速网络下可能需要数分钟。可用 `--index-url URL` 为本次 CLI 安装指定较近的 PyPI 镜像，例如：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/realZillionX/InspireSkill/main/scripts/install.sh | bash -s -- --index-url https://mirrors.aliyun.com/pypi/simple/
+```
+
+脚本不会自动切换镜像。未指定参数时保留已有环境变量：uv 使用 `UV_DEFAULT_INDEX`（优先）或 `UV_INDEX_URL`，pipx 使用 `PIP_INDEX_URL`；显式参数覆盖本次安装的索引。日志显示自定义索引时会移除 URL 中的用户名和密码。该参数只影响 Python 包下载，不改变 Chromium 或 Skill 文件的下载源。
+
 ### Windows
 
 需要 Python 3.10+、`uv`（推荐）或 `pipx`，以及系统自带的 OpenSSH 客户端。在仓库根目录运行 `install.ps1`：
@@ -68,6 +78,12 @@ Set-ExecutionPolicy -Scope Process Bypass
 ```
 
 脚本会自动检测本机 Agent 客户端；`-SkipPlaywright` 跳过浏览器运行时安装，`-SkipSkill` 仅安装 CLI，`-Version <x.y.z>` 安装指定版本。安装完成后可运行 `inspire --version` 和 `inspire --help` 验证。
+
+未检测到客户端时仍可完成 CLI 安装，Skill 不会安装；安装 Agent 后运行 `inspire update` 补装。PowerShell 对应的镜像参数为 `-IndexUrl URL`，环境变量优先级与上述说明一致，例如：
+
+```powershell
+.\scripts\install.ps1 -IndexUrl https://mirrors.aliyun.com/pypi/simple/
+```
 
 ## 账号与初始化
 

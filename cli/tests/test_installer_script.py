@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import os
+import shutil
 import sys
 from pathlib import Path
 import subprocess
@@ -16,6 +17,9 @@ SCRIPTS = Path(__file__).resolve().parents[1].parent / "scripts"
 def test_installer_post_install_guidance_uses_current_commands(installer_name: str) -> None:
     text = (SCRIPTS / installer_name).read_text(encoding="utf-8")
 
+    assert "inspire login" in text
+    assert "inspire login --cas feishu" in text
+    assert "inspire account add" not in text
     assert "inspire account check" in text
     assert "inspire config show" not in text
     assert "inspire resources availability --workspace <name> --include-cpu" in text
@@ -260,3 +264,95 @@ def test_powershell_installer_documents_the_openssh_prerequisite() -> None:
     assert "OpenSSH.Client" in text
     assert "job logs --source ssh" in text
     assert "job logs --transport ssh" not in text
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="drives the bash installer end to end")
+@pytest.mark.parametrize("installer", ["uv", "pipx"])
+@pytest.mark.parametrize("index_mode", ["default", "environment", "legacy", "flag", "equals"])
+def test_cli_only_install_and_package_index(
+    tmp_path: Path, installer: str, index_mode: str,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    # Isolate command discovery, including from a system-wide uv or pipx.
+    for command in ("bash", "mkdir", "chmod", "cat"):
+        executable = shutil.which(command)
+        assert executable
+        (bin_dir / command).symlink_to(executable)
+    manager = bin_dir / installer
+    manager.write_text(
+        '#!/usr/bin/env bash\n'
+        'if [[ "$*" == *install\\ --force* ]]; then\n'
+        '  printf "%s\\n" "${UV_DEFAULT_INDEX-}" "${UV_INDEX_URL-}" '
+        '"${PIP_INDEX_URL-}" > "$HOME/index-env"\n'
+        '  mkdir -p "$HOME/.local/bin"\n'
+        '  printf \'#!/usr/bin/env bash\\nprintf "%%s\\\\n" "$*" >> "$HOME/cli-calls"\\n\' '
+        '> "$HOME/.local/bin/inspire"\n'
+        '  chmod +x "$HOME/.local/bin/inspire"\n'
+        'fi\n',
+        encoding="utf-8",
+    )
+    manager.chmod(0o755)
+    env = {"HOME": str(home), "PATH": str(bin_dir)}
+    old_index = "https://old-user:old-password@old.example/simple/"
+    new_index = "https://new-user:new-p@ssword@mirror.example/simple/"
+    args = []
+    expected = ["", "", ""]
+    if index_mode != "default":
+        env.update(UV_INDEX_URL=old_index, PIP_INDEX_URL=old_index)
+        expected = ["", old_index, old_index]
+        if index_mode != "legacy":
+            env["UV_DEFAULT_INDEX"] = old_index
+            expected[0] = old_index
+    if index_mode in ("flag", "equals"):
+        args = ["--index-url", new_index] if index_mode == "flag" else [f"--index-url={new_index}"]
+        expected = [new_index, old_index, new_index]
+    result = subprocess.run(
+        [str(bin_dir / "bash"), str(SCRIPTS / "install.sh"), "--no-schedule", *args],
+        env=env, text=True, capture_output=True, timeout=20,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert (home / "index-env").read_text().splitlines() == expected
+    assert "_ensure-playwright-runtime" in (home / "cli-calls").read_text()
+    assert "no agent harness detected" in output
+    assert "Skill was not installed" in output
+    assert "--harness <name>" in output
+    assert not (home / ".codex").exists()
+    assert "fetching skill bundle" not in output
+    assert "90 MB" in output and "150 MB" in output
+    assert "--index-url" in output
+    assert "inspire login" in output and "account add" not in output
+    assert "old-user" not in output and "old-password" not in output
+    assert "new-user" not in output and "new-p@ssword" not in output
+    if index_mode != "default":
+        host = "mirror.example" if args else "old.example"
+        assert f"package index: https://{host}/simple/" in output
+    else:
+        assert "package index:" not in output
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="drives the bash installer end to end")
+@pytest.mark.parametrize("args", [["--no-cli"], ["--index-url"], ["--index-url="]])
+def test_installer_rejects_nothing_to_install_or_missing_index(
+    tmp_path: Path, args: list[str],
+) -> None:
+    result = subprocess.run(
+        ["bash", str(SCRIPTS / "install.sh"), *args],
+        env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+        text=True, capture_output=True, timeout=20,
+    )
+    assert result.returncode != 0
+    assert "nothing to install" in result.stderr or "requires a URL" in result.stderr
+
+
+def test_powershell_installer_supports_package_indexes() -> None:
+    text = (SCRIPTS / "install.ps1").read_text(encoding="utf-8")
+    assert "[string]$IndexUrl" in text
+    assert "$env:UV_DEFAULT_INDEX = $IndexUrl" in text
+    assert "$env:PIP_INDEX_URL = $IndexUrl" in text
+    assert "$env:UV_INDEX_URL" in text
+    assert "90 MB" in text and "150 MB" in text
+    assert "skill files installed" not in text
