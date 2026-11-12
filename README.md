@@ -89,6 +89,8 @@ inspire init
 inspire resources availability --workspace 分布式训练空间 --include-cpu
 ```
 
+`account check` 和 `account list` 会显示 OAuth 访问／刷新令牌的到期时间和 CAS（数据广场）登录状态；`--offline` 不验证平台认证（JSON `authenticated: null`），有效或可自动刷新时退出 0，其余情况返回认证错误码。
+
 `inspire init` 用于校验并补全账号配置。在校园网外访问平台时，请先参考下文[代理配置](#代理配置)完成网络设置。
 
 多账号管理可使用 `inspire account use <name>` 切换默认账号、`inspire account current` 查看当前默认账号、`inspire account rename <old> <new>` 重命名别名。所有命令均支持通过 `--account <name>` 临时指定单次命令使用的账号（如 `inspire --account <name> notebook list --workspace CPU资源空间`），切换账号不会清理已有的登录 Session、SSH 连接或本地缓存。
@@ -278,7 +280,7 @@ with InspireClient(account="research") as client:
 
 账号 proxy 也可以直接写 `socks5://127.0.0.1:<port>`。CLI 的 HTTP 请求会自动改用 `socks5h://`，由代理端解析域名，因此只能在 VPN 内解析的平台域名也能访问；浏览器仍使用原地址。远程 Shell / exec 的 WebSocket 目前只支持 HTTP(S) 代理，需要这些功能时请配置 HTTP 代理端口。
 
-账号配置中的 `proxy` 优先于 Shell 环境变量；未设置账号 `proxy` 时，`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 仍会生效，直连环境下可通过 `NO_PROXY=.sii.edu.cn` 绕过系统代理。账号列表也会显示本地 OAuth／CAS 状态；`account check --offline` 不验证平台认证（JSON `authenticated: null`），有效或可刷新时退出 0，其余登录状态退出认证错误码。有效期时间含本地时区偏移，剩余秒数过期后归零。可随时运行 `inspire account check --details` 检查当前生效的代理配置与路由状态。
+账号配置中的 `proxy` 优先于 Shell 环境变量；未设置账号 `proxy` 时，`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 仍会生效，直连环境下可通过 `NO_PROXY=.sii.edu.cn` 绕过系统代理。可随时运行 `inspire account check --details` 检查当前生效的代理配置与路由状态。
 
 > 代理凭据（Host / User / Password）**请向所在实验室或组织管理员获取**，切勿提交到公开仓库或对话记录中。
 

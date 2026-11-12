@@ -9,7 +9,6 @@ from inspire.services.account.account_check import (
 )
 
 import os
-import json
 import sys
 from pathlib import Path
 
@@ -171,7 +170,6 @@ def check(ctx: Context, details: bool, offline: bool) -> None:
             "configured": True,
             "authenticated": None if offline else auth_ok,
             "mode": "offline" if offline else "live",
-            "login_username": status["oauth"]["login_username"],
             **status,
         }
         if not offline:
@@ -191,18 +189,9 @@ def check(ctx: Context, details: bool, offline: bool) -> None:
                 result["note"] = default_base_url_hint
 
         if effective_json:
-            # These identity/status fields are intentionally public for this command.
-            # Keep the generic sanitizer strict for other commands and all errors.
-            public = json_formatter.sanitize_json_data(result)
-            public["login_username"] = status["oauth"]["login_username"]
-            public["oauth"]["login_username"] = status["oauth"]["login_username"]
-            public["cas"]["method"] = status["cas"]["method"]
-            click.echo(json.dumps({"success": auth_ok, "data": public}, ensure_ascii=False))
+            click.echo(json_formatter.format_json(result, success=auth_ok))
         else:
-            login = status["oauth"]["login_username"]
-            click.echo(
-                f"Account: {active_account or '-'}" + (f" (login: {login})" if login else "")
-            )
+            click.echo(f"Account: {active_account or '-'}")
             click.echo(human_formatter.format_success("Configuration: OK"))
             if offline:
                 click.echo("Authentication: not verified (offline)")

@@ -43,7 +43,6 @@ def inspect_auth_status(account: str | None) -> dict[str, Any]:
         "access_expires_in": None,
         "refresh_expires_in": None,
         "issued_at": None,
-        "login_username": None,
     }
     if session is not None:
         oauth.update(
@@ -59,25 +58,32 @@ def inspect_auth_status(account: str | None) -> dict[str, Any]:
             access_expires_in=max(0, int(session.access_expires_at - now)),
             refresh_expires_in=max(0, int(session.refresh_expires_at - now)),
             issued_at=_iso(session.created_at),
-            login_username=session.login_username,
         )
     cached_cas = CasSession.load(account=account)
     cas: dict[str, Any] = {
         "state": "missing",
-        "method": None,
+        "login_method": None,
         "logged_in_at": None,
         "age_seconds": None,
     }
     if cached_cas is not None:
         cas.update(
             state="present",
-            method=cached_cas.method,
+            login_method=cached_cas.method,
             logged_in_at=_iso(cached_cas.created_at),
             age_seconds=max(0, int(now - cached_cas.created_at)),
         )
     if oauth["state"] == "expired" and cached_cas is not None:
         oauth["note"] = f"Renewal will be attempted via CAS; otherwise run {login_hint(account)}."
     return {"oauth": oauth, "cas": cas}
+
+
+def _display_time(value: str) -> str:
+    """Render an ISO timestamp as local ``YYYY-MM-DD HH:MM`` for humans."""
+    try:
+        return datetime.fromisoformat(value).strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return value
 
 
 def format_duration(seconds: int) -> str:
@@ -97,7 +103,11 @@ def format_auth_status(status: dict[str, Any], account: str | None) -> list[str]
         state = oauth["state"]
         if remaining is not None:
             state = "valid" if remaining > (60 if token == "access" else 0) else "expired/expiring"
-        detail = f", expires {expiry} (in {format_duration(remaining)})" if expiry else ""
+        detail = (
+            f", expires {_display_time(expiry)} (in {format_duration(remaining)})"
+            if expiry and remaining is not None
+            else ""
+        )
         lines.append(f"OAuth {token} token: {state}{detail}")
     if oauth["state"] == "refreshable":
         lines.append("OAuth: refreshable; renewed automatically on next use.")

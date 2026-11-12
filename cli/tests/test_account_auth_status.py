@@ -147,8 +147,8 @@ def test_offline(account_home, monkeypatch, state, as_json):
         assert data["mode"] == "offline"
         assert "refreshed" not in data
         assert data["oauth"]["state"] == state
-        assert "login_username" in data
-        assert data["cas"]["method"] == "feishu"
+        assert "login_username" not in data
+        assert data["cas"]["login_method"] == "feishu"
     else:
         assert "not verified (offline)" in result.output
 
@@ -231,7 +231,7 @@ def test_inspector_does_not_repair_identity(account_home, monkeypatch):
     session.save(account="alice")
     before = snapshot(account_home)
     monkeypatch.setattr(WebSession, "save", lambda *a, **kw: pytest.fail("Inspector wrote session"))
-    assert inspect_auth_status("alice")["oauth"]["login_username"] is None
+    assert "login_username" not in inspect_auth_status("alice")["oauth"]
     assert snapshot(account_home) == before
 
 
