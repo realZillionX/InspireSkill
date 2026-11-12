@@ -239,13 +239,14 @@ def post_update(
     ignored) until those versions are no longer in the field.
     """
     del previous_version
-    from inspire.cli.commands.update import _run_post_update_tasks
+    from inspire.cli.commands.update import _emit_post_update_failures, _run_post_update_tasks
 
     if not _run_post_update_tasks(
         expected_version=expected_version,
         cli_only=cli_only,
         silent=silent,
     ):
+        _emit_post_update_failures(silent=silent)
         raise SystemExit(1)
 
 

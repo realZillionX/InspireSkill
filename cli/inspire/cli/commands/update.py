@@ -31,10 +31,12 @@ import os
 import re
 import shutil
 import shlex
+import ssl
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -174,6 +176,7 @@ _UV_TOOL_LINE_RE = re.compile(
     r"(?:\s+\((?P<env_path>[^)]+)\))?"
 )
 _UV_TOOL_EXEC_RE = re.compile(r"^-\s+inspire(?:\s+\((?P<path>[^)]+)\))?")
+_POST_UPDATE_FAILURE_MARKER = "INSPIRE_POST_UPDATE_FAILURES="
 _VERSION_OUTPUT_RE = re.compile(r"\bversion\s+([0-9][^\s]*)")
 GITHUB_RELEASES_API_URL = f"https://api.github.com/repos/{REPO_SLUG}/releases"
 _CHANGELOG_RELEASE_HEADING_RE = re.compile(
@@ -266,6 +269,29 @@ def _record_audit_failure(reason: str) -> None:
     context = click.get_current_context(silent=True)
     if context is not None:
         context.meta.setdefault("update_audit_failures", []).append(reason)
+
+
+def _emit_post_update_failures(*, silent: bool) -> None:
+    if silent:
+        return
+    context = click.get_current_context(silent=True)
+    reasons = context.meta.get("update_audit_failures", []) if context else []
+    click.echo(_POST_UPDATE_FAILURE_MARKER + json.dumps(reasons), err=True)
+
+
+def _record_post_update_failures(proc: subprocess.CompletedProcess[str]) -> None:
+    reasons: list[str] = []
+    for line in (proc.stderr or "").splitlines():
+        if not line.startswith(_POST_UPDATE_FAILURE_MARKER):
+            continue
+        try:
+            payload = json.loads(line[len(_POST_UPDATE_FAILURE_MARKER):])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, list) and all(isinstance(item, str) for item in payload):
+            reasons.extend(item for item in payload if item.strip())
+    for reason in reasons or [f"post-update setup exited with code {proc.returncode}"]:
+        _record_audit_failure(reason)
 
 
 def _emit_update_failure(
@@ -634,14 +660,14 @@ def _ensure_playwright_runtime(silent: bool) -> bool:
     with _suppress_subprocess_output():
         installed = _install_playwright_chromium(include_system_deps=None)
     if not installed:
-        logger.debug("Playwright Chromium runtime installation failed")
+        _record_audit_failure("Browser runtime setup failed: Chromium installation failed.")
         return False
 
     if _playwright_chromium_available():
         logger.debug("Playwright Chromium runtime verified after installation")
         return True
 
-    logger.debug("Playwright Chromium installed but launch probe failed")
+    _record_audit_failure("Browser runtime setup failed: Chromium launch probe failed.")
     return False
 
 
@@ -655,7 +681,7 @@ def _global_inspire_executable() -> str | None:
 def _ensure_global_playwright_runtime(silent: bool) -> bool:
     executable = _global_inspire_executable()
     if not executable:
-        logger.debug("Global inspire executable is unavailable for runtime setup")
+        _record_audit_failure("Browser runtime setup failed: global inspire executable is unavailable.")
         return False
 
     cmd = [executable, "_ensure-playwright-runtime"]
@@ -676,11 +702,13 @@ def _ensure_global_playwright_runtime(silent: bool) -> bool:
         )
     except OSError as e:
         logger.debug("Runtime setup could not start: executable=%s error=%s", executable, e)
+        _record_audit_failure(f"Browser runtime setup failed ({type(e).__name__}).")
         return False
     _log_completed_process("global runtime setup", proc, cmd=cmd)
     if proc.returncode == 0:
         return True
 
+    _record_audit_failure(f"Browser runtime setup failed: exited with code {proc.returncode}.")
     return False
 
 
@@ -692,7 +720,7 @@ def _run_post_update_command(
 ) -> bool:
     executable = _global_inspire_executable()
     if not executable:
-        logger.debug("Global inspire executable is unavailable for post-update setup")
+        _record_audit_failure("Post-update setup failed: global inspire executable is unavailable.")
         return False
 
     cmd = [
@@ -721,8 +749,11 @@ def _run_post_update_command(
         )
     except OSError as e:
         logger.debug("Post-update setup could not start: executable=%s error=%s", executable, e)
+        _record_audit_failure(f"Post-update setup could not start ({type(e).__name__}).")
         return False
     _log_completed_process("post-update setup", proc, cmd=cmd)
+    if proc.returncode != 0:
+        _record_post_update_failures(proc)
     return proc.returncode == 0
 
 
@@ -731,12 +762,24 @@ def _download_tarball(timeout: int = 30) -> bytes | None:
         TARBALL_URL,
         headers={"User-Agent": f"inspire-skill/{__version__}"},
     )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.read()
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
-        logger.debug("Skill tarball fetch failed: %s", e, exc_info=True)
-        return None
+    # Two bounded attempts; permanent HTTP/local errors do not merit a retry.
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read()
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            logger.debug("Skill tarball fetch failed: %s", e, exc_info=True)
+            transient = isinstance(e, (urllib.error.URLError, TimeoutError, ConnectionError, ssl.SSLError))
+            if isinstance(e, urllib.error.HTTPError):
+                transient = e.code in {408, 429, 500, 502, 503, 504}
+            if attempt == 0 and transient:
+                time.sleep(2)
+                continue
+            _record_audit_failure(
+                f"Could not download the skill bundle from GitHub ({type(e).__name__})."
+            )
+            return None
+    return None
 
 
 def _extract_assets(tarball: bytes, dest: Path) -> Path | None:
@@ -801,7 +844,7 @@ def _extract_assets(tarball: bytes, dest: Path) -> Path | None:
                     shutil.copyfileobj(source, output)
             extracted = dest / top
             return extracted if extracted.is_dir() else None
-    except (tarfile.TarError, OSError) as e:
+    except (tarfile.TarError, OSError, EOFError) as e:
         logger.debug("Skill tarball extraction failed: %s", e, exc_info=True)
         return None
 
@@ -844,57 +887,68 @@ def _refresh_skill_files(silent: bool) -> bool:
     if tarball is None:
         return False
 
-    with tempfile.TemporaryDirectory(prefix="inspire-skill-") as tmp:
-        extracted = _extract_assets(tarball, Path(tmp))
-        if extracted is None:
-            logger.debug("Skill tarball has no usable top-level directory")
-            return False
-
-        src_skill = extracted / "SKILL.md"
-        src_refs = extracted / "references"
-        if not src_skill.is_file():
-            logger.debug("SKILL.md is missing from the skill tarball")
-            return False
-
-        for harness in harnesses:
-            target = HARNESS_SKILL_DIRS[harness]
-            # Wipe any previous install, including stale symlinks or files.
-            if target.exists() or target.is_symlink():
-                try:
-                    if target.is_symlink() or target.is_file():
-                        target.unlink()
-                    else:
-                        shutil.rmtree(target)
-                except OSError as e:
-                    logger.debug("Could not clean skill target %s: %s", target, e, exc_info=True)
-                    return False
-            target.mkdir(parents=True, exist_ok=True)
-
-            shutil.copy2(src_skill, target / "SKILL.md")
-            if src_refs.is_dir():
-                shutil.copytree(src_refs, target / "references", dirs_exist_ok=True)
-
-            verify_errors = _verify_skill_target(extracted, target)
-            if verify_errors:
-                logger.debug(
-                    "Skill verification failed for %s: %s",
-                    target,
-                    verify_errors,
-                )
+    harness: str | None = None
+    try:
+        with tempfile.TemporaryDirectory(prefix="inspire-skill-") as tmp:
+            extracted = _extract_assets(tarball, Path(tmp))
+            if extracted is None:
+                _record_audit_failure("Skill bundle is invalid or could not be extracted.")
                 return False
 
-            if harness == "codex":
-                agents_dir = target / "agents"
-                agents_dir.mkdir(parents=True, exist_ok=True)
-                (agents_dir / "openai.yaml").write_text(
-                    'interface:\n'
-                    '  display_name: "Inspire"\n'
-                    '  short_description: "Operate Inspire with focused references and live platform data."\n'
-                    '  default_prompt: "Use $inspire to plan and execute this Inspire platform task safely."\n',
-                    encoding="utf-8",
-                )
+            src_skill = extracted / "SKILL.md"
+            src_refs = extracted / "references"
+            if not src_skill.is_file():
+                _record_audit_failure("SKILL.md is missing from the skill bundle.")
+                return False
 
-            logger.debug("Refreshed %s skill at %s", harness, target)
+            for harness in harnesses:
+                target = HARNESS_SKILL_DIRS[harness]
+                # Wipe any previous install, including stale symlinks or files.
+                if target.exists() or target.is_symlink():
+                    try:
+                        if target.is_symlink() or target.is_file():
+                            target.unlink()
+                        else:
+                            shutil.rmtree(target)
+                    except OSError as e:
+                        logger.debug("Could not clean skill target %s: %s", target, e, exc_info=True)
+                        _record_audit_failure(f"Could not replace the {harness} skill directory.")
+                        return False
+                target.mkdir(parents=True, exist_ok=True)
+
+                shutil.copy2(src_skill, target / "SKILL.md")
+                if src_refs.is_dir():
+                    shutil.copytree(src_refs, target / "references", dirs_exist_ok=True)
+
+                verify_errors = _verify_skill_target(extracted, target)
+                if verify_errors:
+                    logger.debug(
+                        "Skill verification failed for %s: %s",
+                        target,
+                        verify_errors,
+                    )
+                    _record_audit_failure(f"Skill verification failed for {harness}.")
+                    return False
+
+                if harness == "codex":
+                    agents_dir = target / "agents"
+                    agents_dir.mkdir(parents=True, exist_ok=True)
+                    (agents_dir / "openai.yaml").write_text(
+                        'interface:\n'
+                        '  display_name: "Inspire"\n'
+                        '  short_description: "Operate Inspire with focused references and live platform data."\n'
+                        '  default_prompt: "Use $inspire to plan and execute this Inspire platform task safely."\n',
+                        encoding="utf-8",
+                    )
+
+                logger.debug("Refreshed %s skill at %s", harness, target)
+    except OSError as e:
+        logger.debug("Skill refresh failed: %s", e, exc_info=True)
+        _record_audit_failure(
+            f"Could not replace the {harness} skill directory."
+            if harness else "Could not prepare the skill bundle."
+        )
+        return False
 
     return True
 
