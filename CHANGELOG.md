@@ -5,6 +5,7 @@
 ## Unreleased
 
 新增与修复：
+- 修复 `notebook list --workspace all` 无匹配结果时误报 APIError；仅全部空间查询失败时报错，部分失败保留正常结果与警告，并在 JSON 中新增不可用空间名称列表 `unavailable_workspaces`。
 - `account check` 展示 OAuth 访问／刷新令牌有效期、本次是否刷新及 CAS 数据广场登录状态；新增 `--offline`，仅检查本地会话，不联网、不刷新、不写文件。旧会话明确提示重新 OAuth 登录。
 - `account list` 增加本地 OAuth／CAS 状态与刷新有效期；SDK `AccountCheck` 增加可选 `oauth`、`cas` 和 `refreshed` 字段。
 - 修复 `inspire login --cas feishu` 扫码确认后必定失败（`Feishu QR login failed`）：确认后飞书 iframe 跳转到 CAS，轮询中的页面查询会抛出 “Execution context was destroyed”；现在跳转期间的查询视为暂未匹配并继续轮询，直到拦截到回跳并保存 CAS 会话（#105）。

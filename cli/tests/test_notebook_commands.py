@@ -876,6 +876,82 @@ def test_notebook_list_all_uses_multi_workspace_helper(
         assert hidden not in result.output
 
 
+@pytest.mark.parametrize("filters", [["--status", "RUNNING"], ["--keyword", "missing", "--all"]])
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize("outcome", ["empty", "partial_empty", "partial_rows", "all_failed"])
+def test_notebook_list_all_empty_and_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    filters: list[str],
+    json_output: bool,
+    outcome: str,
+) -> None:
+    config = make_test_config(tmp_path)
+    monkeypatch.setattr(
+        config_module.Config,
+        "from_files_and_env",
+        classmethod(lambda cls, require_credentials=True: (config, {})),
+    )
+    session = SimpleNamespace(
+        workspace_id="ws-aaa",
+        all_workspace_ids=["ws-aaa", "ws-bbb"],
+        all_workspace_names={"ws-aaa": "GPU A", "ws-bbb": "GPU B"},
+    )
+    monkeypatch.setattr(notebook_cmd_module, "require_web_session", lambda *a, **kw: session)
+    monkeypatch.setattr(notebook_cmd_module, "get_base_url", lambda: "https://example.invalid")
+    monkeypatch.setattr(notebook_cmd_module, "_try_get_current_user_ids", lambda *a, **kw: ["user-aaa"])
+    lookup = importlib.import_module("inspire.cli.commands.notebook.notebook_lookup")
+
+    def list_workspace(*args: Any, **kwargs: Any) -> list[dict]:
+        assert kwargs["status"] == (["RUNNING"] if filters[0] == "--status" else [])
+        assert kwargs["keyword"] == ("missing" if filters[0] == "--keyword" else "")
+        if outcome == "all_failed" or (
+            outcome.startswith("partial") and kwargs["workspace_id"] == "ws-bbb"
+        ):
+            raise ValueError(f"query rejected for {kwargs['workspace_id']} notebook-deadbeef")
+        return [{"name": "matching-notebook", "status": "RUNNING"}] if outcome == "partial_rows" else []
+
+    monkeypatch.setattr(lookup, "_list_notebooks_for_workspace", list_workspace)
+    caplog.set_level(logging.DEBUG, logger=notebook_cmd_module.__name__)
+    result = CliRunner().invoke(
+        cli_main,
+        (["--json"] if json_output else []) + ["notebook", "list", "--workspace", "all", *filters],
+    )
+    assert result.exit_code == (EXIT_API_ERROR if outcome == "all_failed" else 0), result.output
+    for raw_id in ("ws-aaa", "ws-bbb", "notebook-deadbeef"):
+        assert raw_id not in result.output + caplog.text
+    assert "query rejected" not in result.output
+    if outcome != "empty":
+        assert "query rejected" in caplog.text
+        assert "<redacted>" in caplog.text
+    if json_output:
+        payload = json.loads(result.stderr if outcome == "all_failed" else result.stdout)
+        if outcome == "all_failed":
+            assert result.stdout == ""
+            assert payload["error"]["type"] == "APIError"
+            assert "all 2 queried workspaces" in payload["error"]["message"]
+        else:
+            assert result.stderr == ""
+            data = payload["data"]
+            assert len(data["items"]) == (1 if outcome == "partial_rows" else 0)
+            if outcome.startswith("partial"):
+                assert data["unavailable_workspaces"] == ["GPU B"]
+            else:
+                assert "unavailable_workspaces" not in data
+    else:
+        if outcome == "all_failed":
+            assert "all 2 queried workspaces" in result.output
+        elif outcome == "partial_rows":
+            assert "matching-notebook" in result.stdout
+        else:
+            assert result.stdout.strip() == "No notebook instances found."
+        if outcome != "empty":
+            assert "Warning: workspace GPU B unavailable." in result.stderr
+        else:
+            assert result.stderr == ""
+
+
 def test_notebook_list_json_metadata_only_when_truncated(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

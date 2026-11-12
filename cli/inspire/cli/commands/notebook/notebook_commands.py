@@ -862,24 +862,23 @@ def list_notebooks(
         ]
         all_items.extend(_sort_notebook_items(workspace_rows))
 
-    if workspace_errors and not ctx.json_output:
-        for ws_id, error in workspace_errors.items():
-            workspace_name = _workspace_display(session, ws_id)
-            logger.debug(
-                "Notebook list failed for workspace %s: %s",
-                ws_id,
-                error,
-            )
-            click.echo(
-                f"Warning: workspace {scrub_raw_ids(workspace_name)} unavailable.",
-                err=True,
-            )
+    unavailable_workspaces = []
+    for ws_id, error in (workspace_errors or {}).items():
+        workspace_name = scrub_raw_ids(_workspace_display(session, ws_id))
+        unavailable_workspaces.append(workspace_name)
+        logger.debug(
+            "Notebook list failed for workspace %s: %s",
+            workspace_name,
+            scrub_raw_ids(error),
+        )
+        if not ctx.json_output:
+            click.echo(f"Warning: workspace {workspace_name} unavailable.", err=True)
 
-    if not all_items and len(workspace_ids) > 1:
+    if workspace_errors and all(ws_id in workspace_errors for ws_id in workspace_ids):
         _handle_error(
             ctx,
             "APIError",
-            "Failed to list notebooks from visible workspaces.",
+            f"Failed to list notebooks from all {len(workspace_ids)} queried workspaces.",
             EXIT_API_ERROR,
         )
         return
@@ -890,6 +889,7 @@ def list_notebooks(
         ctx.json_output,
         total=page.total,
         truncated=page.truncated,
+        unavailable_workspaces=unavailable_workspaces,
     )
     if not ctx.json_output:
         notice = truncation_notice(page)

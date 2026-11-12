@@ -134,6 +134,7 @@ def _print_notebook_list(
     *,
     total: int | None = None,
     truncated: bool = False,
+    unavailable_workspaces: list[str] | None = None,
 ) -> None:
     """Print notebook list in appropriate format.
 
@@ -143,6 +144,10 @@ def _print_notebook_list(
         payload: dict[str, object] = {
             "items": [public_notebook_list_item(item) for item in items],
         }
+        if unavailable_workspaces:
+            payload["unavailable_workspaces"] = [
+                scrub_raw_ids(name) for name in unavailable_workspaces
+            ]
         if truncated:
             payload.update(
                 {
