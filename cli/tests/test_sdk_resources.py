@@ -96,6 +96,10 @@ def test_account_metadata_check_context_permissions(client, catalog, monkeypatch
     assert info.user_name == "Ada"
     check = client.account_info.check()
     assert check.ok and calls[-1]["refresh"] is True
+    assert check.oauth is not None and check.cas is not None
+    assert check.refreshed is False
+    assert "access_token" not in check.oauth
+    assert "cookies" not in check.cas
     assert "password" not in check.user
     assert cli_json("account", "check")["authenticated"] == check.ok
     assert "must-not-escape" not in repr(check)
@@ -706,3 +710,32 @@ def test_training_job_list_and_iter_views(client, catalog, monkeypatch, nested_r
         if nested_raw:
             assert job.raw["image"] == "training:v1"
             assert job.view["priority_level"] == "high"
+
+
+@pytest.mark.parametrize("renew", [False, True])
+def test_account_check_local_metadata_and_refresh(client, monkeypatch, renew):
+    from inspire.platform.web.session.models import WebSession
+    from inspire.services.account.auth_status import inspect_auth_status
+    from inspire.sdk.models_resources import AccountCheck
+    import time
+
+    original = WebSession(
+        access_token="SECRET-ACCESS", refresh_token="SECRET-REFRESH",
+        access_expires_at=time.time() + 3600, refresh_expires_at=time.time() + 86400,
+        created_at=time.time() - 100, login_username="sdk-user",
+    )
+    original.save(account=client.account)
+
+    def current(**kwargs):
+        if renew:
+            replace(original, created_at=time.time()).save(account=client.account)
+        return {"name": "sdk-user"}
+
+    monkeypatch.setattr(api, "get_current_user", current)
+    result = client.account_info.check()
+    expected = inspect_auth_status(client.account)
+    assert result.oauth == expected["oauth"]
+    assert result.cas == expected["cas"]
+    assert result.refreshed is renew
+    assert "SECRET-" not in repr(result)
+    assert AccountCheck(True, None, None, ()).oauth is None

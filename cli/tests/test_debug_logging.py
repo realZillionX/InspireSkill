@@ -221,6 +221,7 @@ def test_debug_does_not_expand_account_check_output(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     from inspire.cli.commands.account import check as check_module
 
     log_dir = tmp_path / "debug-logs"
@@ -269,7 +270,8 @@ def test_debug_does_not_expand_account_check_output(
     assert plain_json.exit_code == 0, plain_json.output
     assert debug_json.exit_code == 0, debug_json.output
     assert json.loads(debug_json.output) == json.loads(plain_json.output)
-    assert json.loads(debug_json.output)["data"] == {
+    data = json.loads(debug_json.output)["data"]
+    assert {key: data[key] for key in ("account", "configured", "authenticated")} == {
         "account": "test-account",
         "configured": True,
         "authenticated": True,

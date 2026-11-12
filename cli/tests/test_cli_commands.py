@@ -1594,6 +1594,7 @@ def test_resources_list_one_workspace_and_cpu_json(
 
 
 def test_config_check_auth_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     config = make_test_config(tmp_path)
 
     def fake_from_files_and_env(cls, require_credentials: bool = True) -> tuple:  # type: ignore[override]
@@ -1694,6 +1695,7 @@ def test_config_check_auth_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
 
 def test_config_check_config_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
         raise ConfigError("missing env")
 
@@ -1713,6 +1715,7 @@ def test_config_check_config_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 def test_config_check_json_includes_base_url_resolution(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     config = make_test_config(tmp_path)
     config.base_url = "https://my-inspire.internal"
     account_config = tmp_path / "account-config.toml"
@@ -1792,6 +1795,7 @@ def test_config_check_json_includes_base_url_resolution(
 def test_config_check_accepts_local_json_alias(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     config = make_test_config(tmp_path)
     config.base_url = "https://my-inspire.internal"
 
@@ -1817,7 +1821,7 @@ def test_config_check_accepts_local_json_alias(
     assert result.exit_code == EXIT_SUCCESS
     payload = json.loads(result.output)
     assert payload["success"] is True
-    assert payload["data"] == {
+    assert {key: payload["data"][key] for key in ("account", "configured", "authenticated")} == {
         "account": "test-account",
         "configured": True,
         "authenticated": True,
@@ -1827,6 +1831,7 @@ def test_config_check_accepts_local_json_alias(
 def test_config_check_rejects_placeholder_base_url(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     config = make_test_config(tmp_path)
     config.base_url = "https://api.example.com"
 
@@ -1858,6 +1863,7 @@ def test_config_check_rejects_placeholder_base_url(
 def test_config_check_accepts_a_custom_base_url(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     config = make_test_config(tmp_path)
     config.base_url = "https://my-inspire.internal"
 

@@ -83,10 +83,13 @@ CAS credentials are stored separately in the account's private `cas_session.json
 
 ```bash
 inspire login --account <name>
-inspire account check
+inspire account check                    # 实时验证 OAuth 与 CAS，显示有效期和刷新结果
+inspire account check --offline          # 只读本地状态，不联网或刷新
 inspire init
 inspire resources availability --workspace 分布式训练空间 --include-cpu
 ```
+
+`account check` 和 `account list` 会显示 OAuth 访问／刷新令牌的到期时间和 CAS（数据广场）登录状态；`--offline` 不验证平台认证（JSON `authenticated: null`），有效或可自动刷新时退出 0，其余情况返回认证错误码。
 
 `inspire init` 用于校验并补全账号配置。在校园网外访问平台时，请先参考下文[代理配置](#代理配置)完成网络设置。
 
