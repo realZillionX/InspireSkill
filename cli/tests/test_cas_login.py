@@ -871,3 +871,51 @@ def test_feishu_mask_appearing_during_capture_is_never_published(monkeypatch):
     assert publish.call_args.args[2] == b"fresh"
     mask.click.assert_called_once()
     browser.close.assert_called_once()
+
+
+def test_feishu_scan_navigation_keeps_polling_until_cas_redirect(monkeypatch):
+    from inspire.platform.web.session import cas_qr
+
+    clock = [0.0]
+    monkeypatch.setattr(cas_qr.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(cas_qr, "get_playwright_proxy", lambda account: None)
+    playwright = Mock()
+    playwright.__enter__ = Mock(return_value=playwright)
+    playwright.__exit__ = Mock(return_value=False)
+    browser = playwright.chromium.launch.return_value
+    context = browser.new_context.return_value
+    page = context.new_page.return_value
+    element = page.wait_for_selector.return_value
+    frame = element.content_frame.return_value
+    element.screenshot.return_value = b"live"
+    scanned = [False]
+    navigating_polls = []
+
+    def query(selector):
+        if scanned[0]:
+            navigating_polls.append(selector)
+            raise cas_qr.PlaywrightError(
+                "Frame.query_selector: Execution context was destroyed, "
+                "most likely because of a navigation"
+            )
+        return None
+
+    frame.query_selector.side_effect = query
+    page.query_selector.side_effect = query
+
+    def wait(milliseconds):
+        clock[0] += milliseconds / 1000
+        if len(navigating_polls) >= 3:
+            context.route.call_args.args[1](Mock())
+
+    page.wait_for_timeout.side_effect = wait
+    monkeypatch.setattr(cas_qr, "sync_playwright", lambda: playwright)
+    context.cookies.return_value = [dict(COOKIE, expires=-1)]
+
+    def show(path):
+        scanned[0] = True
+
+    stored = cas_qr.feishu_qr_login(show, "tester", timeout=30)
+    assert stored.method == "feishu" and stored.cookies[0]["name"] == "CASTGC"
+    assert len(navigating_polls) >= 3
+    browser.close.assert_called_once()

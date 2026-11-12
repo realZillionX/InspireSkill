@@ -11,7 +11,14 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from PIL import Image, ImageOps
-from playwright.sync_api import Error as PlaywrightError, Route, sync_playwright
+from playwright.sync_api import (
+    ElementHandle,
+    Error as PlaywrightError,
+    Frame,
+    Page,
+    Route,
+    sync_playwright,
+)
 
 from .browser_launch import (
     chromium_launch_kwargs,
@@ -90,6 +97,21 @@ def render_qr(path: Path) -> str | None:
             }[(top, bottom)]
         lines.append("\x1b[30;47m" + line + "\x1b[0m")
     return "\n".join(lines)
+
+
+def _query(scope: Frame | Page | None, selector: str) -> ElementHandle | None:
+    """Query a page or frame that a completed scan may be navigating.
+
+    After the scan Feishu navigates its frame toward CAS, and Playwright fails
+    queries against the destroyed context. Report no match so polling continues
+    until the ticket redirect is captured.
+    """
+    if scope is None:
+        return None
+    try:
+        return scope.query_selector(selector)
+    except PlaywrightError:
+        return None
 
 
 def _publish_qr(account: str, path: Path | None, png: bytes) -> Path:
@@ -184,7 +206,7 @@ def _feishu_qr_login(
                         raise CasError("Feishu login did not return a CAS session.")
                     # Feishu codes expire after about 60 s behind a refresh mask;
                     # click it so the user always sees a live code.
-                    expired = frame.query_selector(EXPIRED_QR_SELECTOR) if frame else None
+                    expired = _query(frame, EXPIRED_QR_SELECTOR)
                     if expired is not None:
                         try:
                             expired.click(timeout=remaining_ms(5))
@@ -195,19 +217,16 @@ def _feishu_qr_login(
                         continue
                     if time.monotonic() - refreshed >= QR_CHECK_INTERVAL:
                         target = element
-                        if frame:
-                            candidate = frame.query_selector(
-                                'canvas, img[src*="qr"], img[class*="qr"]'
-                            )
-                            if candidate:
-                                target = candidate
+                        candidate = _query(frame, 'canvas, img[src*="qr"], img[class*="qr"]')
+                        if candidate:
+                            target = candidate
                         try:
                             png = target.screenshot(timeout=remaining_ms(5))
                         except PlaywrightError:
                             if captured:
                                 continue
                             # A canvas can detach when Feishu rotates its QR.
-                            fresh = page.query_selector("#larkQrcode iframe")
+                            fresh = _query(page, "#larkQrcode iframe")
                             if fresh is None:
                                 page.wait_for_timeout(remaining_ms(0.5))
                                 continue
@@ -216,7 +235,7 @@ def _feishu_qr_login(
                             png = fresh.screenshot(timeout=remaining_ms(5))
                         # The mask can appear between the check above and the
                         # capture; never publish an expired code.
-                        if frame and frame.query_selector(EXPIRED_QR_SELECTOR) is not None:
+                        if _query(frame, EXPIRED_QR_SELECTOR) is not None:
                             continue
                         if png != previous:
                             path = _publish_qr(account, path, png)
