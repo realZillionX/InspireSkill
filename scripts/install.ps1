@@ -30,6 +30,9 @@
 .PARAMETER SkipSkill
     Install the CLI only, and leave harness skill directories alone.
 
+.PARAMETER IndexUrl
+    Package index for uv / pipx; defaults to the existing environment or PyPI.
+
 .PARAMETER Version
     Install an exact version instead of the latest release.
 
@@ -49,6 +52,7 @@
 param(
     [switch]$SkipPlaywright,
     [switch]$SkipSkill,
+    [string]$IndexUrl,
     [string]$Version
 )
 
@@ -72,31 +76,55 @@ if ($Host.Name -eq 'ConsoleHost') {
 $uv = Get-Command uv -ErrorAction SilentlyContinue
 $pipx = Get-Command pipx -ErrorAction SilentlyContinue
 
-if ($uv) {
-    $installer = 'uv'
-    Write-Step "installing $Spec via uv tool"
-    & uv tool install --force --refresh $Spec
-    if ($LASTEXITCODE -ne 0) { throw "uv tool install failed for '$Spec'." }
-
-    # A leftover pipx install would put a second `inspire` shim on PATH and the
-    # two would race for the same name.
-    if ($pipx) {
-        $installed = & pipx list --short 2>$null
-        if ($LASTEXITCODE -eq 0 -and ($installed -match "^$([regex]::Escape($Package)) ")) {
-            Write-Step "removing earlier pipx install of $Package (uv tool now owns it)"
-            & pipx uninstall $Package 2>&1 | Out-Null
-        }
+function Show-Index { param([string]$Url)
+    if ($Url) {
+        $safeUrl = if ($Url -match '^[^:/?#]+://') {
+            $Url -replace '^([^:/?#]+://)[^/?#]*@', '$1'
+        } else { '[custom index]' }
+        Write-Step "package index: $safeUrl"
     }
-} elseif ($pipx) {
-    $installer = 'pipx'
-    Write-Step "installing $Spec via pipx"
-    & pipx install --force $Spec
-    if ($LASTEXITCODE -ne 0) { throw "pipx install failed for '$Spec'." }
-} else {
-    throw @'
+}
+
+$oldUvIndex = $env:UV_DEFAULT_INDEX
+$oldPipIndex = $env:PIP_INDEX_URL
+try {
+    if ($IndexUrl) {
+        $env:UV_DEFAULT_INDEX = $IndexUrl
+        $env:PIP_INDEX_URL = $IndexUrl
+    }
+    Write-Step 'Python packages: approximately 90 MB; on slow networks choose a closer PyPI mirror with -IndexUrl URL.'
+    if ($uv) {
+        Show-Index $(if ($env:UV_DEFAULT_INDEX) { $env:UV_DEFAULT_INDEX } else { $env:UV_INDEX_URL })
+        $installer = 'uv'
+        Write-Step "installing $Spec via uv tool"
+        & uv tool install --force --refresh $Spec
+        if ($LASTEXITCODE -ne 0) { throw "uv tool install failed for '$Spec'." }
+
+        # A leftover pipx install would put a second `inspire` shim on PATH and the
+        # two would race for the same name.
+        if ($pipx) {
+            $installed = & pipx list --short 2>$null
+            if ($LASTEXITCODE -eq 0 -and ($installed -match "^$([regex]::Escape($Package)) ")) {
+                Write-Step "removing earlier pipx install of $Package (uv tool now owns it)"
+                & pipx uninstall $Package 2>&1 | Out-Null
+            }
+        }
+    } elseif ($pipx) {
+        Show-Index $env:PIP_INDEX_URL
+        $installer = 'pipx'
+        Write-Step "installing $Spec via pipx"
+        & pipx install --force $Spec
+        if ($LASTEXITCODE -ne 0) { throw "pipx install failed for '$Spec'." }
+    } else {
+        throw @'
 Need uv or pipx on PATH. Install uv with:
     powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 '@
+    }
+
+} finally {
+    $env:UV_DEFAULT_INDEX = $oldUvIndex
+    $env:PIP_INDEX_URL = $oldPipIndex
 }
 
 # ---- make sure the shim is reachable ---------------------------------------
@@ -131,7 +159,7 @@ Write-Ok "inspire $installedVersion"
 # ---- browser runtime -------------------------------------------------------
 
 if (-not $SkipPlaywright) {
-    Write-Step 'preparing Playwright Chromium runtime'
+    Write-Step 'preparing Playwright Chromium runtime (approximately 150 MB download; this may take several minutes)'
     & $inspireExe _ensure-playwright-runtime
     if ($LASTEXITCODE -ne 0) {
         throw 'Playwright Chromium runtime setup failed — check network access, then rerun this script.'
@@ -147,7 +175,7 @@ if (-not $SkipSkill) {
     if ($LASTEXITCODE -ne 0) {
         Write-Warn 'skill refresh reported a problem; rerun `inspire update` once the CLI is on PATH.'
     } else {
-        Write-Ok 'skill files installed'
+        Write-Ok 'skill refresh complete'
     }
 }
 
@@ -160,12 +188,14 @@ Remove-Item Env:\INSPIRE_SKIP_UPDATE_CHECK -ErrorAction SilentlyContinue
 Write-Host ''
 Write-Ok 'InspireSkill installed.'
 Write-Host ''
-Write-Host '  1) Configure accounts & proxy:'
-Write-Host '        inspire account add <name>'
+Write-Host '  1) Create / authorize your account:'
+Write-Host '        inspire login'
 Write-Host '  2) Verify auth and resource visibility:'
 Write-Host '        inspire account check'
 Write-Host '        inspire init'
 Write-Host '        inspire resources availability --workspace <name> --include-cpu'
-Write-Host '  3) Check / apply upgrades anytime:'
+Write-Host '  3) Optional: authorize dataset commands:'
+Write-Host '        inspire login --cas feishu'
+Write-Host '  4) Check / apply upgrades anytime:'
 Write-Host '        inspire update --check     # report only'
 Write-Host '        inspire update             # CLI + SKILL in one shot'
