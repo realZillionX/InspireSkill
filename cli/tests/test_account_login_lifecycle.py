@@ -34,6 +34,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(commands, "stdin_is_interactive", lambda: False)
     login = Mock(
         return_value=SimpleNamespace(
+            refresh_offline=False,
             login_username="session-user",
             access_expires_at=1000,
             refresh_expires_at=2000,

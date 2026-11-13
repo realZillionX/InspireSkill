@@ -11,9 +11,15 @@ from urllib.parse import urlsplit
 import requests
 
 from inspire import __version__
-from .models import AuthenticationError
+from .models import (
+    AuthenticationError, RefreshRejectedError, RefreshUnavailableError,
+    TRANSIENT_HTTP_STATUSES, is_offline_refresh_token,
+)
 
 CLIENT_SOURCE = f"inspire-cli/inspireskill-{__version__}"
+DEVICE_SCOPE = "openid profile email offline_access"
+# Informational only: Keycloak controls the real offline session idle timeout.
+OFFLINE_IDLE_ESTIMATE_SECONDS = 30 * 24 * 60 * 60
 DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 
 
@@ -23,6 +29,7 @@ class TokenResponse:
     refresh_token: str = field(repr=False)
     access_expires_at: float
     refresh_expires_at: float
+    refresh_offline: bool = False
 
 
 def platform_headers(base_url: str, target_url: str, access_token: str) -> dict[str, str]:
@@ -71,6 +78,15 @@ class DeviceAuthorization:
             timeout=timeout,
             allow_redirects=False,
         )
+        if endpoint == "refresh" and (
+            response.status_code in TRANSIENT_HTTP_STATUSES or 500 <= response.status_code < 600
+        ):
+            try:
+                body = response.json()
+            except ValueError:
+                body = {}
+            reason = (body.get("error") or body.get("message")) if isinstance(body, dict) else None
+            raise RefreshUnavailableError(reason, response.status_code)
         try:
             body = response.json()
         except ValueError:
@@ -96,12 +112,17 @@ class DeviceAuthorization:
                 or not refresh
             ):
                 raise ValueError
+            offline = is_offline_refresh_token(refresh)
+            refresh_lifetime = float(data.get("refresh_expires_in", 0) if offline
+                                     else data["refresh_expires_in"])
+            offline = offline or refresh_lifetime == 0
             now = time.time()
             return TokenResponse(
                 access,
                 refresh,
                 now + float(data["expires_in"]),
-                now + float(data["refresh_expires_in"]),
+                now + (OFFLINE_IDLE_ESTIMATE_SECONDS if offline else refresh_lifetime),
+                refresh_offline=offline,
             )
         except (KeyError, TypeError, ValueError, OverflowError):
             raise AuthenticationError("Invalid authentication tokens; run inspire login.") from None
@@ -117,7 +138,7 @@ class DeviceAuthorization:
             transport_deadline = self.clock() + owner.remaining()
             deadline = min(deadline, transport_deadline) if deadline is not None else transport_deadline
         status, body = self._post(
-            "device-code", {"scope": "openid profile email"}, deadline=deadline
+            "device-code", {"scope": DEVICE_SCOPE}, deadline=deadline
         )
         if status != 200 or body.get("code") != 0:
             raise AuthenticationError("Device authorization failed; run inspire login.")
@@ -160,5 +181,12 @@ class DeviceAuthorization:
         """Exchange a refresh token for a new rotating token pair."""
         status, body = self._post("refresh", {"refresh_token": refresh_token})
         if status != 200 or body.get("code") != 0:
-            raise AuthenticationError("Session refresh failed; run inspire login.")
+            reason = body.get("error") or body.get("message")
+            if reason == "temporarily_unavailable":
+                raise RefreshUnavailableError(reason, status)
+            if status in {400, 401} and isinstance(reason, str) and reason in {
+                "invalid_grant", "invalid_token", "invalid_client", "unauthorized_client",
+            }:
+                raise RefreshRejectedError(reason, status)
+            raise AuthenticationError(f"Session refresh failed (HTTP {status}); run inspire login.")
         return self._tokens(body)

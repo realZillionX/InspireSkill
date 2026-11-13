@@ -308,12 +308,18 @@ def login(
         "account": account,
         "login_username": session.login_username,
         "access_expires_at": session.access_expires_at,
-        "refresh_expires_at": session.refresh_expires_at,
+        "refresh_kind": "offline" if session.refresh_offline else "session",
+        "refresh_expires_at": None if session.refresh_offline else session.refresh_expires_at,
     }
     if ctx.json_output:
         click.echo(json.dumps({"success": True, "data": payload}, separators=(",", ":")))
     else:
         click.echo(f"Logged in: {account} ({session.login_username or 'authenticated'})")
+        detail = (
+            "offline (no fixed expiry; server-side idle timeout applies)"
+            if session.refresh_offline else "session"
+        )
+        click.echo(f"OAuth refresh token: {detail}")
 
 
 @click.command()

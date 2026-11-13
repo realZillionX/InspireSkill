@@ -17,11 +17,11 @@ import click
 from inspire.cli.context import (
     Context,
     EXIT_AUTH_ERROR,
+    EXIT_API_ERROR,
     EXIT_CONFIG_ERROR,
     EXIT_GENERAL_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import human_formatter
 from inspire.services.utils import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.services.utils.raw_ids import scrub_raw_ids
@@ -31,7 +31,7 @@ from inspire.config import (
     SOURCE_DEFAULT,
 )
 from inspire.platform.web import browser_api as browser_api_module
-from inspire.platform.web.session import SessionExpiredError, get_web_session
+from inspire.platform.web.session import SessionExpiredError, TransientAPIError, get_web_session
 from inspire.platform.web.session.proxy import describe_effective_proxy_config
 
 from inspire.services.account.auth_status import (
@@ -83,7 +83,9 @@ def _build_base_url_resolution(
     help="Show source precedence, proxy routing, and config-file presence.",
 )
 @click.option(
-    "--offline", is_flag=True, help="Inspect local login state without network or writes."
+    "--offline",
+    is_flag=True,
+    help="Inspect local expiry without network or writes; refreshability is not verified offline.",
 )
 @pass_context
 def check(ctx: Context, details: bool, offline: bool) -> None:
@@ -122,8 +124,9 @@ def check(ctx: Context, details: bool, offline: bool) -> None:
         before = inspect_auth_status(account)
         auth_ok = True
         auth_error = None
+        auth_exception = None
         if offline:
-            auth_ok = before["oauth"]["state"] in {"valid", "refreshable"}
+            auth_ok = before["oauth"]["state"] in {"valid", "refreshable", "offline"}
         else:
             try:
                 session = get_web_session()
@@ -131,7 +134,8 @@ def check(ctx: Context, details: bool, offline: bool) -> None:
             except (SessionExpiredError, ValueError) as e:
                 auth_ok = False
                 auth_error = str(e)
-        status = before if offline else inspect_auth_status(account)
+                auth_exception = e
+        status = before if offline else inspect_auth_status(account, error=auth_exception)
         refreshed = before["oauth"]["issued_at"] != status["oauth"]["issued_at"]
         if not auth_ok and before["oauth"]["state"] == "legacy":
             auth_error = legacy_message(account)
@@ -192,15 +196,17 @@ def check(ctx: Context, details: bool, offline: bool) -> None:
             click.echo(json_formatter.format_json(result, success=auth_ok))
         else:
             click.echo(f"Account: {active_account or '-'}")
-            click.echo(human_formatter.format_success("Configuration: OK"))
+            click.echo("Configuration: OK")
             if offline:
                 click.echo("Authentication: not verified (offline)")
             elif auth_ok:
                 suffix = " (refreshed now)" if refreshed else ""
-                click.echo(human_formatter.format_success("Authentication: OK" + suffix))
+                click.echo("Authentication: OK" + suffix)
             else:
-                click.echo(human_formatter.format_error("Authentication: FAILED"))
-            for line in format_auth_status(status, account):
+                click.echo("Authentication: FAILED")
+            for line in format_auth_status(
+                status, account, authenticated=None if offline else auth_ok
+            ):
                 click.echo(line)
             if show_details:
                 click.echo(
@@ -224,7 +230,8 @@ def check(ctx: Context, details: bool, offline: bool) -> None:
                     click.echo(line)
 
         if not auth_ok:
-            sys.exit(EXIT_AUTH_ERROR)
+            sys.exit(EXIT_API_ERROR if isinstance(auth_exception, TransientAPIError)
+                     else EXIT_AUTH_ERROR)
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
     except Exception as e:

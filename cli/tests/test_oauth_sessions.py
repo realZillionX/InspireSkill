@@ -470,3 +470,134 @@ def test_discovery_validates_base_url_before_session(url: str, matches: bool) ->
         with pytest.raises(ValueError, match="--base-url only applies"):
             _resolve_discover_runtime(**kwargs)
         web.get_web_session.assert_not_called()
+
+
+@pytest.mark.parametrize("offline", [None, False, True])
+def test_refresh_kind_cache_roundtrip(account, monkeypatch, offline):
+    cached = replace(session(account), login_username="alice")
+    payload = cached.to_dict()
+    if offline is None:
+        payload.pop("refresh_offline")
+    else:
+        payload["refresh_offline"] = offline
+    path = accounts.account_dir(account) / "web_session.json"
+    path.write_text(json.dumps(payload))
+    before = (path.read_bytes(), path.stat().st_mtime_ns)
+    with monkeypatch.context() as patch:
+        patch.setattr(WebSession, "save", Mock(side_effect=AssertionError("unexpected rewrite")))
+        restored = WebSession.load(account=account)
+    assert restored.refresh_offline is bool(offline)
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+    restored.save()
+    assert WebSession.load(account=account).refresh_offline is bool(offline)
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_offline_refresh_ignores_local_estimate(account, monkeypatch):
+    from inspire.platform.web.session.oauth import DeviceAuthorization, OFFLINE_IDLE_ESTIMATE_SECONDS
+
+    replace(session(account, expired=True), refresh_expires_at=1, refresh_offline=True).save()
+    refresh = Mock(side_effect=lambda _: DeviceAuthorization._tokens({"data": {
+        "access_token": "new-access", "refresh_token": "new-refresh",
+        "expires_in": 3600, "refresh_expires_in": 0,
+    }}))
+    monkeypatch.setattr(auth.DeviceAuthorization, "refresh", refresh)
+    monkeypatch.setattr(auth, "_renew_with_cas", Mock(side_effect=AssertionError("unexpected CAS")))
+    result = auth.refresh_cached(account)
+    refresh.assert_called_once()
+    assert result.refresh_offline
+    saved = WebSession.load(account=account)
+    assert saved.refresh_offline
+    assert saved.refresh_expires_at == pytest.approx(time.time() + OFFLINE_IDLE_ESTIMATE_SECONDS, abs=2)
+
+
+def _jwt(payload):
+    import base64
+
+    body = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    return f"e30.{body}.sig"
+
+
+def test_offline_token_rewritten_by_older_release_still_refreshes(account, monkeypatch):
+    # v7.2.1 drops refresh_offline and stores refresh_expires_at = now for offline tokens.
+    cached = replace(session(account, expired=True), refresh_token=_jwt({"typ": "Offline"}),
+                     refresh_expires_at=1)
+    data = cached.to_dict()
+    data.pop("refresh_offline")
+    path = accounts.account_dir(account) / "web_session.json"
+    cached.save()
+    path.write_text(json.dumps(data))
+    assert WebSession.load(allow_expired=True, account=account).refresh_offline
+    refresh = Mock(return_value=TokenResponse("new-access", _jwt({"typ": "Offline"}),
+                                              time.time() + 3600, time.time() + 60,
+                                              refresh_offline=True))
+    monkeypatch.setattr(auth.DeviceAuthorization, "refresh", refresh)
+    monkeypatch.setattr(auth, "_renew_with_cas", Mock(side_effect=AssertionError("unexpected CAS")))
+    assert auth.refresh_cached(account).access_token == "new-access"
+    refresh.assert_called_once()
+
+
+def test_session_refresh_token_is_not_classified_offline(account):
+    cached = replace(session(account), refresh_token=_jwt({"typ": "Refresh"}))
+    cached.save()
+    assert not WebSession.load(account=account).refresh_offline
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_offline_login_output(account, monkeypatch, as_json):
+    import importlib
+    from inspire.cli.main import main
+
+    commands = importlib.import_module("inspire.cli.commands.login")
+    cached = replace(session(account), refresh_offline=True)
+    monkeypatch.setattr(commands, "run_login", lambda *a, **kw: cached)
+    result = CliRunner().invoke(main, (["--json"] if as_json else []) + ["login", "--no-browser"])
+    assert result.exit_code == 0, result.output
+    if as_json:
+        data = json.loads(result.output)["data"]
+        assert data["refresh_kind"] == "offline"
+        assert data["refresh_expires_at"] is None
+    else:
+        assert "offline (no fixed expiry; server-side idle timeout applies)" in result.output
+    assert cached.refresh_token not in result.output
+
+
+def test_offline_refresh_protocol_failure_falls_back_to_cas(account, monkeypatch):
+    replace(session(account, expired=True), refresh_expires_at=1, refresh_offline=True).save()
+    monkeypatch.setattr(auth.DeviceAuthorization, "refresh", Mock(side_effect=AuthenticationError(
+        "Invalid authentication response; run inspire login."
+    )))
+    renewed = object()
+    renew = Mock(return_value=renewed)
+    monkeypatch.setattr(auth, "_renew_with_cas", renew)
+    assert auth.refresh_cached(account) is renewed
+    renew.assert_called_once()
+
+
+@pytest.mark.parametrize("kind", ["connection", "timeout", "request", "transient"])
+@pytest.mark.parametrize("cas_succeeds", [False, True])
+def test_refresh_retryable_failure_tries_cas(account, monkeypatch, kind, cas_succeeds):
+    import requests
+    from inspire.platform.web.session.models import RefreshUnavailableError
+
+    errors = {
+        "connection": requests.ConnectionError("connection failed"),
+        "timeout": requests.Timeout("timed out"),
+        "request": requests.RequestException("request failed"),
+        "transient": RefreshUnavailableError("temporarily_unavailable", 503),
+    }
+    error = errors[kind]
+    session(account, expired=True).save()
+    monkeypatch.setattr(auth.DeviceAuthorization, "refresh", Mock(side_effect=error))
+    renewed = session(account)
+    cas_error = AuthenticationError("CAS unavailable")
+    renew = Mock(return_value=renewed, side_effect=None if cas_succeeds else cas_error)
+    monkeypatch.setattr(auth, "_renew_with_cas", renew)
+    if cas_succeeds:
+        assert auth.refresh_cached(account) is renewed
+    else:
+        with pytest.raises(type(error)) as caught:
+            auth.refresh_cached(account)
+        assert caught.value is error
+        assert caught.value.__cause__ is cas_error
+    renew.assert_called_once()

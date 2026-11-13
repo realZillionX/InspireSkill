@@ -57,7 +57,7 @@ def test_device_polling(terminal):
     assert len(notifications) == 1
     for call in http.post.call_args_list:
         assert call.kwargs["allow_redirects"] is False
-    assert http.post.call_args_list[0].kwargs["json"] == {"scope": "openid profile email"}
+    assert http.post.call_args_list[0].kwargs["json"] == {"scope": "openid profile email offline_access"}
 
 
 def test_refresh_returns_rotated_token():
@@ -106,3 +106,153 @@ def test_device_deadline_clips_poll_sleeps(budget, slow_down, transport_budget):
         assert http.post.call_count == 1
     for call in http.post.call_args_list:
         assert call.kwargs["timeout"] <= budget
+
+
+@pytest.mark.parametrize("message,reason", [
+    ("invalid_grant", "invalid_grant"),
+    ("credential SECRET-REFRESH rejected", "refresh_rejected"),
+    ("invalid_grant\n", "refresh_rejected"),
+    ("x" * 65, "refresh_rejected"),
+    ("private_server_text", "refresh_rejected"),
+    (None, "refresh_rejected"),
+    ({"error": "invalid_grant"}, "refresh_rejected"),
+])
+def test_refresh_rejection_sanitized(message, reason):
+    from inspire.platform.web.session.models import RefreshRejectedError
+
+    http = Mock()
+    http.post.return_value = response(400, {"code": -100000, "message": message})
+    with pytest.raises(AuthenticationError) as caught:
+        DeviceAuthorization("https://platform.test", http).refresh("SECRET-REFRESH")
+    assert isinstance(caught.value, AuthenticationError)
+    if reason == "invalid_grant":
+        assert isinstance(caught.value, RefreshRejectedError)
+        assert caught.value.reason == reason
+    else:
+        assert not isinstance(caught.value, RefreshRejectedError)
+    assert "HTTP 400" in str(caught.value)
+    assert "SECRET-REFRESH" not in str(caught.value)
+
+
+def test_refresh_network_error_propagates():
+    import requests
+
+    http = Mock()
+    error = requests.ConnectionError("unavailable")
+    http.post.side_effect = error
+    with pytest.raises(requests.ConnectionError) as caught:
+        DeviceAuthorization("https://platform.test", http).refresh("fake-refresh")
+    assert caught.value is error
+
+
+@pytest.mark.parametrize("lifetime,typ,offline", [
+    (0, None, True), (None, "Offline", True), (604800, None, False),
+    (604800, "Offline", True), (604800, "Refresh", False),
+])
+def test_token_refresh_classification(monkeypatch, lifetime, typ, offline):
+    import base64
+    import json
+    import math
+    from inspire.platform.web.session import oauth
+
+    monkeypatch.setattr(oauth.time, "time", lambda: 1000)
+    refresh = "malformed"
+    if typ:
+        payload = base64.urlsafe_b64encode(json.dumps({"typ": typ}).encode()).decode().rstrip("=")
+        refresh = f"header.{payload}.signature"
+    data = {"access_token": "fake-access", "refresh_token": refresh, "expires_in": 3600}
+    if lifetime is not None:
+        data["refresh_expires_in"] = lifetime
+    result = DeviceAuthorization._tokens({"data": data})
+    assert result.refresh_offline is offline
+    assert math.isfinite(result.refresh_expires_at)
+    assert result.refresh_expires_at == 1000 + (30 * 86400 if offline else 604800)
+    assert result.access_expires_at == 4600
+
+
+@pytest.mark.parametrize("refresh", ["not-a-jwt", "a.!.b", "a.e30.b", "a.W10.b", "a._w.b"])
+@pytest.mark.parametrize("lifetime", [0, 604800])
+def test_malformed_refresh_claims_do_not_break_classification(refresh, lifetime):
+    tokens = DeviceAuthorization._tokens({"data": {
+        "access_token": "fake-access", "refresh_token": refresh,
+        "expires_in": 3600, "refresh_expires_in": lifetime,
+    }})
+    assert tokens.refresh_offline is (lifetime == 0)
+
+
+@pytest.mark.parametrize("typ", ["Refresh", None])
+def test_missing_refresh_lifetime_is_invalid(typ):
+    import base64
+    import json
+
+    payload = base64.urlsafe_b64encode(json.dumps({"typ": typ}).encode()).decode().rstrip("=")
+    with pytest.raises(AuthenticationError, match="Invalid authentication tokens"):
+        DeviceAuthorization._tokens({"data": {
+            "access_token": "fake-access", "refresh_token": f"header.{payload}.signature",
+            "expires_in": 3600,
+        }})
+
+
+@pytest.mark.parametrize("status", [408, 425, 429, 500, 501, 503, 599])
+@pytest.mark.parametrize("body", [
+    {"message": "private_server_text"}, {"error": "server_error"}, [], None,
+])
+def test_refresh_transient_status(status, body):
+    from inspire.platform.web.session.models import RefreshUnavailableError, TransientAPIError
+
+    http = Mock()
+    http.post.return_value = response(status, body)
+    with pytest.raises(RefreshUnavailableError) as caught:
+        DeviceAuthorization("https://platform.test", http).refresh("fake-refresh")
+    error = caught.value
+    assert isinstance(error, TransientAPIError)
+    assert not isinstance(error, AuthenticationError)
+    assert error.status == status
+    assert error.reason == ("server_error" if body == {"error": "server_error"} else "unavailable")
+    assert "private_server_text" not in str(error)
+
+
+def test_refresh_temporarily_unavailable():
+    from inspire.platform.web.session.models import RefreshUnavailableError
+
+    http = Mock()
+    http.post.return_value = response(400, {"error": "temporarily_unavailable"})
+    with pytest.raises(RefreshUnavailableError) as caught:
+        DeviceAuthorization("https://platform.test", http).refresh("fake-refresh")
+    assert caught.value.reason == "temporarily_unavailable"
+    assert caught.value.status == 400
+
+
+def test_refresh_transient_invalid_json():
+    from inspire.platform.web.session.models import RefreshUnavailableError
+
+    http = Mock()
+    http.post.return_value = Mock(status_code=503, json=Mock(side_effect=ValueError("private")))
+    with pytest.raises(RefreshUnavailableError, match="HTTP 503"):
+        DeviceAuthorization("https://platform.test", http).refresh("fake-refresh")
+
+
+@pytest.mark.parametrize("error_type", ["rejected", "unavailable"])
+def test_refresh_error_reason_allowlist(error_type):
+    from inspire.platform.web.session.models import RefreshRejectedError, RefreshUnavailableError
+
+    cls = RefreshRejectedError if error_type == "rejected" else RefreshUnavailableError
+    error = cls("private_server_text", 400)
+    assert error.reason == ("refresh_rejected" if error_type == "rejected" else "unavailable")
+    assert "private_server_text" not in str(error)
+
+
+@pytest.mark.parametrize("status", [400, 401])
+@pytest.mark.parametrize("field", ["error", "message"])
+@pytest.mark.parametrize("reason", [
+    "invalid_grant", "invalid_token", "invalid_client", "unauthorized_client",
+])
+def test_refresh_credential_rejection(status, field, reason):
+    from inspire.platform.web.session.models import RefreshRejectedError
+
+    http = Mock()
+    http.post.return_value = response(status, {field: reason})
+    with pytest.raises(RefreshRejectedError) as caught:
+        DeviceAuthorization("https://platform.test", http).refresh("fake-refresh")
+    assert caught.value.reason == reason
+    assert caught.value.status == status

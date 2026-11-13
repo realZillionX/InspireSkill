@@ -11,7 +11,9 @@ from datetime import datetime
 from typing import Any
 
 from inspire.platform.web.session.cas import CasSession
-from inspire.platform.web.session.models import WebSession, get_session_cache_file
+from inspire.platform.web.session.models import (
+    RefreshRejectedError, RefreshUnavailableError, WebSession, get_session_cache_file,
+)
 
 
 def login_hint(account: str | None, *, cas: bool = False) -> str:
@@ -31,7 +33,9 @@ def _iso(timestamp: float) -> str | None:
         return None
 
 
-def inspect_auth_status(account: str | None) -> dict[str, Any]:
+def inspect_auth_status(
+    account: str | None, *, error: BaseException | None = None
+) -> dict[str, Any]:
     """Inspect local caches without networking, identity repair, or writes."""
     now = time.time()
     path = get_session_cache_file(account)
@@ -43,20 +47,26 @@ def inspect_auth_status(account: str | None) -> dict[str, Any]:
         "access_expires_in": None,
         "refresh_expires_in": None,
         "issued_at": None,
+        "refresh_kind": "session",
     }
     if session is not None:
         oauth.update(
             state=(
                 "valid"
                 if session.access_expires_at > now + 60
+                else "offline"
+                if session.refresh_offline
                 else "refreshable"
                 if session.refresh_expires_at > now
                 else "expired"
             ),
             access_expires_at=_iso(session.access_expires_at),
-            refresh_expires_at=_iso(session.refresh_expires_at),
+            refresh_kind="offline" if session.refresh_offline else "session",
+            refresh_expires_at=None if session.refresh_offline else _iso(session.refresh_expires_at),
             access_expires_in=max(0, int(session.access_expires_at - now)),
-            refresh_expires_in=max(0, int(session.refresh_expires_at - now)),
+            refresh_expires_in=(
+                None if session.refresh_offline else max(0, int(session.refresh_expires_at - now))
+            ),
             issued_at=_iso(session.created_at),
         )
     cached_cas = CasSession.load(account=account)
@@ -75,6 +85,27 @@ def inspect_auth_status(account: str | None) -> dict[str, Any]:
         )
     if oauth["state"] == "expired" and cached_cas is not None:
         oauth["note"] = f"Renewal will be attempted via CAS; otherwise run {login_hint(account)}."
+    # Wrappers may preserve either an explicit cause or an implicit context.
+    pending = [error] if error is not None else []
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, RefreshUnavailableError):
+            oauth.update(
+                refresh_error=current.reason, refresh_retryable=True, refresh_status=current.status,
+            )
+            oauth.pop("note", None)
+            break
+        if isinstance(current, RefreshRejectedError):
+            oauth.update(state="rejected", refresh_error=current.reason)
+            oauth.pop("note", None)
+            break
+        pending.extend(
+            cause for cause in (current.__cause__, current.__context__) if cause is not None
+        )
     return {"oauth": oauth, "cas": cas}
 
 
@@ -94,11 +125,24 @@ def format_duration(seconds: int) -> str:
     return f"{seconds // 60}m" if seconds >= 60 else f"{seconds}s"
 
 
-def format_auth_status(status: dict[str, Any], account: str | None) -> list[str]:
+def format_auth_status(
+    status: dict[str, Any], account: str | None, *, authenticated: bool | None = None
+) -> list[str]:
     oauth, cas = status["oauth"], status["cas"]
     lines = []
     for token in ("access", "refresh"):
         expiry = oauth[f"{token}_expires_at"]
+        if token == "refresh" and oauth["state"] == "rejected":
+            detail = f"; local expiry {_display_time(expiry)}" if expiry else ""
+            lines.append(
+                f"OAuth refresh token: rejected by server ({oauth['refresh_error']}){detail}"
+            )
+            continue
+        if token == "refresh" and oauth.get("refresh_kind") == "offline":
+            lines.append(
+                "OAuth refresh token: offline (no fixed expiry; server-side idle timeout applies)"
+            )
+            continue
         remaining = oauth[f"{token}_expires_in"]
         state = oauth["state"]
         if remaining is not None:
@@ -109,8 +153,15 @@ def format_auth_status(status: dict[str, Any], account: str | None) -> list[str]
             else ""
         )
         lines.append(f"OAuth {token} token: {state}{detail}")
+    if oauth.get("refresh_retryable"):
+        lines.append(
+            f"OAuth refresh: temporarily unavailable (HTTP {oauth['refresh_status']}); retry later"
+        )
     if oauth["state"] == "refreshable":
-        lines.append("OAuth: refreshable; renewed automatically on next use.")
+        if authenticated is True:
+            lines.append("OAuth: refreshable; renewed automatically on next use.")
+        elif authenticated is None:
+            lines.append("OAuth: refreshable by local expiry (not verified offline).")
     if oauth.get("note"):
         lines.append(oauth["note"])
     cas_state = cas["state"]

@@ -234,6 +234,7 @@ def test_cli_two_step(monkeypatch):
         "run_login",
         Mock(
             return_value=SimpleNamespace(
+                refresh_offline=False,
                 login_username="tester", access_expires_at=1, refresh_expires_at=2
             )
         ),
@@ -289,6 +290,7 @@ def test_silent_renewal_without_relocking(monkeypatch, expired):
         refresh_token="new-refresh",
         access_expires_at=100,
         refresh_expires_at=200,
+        refresh_offline=True,
     )
 
     class Device:
@@ -296,7 +298,7 @@ def test_silent_renewal_without_relocking(monkeypatch, expired):
             pass
 
         def refresh(self, token):
-            raise auth.AuthenticationError("refused")
+            raise auth.RefreshRejectedError("invalid_grant", 400)
 
         def login(self, notify, *, deadline=None):
             notify("https://keycloak.test/device", "code", 300)
@@ -311,6 +313,7 @@ def test_silent_renewal_without_relocking(monkeypatch, expired):
     monkeypatch.setattr(auth, "_save_existing_account", saved)
     assert auth.refresh_cached("tester").access_token == "new"
     saved.assert_called_once()
+    assert saved.call_args.args[0].refresh_offline
     monkeypatch.setattr(auth, "cas_ticket_valid", lambda *a: False)
     with pytest.raises(auth.AuthenticationError, match="inspire login"):
         auth.refresh_cached("tester")
@@ -463,7 +466,7 @@ def test_feishu_cli_autoapproval_and_json(monkeypatch, approved):
 
     def device(name, notify):
         notify("https://keycloak.test/device", "device-user-code", 300)
-        return SimpleNamespace(login_username="tester", access_expires_at=10, refresh_expires_at=20)
+        return SimpleNamespace(refresh_offline=False, login_username="tester", access_expires_at=10, refresh_expires_at=20)
 
     monkeypatch.setattr(commands, "device_login", device)
     result = CliRunner().invoke(main, ["login", "--account", "tester", "--cas", "feishu", "--json"])
@@ -506,7 +509,7 @@ def test_silent_renewal_requires_same_known_identity(monkeypatch, old, new, disc
     cas.CasSession([COOKIE], time.time(), "sms").save("tester")
     monkeypatch.setattr(auth, "cas_ticket_valid", lambda *a: True)
     monkeypatch.setattr(auth, "token_login_username", lambda token: new)
-    tokens = SimpleNamespace(access_token="new", refresh_token="refresh", access_expires_at=10,
+    tokens = SimpleNamespace(refresh_offline=False, access_token="new", refresh_token="refresh", access_expires_at=10,
                              refresh_expires_at=20)
     device = Mock()
     device.login.return_value = tokens
@@ -539,7 +542,7 @@ def test_explicit_cas_login_rebuilds_identity_even_if_discovery_fails(monkeypatc
     monkeypatch.setattr(cas, "approve_device", lambda *a: True)
     monkeypatch.setattr(auth, "token_login_username", lambda token: "B")
     device = Mock()
-    device.login.return_value = SimpleNamespace(access_token="new", refresh_token="new-refresh",
+    device.login.return_value = SimpleNamespace(refresh_offline=False, access_token="new", refresh_token="new-refresh",
                                                access_expires_at=time.time()+100, refresh_expires_at=time.time()+200)
     monkeypatch.setattr(auth, "DeviceAuthorization", Mock(return_value=device))
     monkeypatch.setattr(auth, "_discover_identity", lambda *a: None)
@@ -681,7 +684,7 @@ def test_silent_renewal_caps_the_whole_flow_and_restores_budget(monkeypatch):
         assert deadline == 160
         assert cas.request_timeout(300) == 40
         clock[0] = deadline
-        return SimpleNamespace(access_token="new", refresh_token="refresh",
+        return SimpleNamespace(refresh_offline=False, access_token="new", refresh_token="refresh",
                                access_expires_at=100, refresh_expires_at=200)
 
     monkeypatch.setattr(auth, "cas_ticket_valid", valid)
@@ -713,7 +716,7 @@ def test_cas_success_oauth_failure_cannot_later_switch_identity(monkeypatch):
     cached = WebSession.load(account="tester", allow_expired=True)
     assert cached.login_username == "A" and cached.access_token == "old"
     device.login.side_effect = None
-    device.login.return_value = SimpleNamespace(access_token="new", refresh_token="new-refresh",
+    device.login.return_value = SimpleNamespace(refresh_offline=False, access_token="new", refresh_token="new-refresh",
                                                access_expires_at=10, refresh_expires_at=20)
     monkeypatch.setattr(auth, "token_login_username", lambda token: "B")
     with pytest.raises(auth.AuthenticationError, match="inspire login"):
@@ -749,6 +752,7 @@ def test_recreated_account_rejects_old_login_publications(monkeypatch, kind):
         accounts.create_account("tester", '[api]\nbase_url="https://new.test"\n')
 
     tokens = SimpleNamespace(
+        refresh_offline=False,
         access_token="old-flow", refresh_token="old-refresh",
         access_expires_at=time.time() + 100, refresh_expires_at=time.time() + 200,
     )
@@ -918,3 +922,44 @@ def test_feishu_navigation_after_scan_keeps_polling(monkeypatch):
     stored = cas_qr.feishu_qr_login(show, "tester", timeout=30)
     assert stored.method == "feishu"
     assert len(navigating_queries) >= 3
+
+
+@pytest.mark.parametrize("cas_state", ["missing", "expired"])
+@pytest.mark.parametrize("offline", [False, True])
+def test_rejected_refresh_preserves_reason(monkeypatch, cas_state, offline):
+    cached = WebSession("old", "refresh", 0, time.time() + 600, 1,
+                        account="tester", base_url="https://platform.test", refresh_offline=offline)
+    if offline:
+        cached.refresh_expires_at = 0
+    monkeypatch.setattr(WebSession, "load", lambda **kw: cached)
+    monkeypatch.setattr(accounts, "default_account", lambda: "default")
+    if cas_state == "expired":
+        cas.CasSession([COOKIE], time.time(), "sms").save("tester")
+    monkeypatch.setattr(auth, "cas_ticket_valid", lambda *a: False)
+    device = Mock()
+    rejected = auth.RefreshRejectedError("invalid_grant", 400)
+    device.refresh.side_effect = rejected
+    monkeypatch.setattr(auth, "DeviceAuthorization", Mock(return_value=device))
+    with pytest.raises(auth.AuthenticationError) as caught:
+        auth.refresh_cached("tester")
+    assert caught.value.__cause__ is rejected
+    for text in ("invalid_grant", "for example", "CAS renewal", "inspire login --account tester"):
+        assert text in str(caught.value)
+
+
+def test_missing_cache_keeps_login_message(monkeypatch):
+    monkeypatch.setattr(WebSession, "load", lambda **kw: None)
+    monkeypatch.setattr(accounts, "default_account", lambda: "default")
+    with pytest.raises(auth.AuthenticationError) as caught:
+        auth.refresh_cached("tester")
+    assert str(caught.value) == "Not logged in; run inspire login --account tester."
+
+
+def test_locally_expired_refresh_keeps_login_message(monkeypatch):
+    cached = WebSession("old", "refresh", 0, 0, 1, account="tester")
+    monkeypatch.setattr(WebSession, "load", lambda **kw: cached)
+    monkeypatch.setattr(accounts, "default_account", lambda: "default")
+    monkeypatch.setattr(auth, "DeviceAuthorization", Mock(side_effect=AssertionError("must not refresh")))
+    with pytest.raises(auth.AuthenticationError) as caught:
+        auth.refresh_cached("tester")
+    assert str(caught.value) == "Not logged in; run inspire login --account tester."
