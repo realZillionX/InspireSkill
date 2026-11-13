@@ -113,7 +113,7 @@ def refresh_cached(account: str | None, observed: float | None = None) -> WebSes
     except (requests.RequestException, TransientAPIError) as refresh_error:
         try:
             return _renew_with_cas(cached, account)
-        except Exception as cas_error:
+        except (AuthenticationError, requests.RequestException, TransientAPIError) as cas_error:
             raise refresh_error from cas_error
     except AuthenticationError:
         # Any working credential is enough: CAS stays the fallback for every session kind.

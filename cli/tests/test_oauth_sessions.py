@@ -498,7 +498,7 @@ def test_offline_refresh_ignores_local_estimate(account, monkeypatch):
 
     replace(session(account, expired=True), refresh_expires_at=1, refresh_offline=True).save()
     refresh = Mock(side_effect=lambda _: DeviceAuthorization._tokens({"data": {
-        "access_token": "new-access", "refresh_token": "new-refresh",
+        "access_token": "new-access", "refresh_token": _jwt({"typ": "Offline"}),
         "expires_in": 3600, "refresh_expires_in": 0,
     }}))
     monkeypatch.setattr(auth.DeviceAuthorization, "refresh", refresh)
@@ -601,3 +601,19 @@ def test_refresh_retryable_failure_tries_cas(account, monkeypatch, kind, cas_suc
         assert caught.value is error
         assert caught.value.__cause__ is cas_error
     renew.assert_called_once()
+
+
+@pytest.mark.parametrize("failure", ["deadline", "closed", "thread", "programming"])
+def test_cas_unexpected_failure_propagates(account, monkeypatch, failure):
+    import requests
+    from inspire.platform.errors import WaitTimeoutError, ClientClosedError, ClientThreadError
+
+    errors = {"deadline": WaitTimeoutError("deadline"), "closed": ClientClosedError("closed"),
+              "thread": ClientThreadError("thread"), "programming": RuntimeError("bug")}
+    error = errors[failure]
+    session(account, expired=True).save()
+    monkeypatch.setattr(auth.DeviceAuthorization, "refresh", Mock(side_effect=requests.ConnectionError("network")))
+    monkeypatch.setattr(auth, "_renew_with_cas", Mock(side_effect=error))
+    with pytest.raises(type(error)) as caught:
+        auth.refresh_cached(account)
+    assert caught.value is error

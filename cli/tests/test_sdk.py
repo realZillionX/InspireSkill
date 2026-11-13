@@ -1353,3 +1353,73 @@ def test_training_string_and_typed_quota_create_identical_payload(client, planne
         with pytest.raises(ValidationError):
             client.jobs.create(replace(planned, quota=quota))
     assert len(payloads) == 4
+
+
+@pytest.mark.parametrize("kind", ["transient", "network", "auth"])
+@pytest.mark.parametrize("cli_compat", [False, True])
+def test_refresh_failure_mapping(client, monkeypatch, kind, cli_compat):
+    import requests
+    from unittest.mock import Mock
+    from inspire.platform.web.session import auth
+    from inspire.platform.web.session.models import RefreshUnavailableError
+
+    error = {"transient": RefreshUnavailableError("temporarily_unavailable", 503),
+             "network": requests.ConnectionError("network"),
+             "auth": auth.AuthenticationError("rejected")}[kind]
+    client._transport.cli_compat = cli_compat
+    monkeypatch.setattr(auth, "refresh_session", Mock(side_effect=error))
+    expected = AuthenticationError if kind == "auth" else TransportError
+    with pytest.raises(expected) as caught:
+        client._transport._refresh()
+    assert caught.value.__cause__ is error
+    assert caught.value.retryable is (kind != "auth")
+
+
+@pytest.mark.parametrize("cli_compat", [False, True])
+@pytest.mark.parametrize("kind", ["transient", "network"])
+def test_acquire_session_retryable_failure(client, monkeypatch, cli_compat, kind):
+    import requests
+    from unittest.mock import Mock
+    from inspire.platform.web import session
+    from inspire.platform.web.session.models import RefreshUnavailableError
+
+    error = (requests.ConnectionError("network") if kind == "network"
+             else RefreshUnavailableError("temporarily_unavailable", 503))
+    client._transport.cli_compat = cli_compat
+    monkeypatch.setattr(session, "get_web_session", Mock(side_effect=error))
+    with pytest.raises(TransportError) as caught:
+        client._transport._acquire_session()
+    assert caught.value.retryable is True
+    assert caught.value.__cause__ is error
+
+
+def test_operation_network_error_precedes_cas_cause(client):
+    import requests
+    from inspire.sdk.resources import operation
+    from inspire.platform.web.session.models import AuthenticationError as SessionAuthenticationError
+
+    error = requests.ConnectionError("network")
+    error.__cause__ = SessionAuthenticationError("CAS unavailable")
+
+    @operation
+    def fail(self):
+        raise error
+
+    with pytest.raises(TransportError) as caught:
+        fail(client.account_info)
+    assert caught.value.__cause__ is error
+    assert caught.value.retryable is True
+
+
+def test_plaza_cli_refresh_keeps_transport_error(client, monkeypatch):
+    from unittest.mock import Mock
+    from inspire.platform.web.session import auth
+    from inspire.platform.web.session.models import RefreshUnavailableError
+
+    transport = client._transport
+    transport.cli_compat = True
+    monkeypatch.setattr(transport, "_acquire_plaza_client", Mock(side_effect=SessionExpiredError("expired")))
+    monkeypatch.setattr(auth, "refresh_session", Mock(side_effect=RefreshUnavailableError("unavailable", 503)))
+    with pytest.raises(TransportError) as caught:
+        transport.plaza_request("GET", "/test")
+    assert caught.value.retryable is True

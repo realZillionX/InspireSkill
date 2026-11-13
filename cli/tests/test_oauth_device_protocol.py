@@ -108,16 +108,11 @@ def test_device_deadline_clips_poll_sleeps(budget, slow_down, transport_budget):
         assert call.kwargs["timeout"] <= budget
 
 
-@pytest.mark.parametrize("message,reason", [
-    ("invalid_grant", "invalid_grant"),
-    ("credential SECRET-REFRESH rejected", "refresh_rejected"),
-    ("invalid_grant\n", "refresh_rejected"),
-    ("x" * 65, "refresh_rejected"),
-    ("private_server_text", "refresh_rejected"),
-    (None, "refresh_rejected"),
-    ({"error": "invalid_grant"}, "refresh_rejected"),
+@pytest.mark.parametrize("message", [
+    "invalid_grant", "credential SECRET-REFRESH rejected", "invalid_grant\n",
+    "x" * 65, "private_server_text", None, {"error": "invalid_grant"},
 ])
-def test_refresh_rejection_sanitized(message, reason):
+def test_refresh_rejection_sanitized(message):
     from inspire.platform.web.session.models import RefreshRejectedError
 
     http = Mock()
@@ -125,9 +120,9 @@ def test_refresh_rejection_sanitized(message, reason):
     with pytest.raises(AuthenticationError) as caught:
         DeviceAuthorization("https://platform.test", http).refresh("SECRET-REFRESH")
     assert isinstance(caught.value, AuthenticationError)
-    if reason == "invalid_grant":
+    if message == "invalid_grant":
         assert isinstance(caught.value, RefreshRejectedError)
-        assert caught.value.reason == reason
+        assert caught.value.reason == message
     else:
         assert not isinstance(caught.value, RefreshRejectedError)
     assert "HTTP 400" in str(caught.value)
@@ -146,7 +141,7 @@ def test_refresh_network_error_propagates():
 
 
 @pytest.mark.parametrize("lifetime,typ,offline", [
-    (0, None, True), (None, "Offline", True), (604800, None, False),
+    (0, "Offline", True), (None, "Offline", True), (604800, None, False),
     (604800, "Offline", True), (604800, "Refresh", False),
 ])
 def test_token_refresh_classification(monkeypatch, lifetime, typ, offline):
@@ -171,13 +166,12 @@ def test_token_refresh_classification(monkeypatch, lifetime, typ, offline):
 
 
 @pytest.mark.parametrize("refresh", ["not-a-jwt", "a.!.b", "a.e30.b", "a.W10.b", "a._w.b"])
-@pytest.mark.parametrize("lifetime", [0, 604800])
-def test_malformed_refresh_claims_do_not_break_classification(refresh, lifetime):
+def test_malformed_refresh_claims_do_not_break_classification(refresh):
     tokens = DeviceAuthorization._tokens({"data": {
         "access_token": "fake-access", "refresh_token": refresh,
-        "expires_in": 3600, "refresh_expires_in": lifetime,
+        "expires_in": 3600, "refresh_expires_in": 604800,
     }})
-    assert tokens.refresh_offline is (lifetime == 0)
+    assert tokens.refresh_offline is False
 
 
 @pytest.mark.parametrize("typ", ["Refresh", None])
@@ -256,3 +250,30 @@ def test_refresh_credential_rejection(status, field, reason):
         DeviceAuthorization("https://platform.test", http).refresh("fake-refresh")
     assert caught.value.reason == reason
     assert caught.value.status == status
+
+
+@pytest.mark.parametrize("field", ["expires_in", "refresh_expires_in"])
+@pytest.mark.parametrize("value", [True, False, None, float("nan"), float("inf"), -1, 0, "3600"])
+def test_token_lifetimes_must_be_positive_finite_numbers(field, value):
+    data = {"access_token": "fake-access", "refresh_token": "fake-refresh",
+            "expires_in": 3600, "refresh_expires_in": 604800}
+    data[field] = value
+    with pytest.raises(AuthenticationError, match="Invalid authentication tokens"):
+        DeviceAuthorization._tokens({"data": data})
+
+
+def test_offline_null_refresh_lifetime():
+    result = DeviceAuthorization._tokens({"data": {
+        "access_token": "fake-access", "refresh_token": "header.eyJ0eXAiOiJPZmZsaW5lIn0.signature",
+        "expires_in": 3600, "refresh_expires_in": None,
+    }})
+    assert result.refresh_offline is True
+
+
+@pytest.mark.parametrize("value", [True, False, float("nan"), float("inf"), -1])
+def test_offline_refresh_lifetime_still_rejects_invalid_numbers(value):
+    with pytest.raises(AuthenticationError, match="Invalid authentication tokens"):
+        DeviceAuthorization._tokens({"data": {
+            "access_token": "fake-access", "refresh_token": "header.eyJ0eXAiOiJPZmZsaW5lIn0.signature",
+            "expires_in": 3600, "refresh_expires_in": value,
+        }})

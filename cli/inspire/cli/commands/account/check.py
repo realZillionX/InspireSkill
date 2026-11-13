@@ -14,6 +14,9 @@ from pathlib import Path
 
 import click
 
+from inspire.platform.errors import AuthenticationError, TransportError
+from inspire.platform.web.transport_policy import is_request_error
+
 from inspire.cli.context import (
     Context,
     EXIT_AUTH_ERROR,
@@ -31,7 +34,7 @@ from inspire.config import (
     SOURCE_DEFAULT,
 )
 from inspire.platform.web import browser_api as browser_api_module
-from inspire.platform.web.session import SessionExpiredError, TransientAPIError, get_web_session
+from inspire.platform.web.session import SessionExpiredError, get_web_session
 from inspire.platform.web.session.proxy import describe_effective_proxy_config
 
 from inspire.services.account.auth_status import (
@@ -131,13 +134,24 @@ def check(ctx: Context, details: bool, offline: bool) -> None:
             try:
                 session = get_web_session()
                 browser_api_module.get_current_user(session=session, refresh=True)
-            except (SessionExpiredError, ValueError) as e:
+            except Exception as e:
+                network_error = is_request_error(e) or isinstance(e, TransportError)
+                if not network_error and not isinstance(
+                    e, (SessionExpiredError, ValueError, AuthenticationError)
+                ):
+                    raise
                 auth_ok = False
-                auth_error = str(e)
+                auth_error = (
+                    "network error contacting the platform; retry later"
+                    if network_error else str(e)
+                )
                 auth_exception = e
         status = before if offline else inspect_auth_status(account, error=auth_exception)
         refreshed = before["oauth"]["issued_at"] != status["oauth"]["issued_at"]
-        if not auth_ok and before["oauth"]["state"] == "legacy":
+        if (
+            not auth_ok and before["oauth"]["state"] == "legacy"
+            and not status["oauth"].get("refresh_retryable")
+        ):
             auth_error = legacy_message(account)
         if not offline and status["cas"]["state"] == "present":
             try:
@@ -230,7 +244,7 @@ def check(ctx: Context, details: bool, offline: bool) -> None:
                     click.echo(line)
 
         if not auth_ok:
-            sys.exit(EXIT_API_ERROR if isinstance(auth_exception, TransientAPIError)
+            sys.exit(EXIT_API_ERROR if status["oauth"].get("refresh_retryable")
                      else EXIT_AUTH_ERROR)
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)

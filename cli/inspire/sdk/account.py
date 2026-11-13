@@ -12,7 +12,8 @@ from inspire.platform.web.browser_api import api_keys
 from inspire.platform.web.session import SessionExpiredError
 from inspire.services.account import account_check, account_context
 from inspire.services.account.auth_status import inspect_auth_status
-from .exceptions import AuthenticationError
+from inspire.platform.web.transport_policy import is_request_error
+from .exceptions import AuthenticationError, TransportError
 from .models import Page, WorkspaceRef
 from .models_resources import (
     AccountInfo,
@@ -56,12 +57,19 @@ class AccountInformation(Service):
         try:
             session = self.session
             user = browser_api.get_current_user(session=session, refresh=True)
-        except (SessionExpiredError, ValueError, AuthenticationError) as error:
+        except Exception as error:
+            network_error = is_request_error(error) or isinstance(error, TransportError)
+            if not network_error and not isinstance(
+                error, (SessionExpiredError, ValueError, AuthenticationError)
+            ):
+                raise
             after = perform_sync(blocking_call(
                 inspect_auth_status, self.client.account, error=error
             ))
             return AccountCheck(
-                False, None, None, (str(error),), **after,
+                False, None, None, (
+                    "network error contacting the platform; retry later" if network_error else str(error),
+                ), **after,
                 refreshed=before["oauth"]["issued_at"] != after["oauth"]["issued_at"],
             )
         # Return identity fields only: authentication material is never metadata.

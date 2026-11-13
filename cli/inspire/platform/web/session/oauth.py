@@ -13,7 +13,7 @@ import requests
 from inspire import __version__
 from .models import (
     AuthenticationError, RefreshRejectedError, RefreshUnavailableError,
-    TRANSIENT_HTTP_STATUSES, is_offline_refresh_token,
+    TRANSIENT_HTTP_STATUSES, is_offline_refresh_token, _is_finite_number,
 )
 
 CLIENT_SOURCE = f"inspire-cli/inspireskill-{__version__}"
@@ -113,14 +113,24 @@ class DeviceAuthorization:
             ):
                 raise ValueError
             offline = is_offline_refresh_token(refresh)
-            refresh_lifetime = float(data.get("refresh_expires_in", 0) if offline
-                                     else data["refresh_expires_in"])
-            offline = offline or refresh_lifetime == 0
+            access_lifetime = data["expires_in"]
+            refresh_lifetime = data.get("refresh_expires_in")
+            if offline and refresh_lifetime is None:
+                refresh_lifetime = 0
+            if (
+                not _is_finite_number(access_lifetime)
+                or access_lifetime <= 0
+                or not isinstance(refresh_lifetime, (int, float))
+                or not _is_finite_number(refresh_lifetime)
+                or refresh_lifetime < 0
+                or (not offline and refresh_lifetime == 0)
+            ):
+                raise ValueError
             now = time.time()
             return TokenResponse(
                 access,
                 refresh,
-                now + float(data["expires_in"]),
+                now + access_lifetime,
                 now + (OFFLINE_IDLE_ESTIMATE_SECONDS if offline else refresh_lifetime),
                 refresh_offline=offline,
             )

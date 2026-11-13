@@ -340,7 +340,8 @@ def test_offline_token_status(account_home, monkeypatch, access, estimate, comma
         )
     elif command == "rejected-check":
         assert "rejected by server (invalid_grant)" in result.output
-        assert "local expiry" not in result.output
+        refresh_line = next(line for line in result.output.splitlines() if line.startswith("OAuth refresh token:"))
+        assert "local expiry" not in refresh_line
     else:
         assert "no fixed expiry; server-side idle timeout applies" in result.output
         assert "refreshable" not in result.output
@@ -376,3 +377,55 @@ def test_live_transient_failure(account_home, monkeypatch, as_json, offline_toke
     else:
         assert "OAuth refresh: temporarily unavailable (HTTP 503); retry later" in result.output
         assert "Authentication: FAILED" in result.output
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("kind", ["requests", "httpx", "transport"])
+def test_live_network_failure_diagnostics(account_home, monkeypatch, as_json, kind):
+    import requests
+    import httpx
+    from inspire.platform.errors import TransportError
+
+    write_session()
+    error = {"requests": requests.ConnectionError("network"),
+             "httpx": httpx.ConnectError("network"), "transport": TransportError("network")}[kind]
+    monkeypatch.setattr(check_module, "get_web_session", MagicMock(side_effect=error))
+    result = CliRunner().invoke(main, (["--json"] if as_json else []) + ["account", "check"])
+    assert result.exit_code == 13, result.output
+    assert "network error contacting the platform" in result.output
+    no_secrets(result.output)
+    if as_json:
+        data = json.loads(result.output)["data"]
+        assert data["authenticated"] is False
+        assert data["effective_proxy"] is not None
+        assert data["oauth"]["refresh_retryable"] is True
+        assert data["oauth"]["refresh_status"] is None
+    else:
+        assert "Authentication: FAILED" in result.output
+        assert "Effective runtime proxy" in result.output
+        assert "OAuth access token: could not be verified" in result.output
+        assert "OAuth access token: valid" not in result.output
+
+
+def test_live_rejection_overrides_unexpired_access(account_home, monkeypatch):
+    from inspire.platform.web.session.models import RefreshRejectedError
+
+    write_session()
+    monkeypatch.setattr(check_module, "get_web_session", MagicMock(side_effect=RefreshRejectedError("invalid_grant", 400)))
+    result = CliRunner().invoke(main, ["account", "check"])
+    assert result.exit_code == EXIT_AUTH_ERROR
+    assert "OAuth access token: not accepted by server; local expiry" in result.output
+    assert "OAuth access token: valid" not in result.output
+
+
+def test_transport_wrapper_keeps_transient_refresh_metadata(account_home):
+    from inspire.platform.errors import TransportError, _error_metadata
+    from inspire.platform.web.session.models import RefreshUnavailableError
+
+    error = RefreshUnavailableError("temporarily_unavailable", 503)
+    wrapper = TransportError(str(error), **_error_metadata(error))
+    wrapper.__cause__ = error
+    oauth = inspect_auth_status("alice", error=wrapper)["oauth"]
+    assert oauth["refresh_error"] == "temporarily_unavailable"
+    assert oauth["refresh_status"] == 503
+    assert oauth["refresh_retryable"] is True

@@ -10,9 +10,11 @@ import time
 from datetime import datetime
 from typing import Any
 
+from inspire.platform.errors import TransportError
+from inspire.platform.web.transport_policy import is_request_error
 from inspire.platform.web.session.cas import CasSession
 from inspire.platform.web.session.models import (
-    RefreshRejectedError, RefreshUnavailableError, WebSession, get_session_cache_file,
+    RefreshRejectedError, TransientAPIError, WebSession, get_session_cache_file,
 )
 
 
@@ -93,9 +95,19 @@ def inspect_auth_status(
         if id(current) in seen:
             continue
         seen.add(id(current))
-        if isinstance(current, RefreshUnavailableError):
+        if isinstance(current, (TransientAPIError, TransportError)) or (
+            isinstance(current, Exception) and is_request_error(current)
+        ):
+            source = (
+                current.__cause__
+                if isinstance(current, TransportError)
+                and isinstance(current.__cause__, TransientAPIError)
+                else current
+            )
             oauth.update(
-                refresh_error=current.reason, refresh_retryable=True, refresh_status=current.status,
+                refresh_error=getattr(source, "reason", "unavailable")
+                if isinstance(source, TransientAPIError) else "unavailable",
+                refresh_retryable=True, refresh_status=getattr(current, "status", None),
             )
             oauth.pop("note", None)
             break
@@ -132,6 +144,14 @@ def format_auth_status(
     lines = []
     for token in ("access", "refresh"):
         expiry = oauth[f"{token}_expires_at"]
+        if token == "access" and authenticated is False:
+            state = (
+                "could not be verified; retry later"
+                if oauth.get("refresh_retryable") else "not accepted by server"
+            )
+            detail = f"; local expiry {_display_time(expiry)}" if expiry else ""
+            lines.append(f"OAuth access token: {state}{detail}")
+            continue
         if token == "refresh" and oauth["state"] == "rejected":
             detail = f"; local expiry {_display_time(expiry)}" if expiry else ""
             lines.append(
@@ -154,9 +174,8 @@ def format_auth_status(
         )
         lines.append(f"OAuth {token} token: {state}{detail}")
     if oauth.get("refresh_retryable"):
-        lines.append(
-            f"OAuth refresh: temporarily unavailable (HTTP {oauth['refresh_status']}); retry later"
-        )
+        detail = f" (HTTP {oauth['refresh_status']})" if oauth.get("refresh_status") else ""
+        lines.append(f"OAuth refresh: temporarily unavailable{detail}; retry later")
     if oauth["state"] == "refreshable":
         if authenticated is True:
             lines.append("OAuth: refreshable; renewed automatically on next use.")

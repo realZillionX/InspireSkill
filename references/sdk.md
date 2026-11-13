@@ -259,10 +259,12 @@ The catalogue methods below (`applications`, `get`, `list`, `tags`) require a st
 
 | Method | Return Type | Equivalent CLI Command |
 | --- | --- | --- |
-| `account_info.check()` | `AccountCheck`（附带可选 `oauth`、本地 `cas`、`refreshed`；实时刷新被拒绝时 `oauth.state="rejected"`、`oauth.refresh_error` 为安全错误码；CAS 不联网探测） | `account check` |
+| `account_info.check()` | `AccountCheck`（附带可选 `oauth`、本地 `cas`、`refreshed`；实时刷新被拒绝时 `oauth.state="rejected"`、`oauth.refresh_error` 为安全错误码；网络或暂时性失败返回 `ok=false`，`oauth.refresh_retryable=true`、`oauth.refresh_status` 为 HTTP 状态或 `None`，不要求重新登录；CAS 不联网探测） | `account check` |
 | `account_info.context(*, limit=None)` | `AccountContext` | `account context` |
 | `account_info.current()` | `AccountInfo` | `account current` |
 | `account_info.permissions(workspace=None)` | `tuple[Permission, ...]` | `account permissions` |
+
+Transport 会话获取、刷新及 SDK 操作将网络和暂时性失败映射为 `TransportError`（`retryable=True`），保留错误元数据；当前网络错误优先于 CAS 失败 cause。`account_info.check()` 将这类失败返回为诊断结果，复用已有 `refresh_error`、`refresh_retryable`、`refresh_status` 字段；无 HTTP 响应时状态为 `None`。
 
 ### api_keys
 

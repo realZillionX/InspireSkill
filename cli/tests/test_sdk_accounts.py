@@ -243,3 +243,18 @@ def test_add_persists_nondefault_base_url_in_loader_sections(client):
     with account_scope("custom"):
         config, _ = Config.from_files_and_env()
     assert config.base_url == "https://custom.example.invalid"
+
+
+@pytest.mark.parametrize("kind", ["network", "transient", "transport"])
+def test_account_check_retryable_failures(client, monkeypatch, kind):
+    import requests
+    from inspire.platform.errors import TransportError
+    from inspire.platform.web.session.models import RefreshUnavailableError
+
+    error = {"network": requests.ConnectionError("network"),
+             "transient": RefreshUnavailableError("temporarily_unavailable", 503),
+             "transport": TransportError("network")}[kind]
+    monkeypatch.setattr("inspire.platform.web.browser_api.get_current_user", Mock(side_effect=error))
+    result = client.account_info.check()
+    assert result.ok is False
+    assert result.oauth["refresh_retryable"] is True
