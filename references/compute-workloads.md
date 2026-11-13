@@ -81,7 +81,8 @@ with the usual explicit scheduling fields. Choose the name from the QZ model pla
 this path does not register a model or copy its files. Omit `--model-version` because
 the plaza creation form selects the published model without a version field.
 Registered models retain their explicit/latest-version behavior. Catalogue lookup
-must complete before an ambiguous or unpublished name can be rejected.
+must complete before an ambiguous or unpublished name can be rejected. Plaza
+names use case-sensitive exact matching across CLI, batch and SDK.
 
 `--port` is the application's HTTP listening port; it is serialized as a
 `port_configs` HTTP entry. `--metrics-port` adds the optional `/metrics` endpoint.
@@ -89,6 +90,8 @@ Keep both aligned with the actual application listeners. Batch items use
 `model_source = "plaza"` and `metrics_port` for the same behavior. Use `--dry-run`
 to inspect the resolved plan before allocating resources; it does not prove that
 a service has started.
+Both `serving status` and `serving versions` prefer the current HTTP / Metrics
+port entries over the legacy scalar port field.
 
 ### Calling Endpoints & Managing API Keys (`INF_API_KEY`)
 

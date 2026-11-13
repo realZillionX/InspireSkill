@@ -377,6 +377,8 @@ def _format_serving_versions(versions: list[dict[str, Any]]) -> str:
             ("status", "Status"),
             ("model", "Model"),
             ("replicas", "Replicas"),
+            ("port", "Port"),
+            ("metrics_port", "Metrics Port"),
             ("resource", "Resource"),
             ("created_at", "Created"),
         )

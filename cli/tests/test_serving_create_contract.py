@@ -158,15 +158,17 @@ def test_invalid_model_contract_fails_before_session(monkeypatch, source, versio
             resource_spec_price={}, task_priority=4)
 
 
-def test_plaza_low_level_omits_version_and_accepts_configs_without_port(monkeypatch):
+@pytest.mark.parametrize("source", ["plaza", "MODEL_PLAZA"])
+def test_plaza_low_level_omits_version_and_accepts_configs_without_port(monkeypatch, source):
     captured = []
     monkeypatch.setattr(browser, "_request_json", lambda *a, **kw:
                         captured.append(kw["body"]) or {"Result": {"id": "example"}})
     browser.create_serving(workspace_id="w", project_id="p", name="example",
-        logic_compute_group_id="g", model_id="m", model_source="MODEL_PLAZA",
+        logic_compute_group_id="g", model_id="m", model_source=source,
         mirror_id="i", command="python serve.py", port_configs=[HTTP],
         resource_spec_price={}, task_priority=4, session=object())
     assert "model_version" not in captured[0] and "port" not in captured[0]
+    assert captured[0]["model_source"] == "MODEL_PLAZA"
     assert captured[0]["port_configs"] == [HTTP]
 
 
@@ -252,10 +254,11 @@ def test_malformed_plaza_response_is_not_an_empty_catalogue(monkeypatch, data):
         browser.list_plaza_models(workspace_id="w", session=object())
 
 
-def test_sdk_and_cli_reject_plaza_version_before_lookup(client, catalog, monkeypatch):
+@pytest.mark.parametrize("source", ["plaza", "MODEL_PLAZA"])
+def test_sdk_and_cli_reject_plaza_version_before_lookup(client, catalog, monkeypatch, source):
     monkeypatch.setattr(client.workspaces, "get", lambda *a: pytest.fail("no lookup"))
     with pytest.raises(ValidationError, match="Omit model_version"):
-        client.servings.plan(replace(catalog.serving, model_source="MODEL_PLAZA", model_version=1))
+        client.servings.plan(replace(catalog.serving, model_source=source, model_version=1))
     result = CliRunner().invoke(main, ["serving", "create", "--name", "example", "--model", "Model",
         "--command", "python serve.py", "--port", "30000", "--workspace", "Workspace",
         "--project", "Project", "--group", "Group", "--quota", "8,64,256", "--image", "Image",

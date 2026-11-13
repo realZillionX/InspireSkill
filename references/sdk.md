@@ -432,17 +432,24 @@ A required HTTP entry and optional metrics entry use the console paths shown
 above. If both `port` and `port_configs` are supplied, their HTTP ports must
 agree. The final request carries only `port_configs`.
 
-For a published model plaza name, pass `model_source="MODEL_PLAZA"` and leave
-`model_version=None`. The SDK completes the live workspace catalogue, resolves
-a unique published name, and creates directly without model registration or
-file upload. Registry `ModelRef` values cannot be used as plaza references.
+For a published model plaza name, pass `model_source="plaza"` (the compatible
+`"MODEL_PLAZA"` spelling also works) and leave `model_version=None`.
+`model_source="registered"` is equivalent to the default `None`. The SDK
+normalizes these aliases before planning; only `MODEL_PLAZA` reaches the wire.
+The SDK completes the live workspace catalogue and resolves a unique published
+name with the same case-sensitive exact matching as CLI/batch. Leading and
+trailing whitespace is ignored; differently capitalized names remain distinct.
+Registered-model matching retains each interface's existing rules. Plaza
+creation performs no model registration or file upload. Registry `ModelRef`
+values cannot be used as plaza references.
 `ServingPlan.model_version` is `None` for plaza models; registered models still
 resolve their latest version when none is supplied. An explicit plaza version
 is rejected before lookup, including in the low-level Browser API. Callers
 migrating from that API must remove the old plaza `model_version` argument.
 The async client uses the same spec and validation. Planning and offline
 payload validation do not establish that a real deployment is healthy.
-
+Serving detail and version history both prefer `port_configs` for HTTP and
+metrics ports, with a fallback for legacy HTTP `port` responses.
 
 | Method | Return Type | Equivalent CLI Command |
 | --- | --- | --- |

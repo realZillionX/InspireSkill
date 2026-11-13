@@ -180,6 +180,8 @@ def resolve_model_for_create(
 
 def _resolve_plaza_model(name, workspace_id, session, resolve):
     """Complete the live plaza catalogue before resolving a published name."""
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("Use a non-empty published model name.")
     if not workspace_id:
         raise ConfigError("Workspace is required for model plaza lookup.")
     rows: list[dict[str, Any]] = []
@@ -202,7 +204,9 @@ def _resolve_plaza_model(name, workspace_id, session, resolve):
         raise ConfigError("Incomplete model plaza lookup after 100 pages; narrow the workspace.")
     candidates = [
         {"id": row["model_id"], "name": row["name"], "status": row["status"]}
-        for row in rows if row.get("status") == "PUBLISHED" and row.get("name")
+        # Match before the frontend-specific resolver so SDK casefold matching
+        # cannot select a different published name than the CLI's exact rule.
+        for row in rows if row.get("status") == "PUBLISHED" and row.get("name") == name.strip()
     ]
     model_id = resolve(candidates)
     for row in candidates:

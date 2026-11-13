@@ -49,10 +49,18 @@ def normalize_port_configs(
     return [entries[kind] for kind in _PORT_PATHS if kind in entries]
 
 
+def normalize_model_source(model_source: str | None) -> str | None:
+    """Normalize user-facing aliases to the console's optional source field."""
+    if model_source in (None, "registered"):
+        return None
+    if model_source in ("plaza", "MODEL_PLAZA"):
+        return "MODEL_PLAZA"
+    raise ValueError("model_source must be registered, plaza, MODEL_PLAZA or omitted.")
+
+
 def model_create_fields(model_source: str | None, model_version: int | str | None) -> dict:
     """Keep plaza create semantics separate from registry and update versions."""
-    if model_source not in (None, "MODEL_PLAZA"):
-        raise ValueError("model_source must be MODEL_PLAZA or omitted for a registered model.")
+    model_source = normalize_model_source(model_source)
     if model_source == "MODEL_PLAZA":
         if model_version is not None:
             raise ValueError("Omit model_version when creating from MODEL_PLAZA.")
