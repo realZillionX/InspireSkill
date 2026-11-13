@@ -24,6 +24,7 @@ Design notes:
 from __future__ import annotations
 
 import contextlib
+import http.client
 import io
 import json
 import logging
@@ -177,6 +178,7 @@ _UV_TOOL_LINE_RE = re.compile(
 )
 _UV_TOOL_EXEC_RE = re.compile(r"^-\s+inspire(?:\s+\((?P<path>[^)]+)\))?")
 _POST_UPDATE_FAILURE_MARKER = "INSPIRE_POST_UPDATE_FAILURES="
+_FAILURE_MARKER_ENV = "INSPIRE_FAILURE_MARKER"
 _VERSION_OUTPUT_RE = re.compile(r"\bversion\s+([0-9][^\s]*)")
 GITHUB_RELEASES_API_URL = f"https://api.github.com/repos/{REPO_SLUG}/releases"
 _CHANGELOG_RELEASE_HEADING_RE = re.compile(
@@ -272,25 +274,36 @@ def _record_audit_failure(reason: str) -> None:
 
 
 def _emit_post_update_failures(*, silent: bool) -> None:
-    if silent:
-        return
+    """Report human-readable failures unless the parent requests internal diagnostics."""
     context = click.get_current_context(silent=True)
     reasons = context.meta.get("update_audit_failures", []) if context else []
-    click.echo(_POST_UPDATE_FAILURE_MARKER + json.dumps(reasons), err=True)
+    if os.environ.get(_FAILURE_MARKER_ENV) == "1":
+        click.echo(_POST_UPDATE_FAILURE_MARKER + json.dumps(reasons), err=True)
+    elif not silent:
+        for reason in reasons:
+            click.echo(f"Error: {reason}", err=True)
 
 
-def _record_post_update_failures(proc: subprocess.CompletedProcess[str]) -> None:
+def _record_child_failures(proc: subprocess.CompletedProcess[str], *, fallback: str) -> None:
     reasons: list[str] = []
     for line in (proc.stderr or "").splitlines():
-        if not line.startswith(_POST_UPDATE_FAILURE_MARKER):
+        if len(line) > 64 * 1024 or not line.startswith(_POST_UPDATE_FAILURE_MARKER):
             continue
         try:
-            payload = json.loads(line[len(_POST_UPDATE_FAILURE_MARKER):])
-        except json.JSONDecodeError:
+            payload = json.loads(line[len(_POST_UPDATE_FAILURE_MARKER) :])
+        except (ValueError, RecursionError):
             continue
         if isinstance(payload, list) and all(isinstance(item, str) for item in payload):
-            reasons.extend(item for item in payload if item.strip())
-    for reason in reasons or [f"post-update setup exited with code {proc.returncode}"]:
+            for item in payload:
+                if item.strip():
+                    reason = _scrub_debug_text(item)[:300]
+                    if reason not in reasons:
+                        reasons.append(reason)
+                    if len(reasons) == 20:
+                        break
+        if len(reasons) == 20:
+            break
+    for reason in reasons or [fallback]:
         _record_audit_failure(reason)
 
 
@@ -367,6 +380,9 @@ def _scrub_debug_text(value: str) -> str:
         lambda match: f"{match.group('prefix')}<redacted>",
         scrubbed,
     )
+    scrubbed = re.sub(r"(?i)\bAuthorization\s*:[^\r\n]+", "Authorization: <redacted>", scrubbed)
+    scrubbed = re.sub(r"(?i)\bBearer\s+\S+", "Bearer <redacted>", scrubbed)
+    scrubbed = re.sub(r"(?<![\w])[A-Za-z]:[\\/][^\r\n]*|\\\\[^\r\n]+", "<path>", scrubbed)
     return _DEBUG_ABSOLUTE_PATH_RE.sub("<path>", scrubbed)
 
 
@@ -681,7 +697,9 @@ def _global_inspire_executable() -> str | None:
 def _ensure_global_playwright_runtime(silent: bool) -> bool:
     executable = _global_inspire_executable()
     if not executable:
-        _record_audit_failure("Browser runtime setup failed: global inspire executable is unavailable.")
+        _record_audit_failure(
+            "Browser runtime setup failed: global inspire executable is unavailable."
+        )
         return False
 
     cmd = [executable, "_ensure-playwright-runtime"]
@@ -689,6 +707,7 @@ def _ensure_global_playwright_runtime(silent: bool) -> bool:
         cmd.append("--silent")
     env = os.environ.copy()
     env["INSPIRE_SKIP_UPDATE_CHECK"] = "1"
+    env[_FAILURE_MARKER_ENV] = "1"
     try:
         proc = subprocess.run(
             cmd,
@@ -708,7 +727,9 @@ def _ensure_global_playwright_runtime(silent: bool) -> bool:
     if proc.returncode == 0:
         return True
 
-    _record_audit_failure(f"Browser runtime setup failed: exited with code {proc.returncode}.")
+    _record_child_failures(
+        proc, fallback=f"Browser runtime setup failed: exited with code {proc.returncode}."
+    )
     return False
 
 
@@ -736,6 +757,7 @@ def _run_post_update_command(
 
     env = os.environ.copy()
     env["INSPIRE_SKIP_UPDATE_CHECK"] = "1"
+    env[_FAILURE_MARKER_ENV] = "1"
     try:
         proc = subprocess.run(
             cmd,
@@ -753,7 +775,9 @@ def _run_post_update_command(
         return False
     _log_completed_process("post-update setup", proc, cmd=cmd)
     if proc.returncode != 0:
-        _record_post_update_failures(proc)
+        _record_child_failures(
+            proc, fallback=f"post-update setup exited with code {proc.returncode}"
+        )
     return proc.returncode == 0
 
 
@@ -767,9 +791,18 @@ def _download_tarball(timeout: int = 30) -> bytes | None:
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return resp.read()
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
+        except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as e:
             logger.debug("Skill tarball fetch failed: %s", e, exc_info=True)
-            transient = isinstance(e, (urllib.error.URLError, TimeoutError, ConnectionError, ssl.SSLError))
+            transient = isinstance(
+                e,
+                (
+                    urllib.error.URLError,
+                    TimeoutError,
+                    ConnectionError,
+                    ssl.SSLError,
+                    http.client.HTTPException,
+                ),
+            )
             if isinstance(e, urllib.error.HTTPError):
                 transient = e.code in {408, 429, 500, 502, 503, 504}
             if attempt == 0 and transient:
@@ -946,7 +979,8 @@ def _refresh_skill_files(silent: bool) -> bool:
         logger.debug("Skill refresh failed: %s", e, exc_info=True)
         _record_audit_failure(
             f"Could not replace the {harness} skill directory."
-            if harness else "Could not prepare the skill bundle."
+            if harness
+            else "Could not prepare the skill bundle."
         )
         return False
 
@@ -1226,6 +1260,7 @@ def _parse_version_output(output: str) -> str | None:
 
 
 def _read_inspire_version(executable: str | None = None) -> tuple[str | None, str | None, str]:
+    """Return the executable, parsed version, and a safe failure summary."""
     executable = executable or shutil.which("inspire")
     if not executable:
         return None, None, "not found on PATH"
@@ -1243,29 +1278,32 @@ def _read_inspire_version(executable: str | None = None) -> tuple[str | None, st
             stderr=subprocess.PIPE,
         )
     except OSError as e:
-        return executable, None, str(e)
+        logger.debug("Version probe could not run: %s", _scrub_debug_text(str(e)))
+        return executable, None, f"could not run ({type(e).__name__})"
+    _log_completed_process("version probe", proc)
     output = (proc.stdout or "") + (proc.stderr or "")
     if proc.returncode != 0:
-        return executable, None, output.strip() or f"exit {proc.returncode}"
-    return executable, _parse_version_output(output), output.strip()
+        return executable, None, f"exited with code {proc.returncode}"
+    version = _parse_version_output(output)
+    return executable, version, "" if version else "unrecognised version output"
 
 
 def _audit_global_cli(expected_version: str | None, silent: bool) -> tuple[bool, str | None]:
     del silent
     uv_info = _uv_tool_info()
     executable_hint = uv_info.executable_path if uv_info and uv_info.executable_path else None
-    executable, actual_version, detail = _read_inspire_version(executable_hint)
+    executable, actual_version, summary = _read_inspire_version(executable_hint)
     ok = True
     if executable is None:
         ok = False
         _record_audit_failure("Global inspire executable is not on PATH.")
     elif actual_version is None:
         ok = False
-        _record_audit_failure("Could not determine the installed CLI version: " + detail)
+        _record_audit_failure("Could not determine the installed CLI version: " + summary)
         logger.debug(
             "Could not parse updated InspireSkill version: executable=%s detail=%s",
-            executable,
-            detail,
+            _scrub_debug_text(executable),
+            summary,
         )
     elif expected_version and _is_newer(expected_version, actual_version):
         ok = False

@@ -187,9 +187,19 @@ def main(
 @click.option("--silent", is_flag=True, help="Suppress runtime setup output.")
 def ensure_playwright_runtime(silent: bool) -> None:
     """Internal installer/update hook for browser runtime setup."""
-    from inspire.cli.commands.update import _ensure_playwright_runtime
+    from inspire.cli.commands.update import (
+        _emit_post_update_failures,
+        _ensure_playwright_runtime,
+        _record_audit_failure,
+    )
 
-    if not _ensure_playwright_runtime(silent=silent):
+    try:
+        ok = _ensure_playwright_runtime(silent=silent)
+    except Exception as exc:
+        _record_audit_failure(f"Browser runtime setup crashed ({type(exc).__name__}).")
+        ok = False
+    if not ok:
+        _emit_post_update_failures(silent=silent)
         raise SystemExit(1)
 
 
@@ -239,13 +249,22 @@ def post_update(
     ignored) until those versions are no longer in the field.
     """
     del previous_version
-    from inspire.cli.commands.update import _emit_post_update_failures, _run_post_update_tasks
+    from inspire.cli.commands.update import (
+        _emit_post_update_failures,
+        _record_audit_failure,
+        _run_post_update_tasks,
+    )
 
-    if not _run_post_update_tasks(
-        expected_version=expected_version,
-        cli_only=cli_only,
-        silent=silent,
-    ):
+    try:
+        ok = _run_post_update_tasks(
+            expected_version=expected_version,
+            cli_only=cli_only,
+            silent=silent,
+        )
+    except Exception as exc:
+        _record_audit_failure(f"post-update setup crashed ({type(exc).__name__})")
+        ok = False
+    if not ok:
         _emit_post_update_failures(silent=silent)
         raise SystemExit(1)
 
