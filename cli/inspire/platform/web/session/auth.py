@@ -28,7 +28,7 @@ from .cas import (
 )
 from .envelope import _v2_result
 from .identity import token_login_username
-from .models import AuthenticationError, WebSession
+from .models import AuthenticationError, RefreshRejectedError, WebSession
 from .oauth import DeviceAuthorization
 from .proxy import resolve_requests_proxy_config
 from .refresh_lock import exclusive_session_refresh
@@ -92,14 +92,25 @@ def refresh_cached(account: str | None, observed: float | None = None) -> WebSes
         raise login_required(account)
     if cached.is_valid() and (observed is None or cached.created_at > observed):
         return cached
-    if cached.refresh_expires_at <= time.time():
+    if not cached.refresh_offline and cached.refresh_expires_at <= time.time():
         return _renew_with_cas(cached, account)
     try:
         with _http(account) as http:
             tokens = DeviceAuthorization(
                 cached.base_url or _load_runtime_config(account).base_url, http
             ).refresh(cached.refresh_token)
+    except RefreshRejectedError as rejected:
+        try:
+            return _renew_with_cas(cached, account)
+        except AuthenticationError:
+            raise AuthenticationError(
+                f"Session refresh was rejected by the server ({rejected.reason}, "
+                f"HTTP {rejected.status}): the login session ended server-side before "
+                "the local refresh token expired. CAS renewal unavailable or failed. "
+                + str(login_required(account))
+            ) from rejected
     except AuthenticationError:
+        # Any working credential is enough: CAS stays the fallback for every session kind.
         return _renew_with_cas(cached, account)
     refreshed = replace(
         cached,
@@ -107,6 +118,7 @@ def refresh_cached(account: str | None, observed: float | None = None) -> WebSes
         refresh_token=tokens.refresh_token,
         access_expires_at=tokens.access_expires_at,
         refresh_expires_at=tokens.refresh_expires_at,
+        refresh_offline=tokens.refresh_offline,
         created_at=time.time(),
         login_username=cached.login_username or token_login_username(tokens.access_token),
     )
@@ -146,6 +158,7 @@ def _renew_with_cas_before(cached: WebSession, account: str | None, deadline: fl
             refresh_token=tokens.refresh_token,
             access_expires_at=tokens.access_expires_at,
             refresh_expires_at=tokens.refresh_expires_at,
+            refresh_offline=tokens.refresh_offline,
             created_at=time.time(),
             account=account,
             base_url=base_url,
@@ -160,6 +173,7 @@ def _renew_with_cas_before(cached: WebSession, account: str | None, deadline: fl
         refresh_token=tokens.refresh_token,
         access_expires_at=tokens.access_expires_at,
         refresh_expires_at=tokens.refresh_expires_at,
+        refresh_offline=tokens.refresh_offline,
         created_at=time.time(),
     )
     request_timeout()
@@ -277,6 +291,7 @@ def device_login(account: str, notify: Callable[[str, str, float], None]) -> Web
         refresh_token=tokens.refresh_token,
         access_expires_at=tokens.access_expires_at,
         refresh_expires_at=tokens.refresh_expires_at,
+        refresh_offline=tokens.refresh_offline,
         created_at=time.time(),
         account=account,
         base_url=config.base_url,

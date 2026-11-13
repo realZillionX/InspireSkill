@@ -46,6 +46,8 @@ def list_cmd(ctx: Context, limit: int | None, show_all: bool) -> None:
         statuses[name] = status
         item.update(
             oauth_state=status["oauth"]["state"],
+            oauth=status["oauth"],
+            refresh_kind=status["oauth"]["refresh_kind"],
             refresh_expires_at=status["oauth"]["refresh_expires_at"],
             cas_state=status["cas"]["state"],
         )
@@ -61,6 +63,8 @@ def list_cmd(ctx: Context, limit: int | None, show_all: bool) -> None:
     for item in page.items:
         remaining = statuses[str(item["name"])]["oauth"]["refresh_expires_in"]
         detail = f" (refresh {format_duration(remaining)})" if remaining is not None else ""
+        if item["refresh_kind"] == "offline":
+            detail = " (refresh offline; no fixed expiry; server-side idle timeout applies)"
         if item["oauth_state"] == "legacy":
             detail = f" (run {login_hint(str(item['name']))})"
         lines.append(

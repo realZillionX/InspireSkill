@@ -73,7 +73,19 @@ Both successes and business errors return **HTTP 200** with an AWS-style JSON en
 
 ### OAuth session lifecycle
 
+Device login and silent CAS renewal request `openid profile email offline_access`. Access tokens retain their one-hour lifetime. Offline refresh tokens survive the end of the browser/CAS SSO session and have no fixed expiry (`refresh_expires_in: 0`, no JWT `exp`). They remain subject to server-side idle timeout and revocation. Token responses with zero/missing `refresh_expires_in` or refresh JWT `typ: "Offline"` are classified as offline; unverified JWT claims are used only for this metadata classification.
+
+`WebSession.refresh_offline` is persisted (old files default to `false` without migration writes). Its finite `refresh_expires_at` is an informational 30-day estimate based on Keycloak's default offline session idle, advanced on every successful refresh; the actual timeout is server-side. Offline refresh always runs even after this estimate passes, with CAS fallback only on a server rejection. Existing session-bound refresh tokens retain their expiry behavior; log in again to request an offline token.
+
+An offline token is a long-lived credential stored in `web_session.json` with **0600** permissions. `inspire logout` removes it locally along with the account profile; server-side revocation is performed in the **Keycloak account console (applications/sessions)**. Local logout does not invoke a server revoke API.
+
+Login JSON exposes `refresh_kind`; status, account list and SDK `AccountCheck` expose `oauth.refresh_kind` (`offline` or `session`). Offline expiry metadata is `null`, and human output explains “no fixed expiry; server-side idle timeout applies”. With expired access credentials, local OAuth state is `offline`, not `refreshable` based on the estimate. A server rejection still takes precedence as `rejected`. Access-token metadata and display are unchanged.
+
 `inspire login` explicitly runs device authorization. `get_web_session()` never prompts; it refreshes access tokens within 60 seconds of expiry. Refresh takes the per-account process lock, rereads disk, and persists both rotating tokens atomically. Expired or refused refresh credentials trigger silent device authorization only when a stored CAS session validates and auto-approval succeeds; otherwise explicit `inspire login` is required. The caller retains the refresh lock and saving uses `_save_existing_account`.
+
+Refresh rejections retain HTTP status and an OAuth-shaped reason (`[a-z_]{1,64}`, otherwise `refresh_rejected`) in `RefreshRejectedError`, an `AuthenticationError` subclass. If CAS renewal also fails, the login-required error preserves that rejection as its cause and explains that the server-side session ended. No raw response body is exposed.
+
+`account check` prints consistent `Configuration: OK` and `Authentication: OK` / `FAILED` status lines. A rejected live refresh reports `OAuth refresh token: rejected by server (<reason>); local expiry ...`, with JSON `oauth.state="rejected"` and `oauth.refresh_error`. Failed live checks do not promise automatic renewal. For session-bound tokens, `--offline` reports refreshability only by local expiry, explicitly unverified; `account list` also describes local cache state.
 
 Platform requests carry `Authorization: Bearer …` and `X-Inspire-Client-Source: inspire-cli/inspireskill-<version>` only for the configured platform origin. A 401 or authentication redirect refreshes once and retries once. Notebook automation obtains `jupyter_url` from `GetNotebookAccessUrl`, using the application's own cookies without forwarding platform tokens. Old cookie-only caches are logged out.
 

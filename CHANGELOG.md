@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- OAuth 设备登录和 CAS 静默续期统一请求 `offline_access`，持久化离线刷新令牌标记，避免浏览器 / CAS SSO 会话结束后 CLI API 访问随之失效。离线令牌的 30 天本地估计仅供参考、刷新后滑动更新，不阻止刷新；登录、账号状态与 SDK 显示刷新类型，不再将估计当作硬过期时间。旧会话兼容加载；被旧版本改写、丢失离线标记的会话按令牌本身的 `typ` 识别，仍走 OAuth 刷新。服务端拒绝仍优先报告。
+- 修复 OAuth 刷新被服务端拒绝后诊断原因丢失：保留安全错误码与 HTTP 状态，CAS 续期失败时提示服务端会话已结束及对应账号登录命令；`account check` 统一状态行格式，实时拒绝显示 `rejected` / `refresh_error`，失败时不再承诺自动续期，离线检查明确仅依据本地有效期、未经验证。
 - 修复 Serving 创建仍发送旧 `port` 字段：现有 `--port` / SDK `port` 转换为 HTTP `port_configs`，新增 `--metrics-port` 和 SDK `port_configs`；详情和版本历史优先读取实际 HTTP / Metrics 端口，旧响应继续回退到 `port`。
 - Serving 支持按名称直接引用已发布的广场模型：CLI 使用 `--model-source plaza`，batch 和 SDK 使用 `model_source="plaza"`；SDK 也接受 `registered` 和兼容的 `MODEL_PLAZA`。广场名称在三端统一区分大小写精确匹配，不登记或复制模型。广场创建省略 `model_version`；旧 Browser API 调用须移除显式广场版本，冲突会在发送前报错。已登记模型继续使用指定或最新版本（#113）。
 

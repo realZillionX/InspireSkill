@@ -57,7 +57,7 @@ def test_device_polling(terminal):
     assert len(notifications) == 1
     for call in http.post.call_args_list:
         assert call.kwargs["allow_redirects"] is False
-    assert http.post.call_args_list[0].kwargs["json"] == {"scope": "openid profile email"}
+    assert http.post.call_args_list[0].kwargs["json"] == {"scope": "openid profile email offline_access"}
 
 
 def test_refresh_returns_rotated_token():
@@ -106,3 +106,71 @@ def test_device_deadline_clips_poll_sleeps(budget, slow_down, transport_budget):
         assert http.post.call_count == 1
     for call in http.post.call_args_list:
         assert call.kwargs["timeout"] <= budget
+
+
+@pytest.mark.parametrize("message,reason", [
+    ("invalid_grant", "invalid_grant"),
+    ("credential SECRET-REFRESH rejected", "refresh_rejected"),
+    ("invalid_grant\n", "refresh_rejected"),
+    ("x" * 65, "refresh_rejected"),
+    (None, "refresh_rejected"),
+    ({"error": "invalid_grant"}, "refresh_rejected"),
+])
+def test_refresh_rejection_sanitized(message, reason):
+    from inspire.platform.web.session.models import RefreshRejectedError
+
+    http = Mock()
+    http.post.return_value = response(400, {"code": -100000, "message": message})
+    with pytest.raises(RefreshRejectedError) as caught:
+        DeviceAuthorization("https://platform.test", http).refresh("SECRET-REFRESH")
+    assert isinstance(caught.value, AuthenticationError)
+    assert caught.value.reason == reason
+    assert caught.value.status == 400
+    assert "HTTP 400" in str(caught.value)
+    assert "SECRET-REFRESH" not in str(caught.value)
+
+
+def test_refresh_network_error_propagates():
+    import requests
+
+    http = Mock()
+    error = requests.ConnectionError("unavailable")
+    http.post.side_effect = error
+    with pytest.raises(requests.ConnectionError) as caught:
+        DeviceAuthorization("https://platform.test", http).refresh("fake-refresh")
+    assert caught.value is error
+
+
+@pytest.mark.parametrize("lifetime,typ,offline", [
+    (0, None, True), (None, None, True), (604800, None, False),
+    (604800, "Offline", True), (604800, "Refresh", False),
+])
+def test_token_refresh_classification(monkeypatch, lifetime, typ, offline):
+    import base64
+    import json
+    import math
+    from inspire.platform.web.session import oauth
+
+    monkeypatch.setattr(oauth.time, "time", lambda: 1000)
+    refresh = "malformed"
+    if typ:
+        payload = base64.urlsafe_b64encode(json.dumps({"typ": typ}).encode()).decode().rstrip("=")
+        refresh = f"header.{payload}.signature"
+    data = {"access_token": "fake-access", "refresh_token": refresh, "expires_in": 3600}
+    if lifetime is not None:
+        data["refresh_expires_in"] = lifetime
+    result = DeviceAuthorization._tokens({"data": data})
+    assert result.refresh_offline is offline
+    assert math.isfinite(result.refresh_expires_at)
+    assert result.refresh_expires_at == 1000 + (30 * 86400 if offline else 604800)
+    assert result.access_expires_at == 4600
+
+
+@pytest.mark.parametrize("refresh", ["not-a-jwt", "a.!.b", "a.e30.b", "a.W10.b", "a._w.b"])
+@pytest.mark.parametrize("lifetime", [0, 604800])
+def test_malformed_refresh_claims_do_not_break_classification(refresh, lifetime):
+    tokens = DeviceAuthorization._tokens({"data": {
+        "access_token": "fake-access", "refresh_token": refresh,
+        "expires_in": 3600, "refresh_expires_in": lifetime,
+    }})
+    assert tokens.refresh_offline is (lifetime == 0)

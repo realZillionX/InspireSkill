@@ -57,7 +57,9 @@ class AccountInformation(Service):
             session = self.session
             user = browser_api.get_current_user(session=session, refresh=True)
         except (SessionExpiredError, ValueError, AuthenticationError) as error:
-            after = perform_sync(blocking_call(inspect_auth_status, self.client.account))
+            after = perform_sync(blocking_call(
+                inspect_auth_status, self.client.account, error=error
+            ))
             return AccountCheck(
                 False, None, None, (str(error),), **after,
                 refreshed=before["oauth"]["issued_at"] != after["oauth"]["issued_at"],

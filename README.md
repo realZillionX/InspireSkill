@@ -105,7 +105,9 @@ inspire init
 inspire resources availability --workspace 分布式训练空间 --include-cpu
 ```
 
-`account check` 和 `account list` 会显示 OAuth 访问／刷新令牌的到期时间和 CAS（数据广场）登录状态；`--offline` 不验证平台认证（JSON `authenticated: null`），有效或可自动刷新时退出 0，其余情况返回认证错误码。
+设备登录请求 `offline_access`：访问令牌仍为 1 小时，离线刷新令牌不随浏览器 / CAS SSO 会话结束而失效，但受服务端空闲超时与撤销限制。离线令牌是长期凭证，保存在权限为 0600 的 `web_session.json`；`inspire logout` 在本地删除它，服务端撤销需使用 Keycloak 账号控制台（applications/sessions）。旧会话需重新登录才能请求离线令牌。
+
+`account check` 和 `account list` 会显示 OAuth 访问令牌到期时间、刷新令牌类型和 CAS（数据广场）登录状态；离线刷新令牌显示无固定有效期，JSON `oauth.refresh_kind` 为 `offline`，不将内部 30 天滑动估计显示为硬过期时间；`--offline` 不验证平台认证（JSON `authenticated: null`），有效或可自动刷新时退出 0，其余情况返回认证错误码。
 
 `inspire init` 用于校验并补全账号配置。在校园网外访问平台时，请先参考下文[代理配置](#代理配置)完成网络设置。
 

@@ -12,6 +12,7 @@ from inspire.platform.errors import APIError, _ErrorMetadata
 
 from inspire.platform.web.flow import blocking_io
 
+import base64
 import json
 import math
 import re
@@ -26,12 +27,42 @@ from .identity import token_login_username
 SESSION_TTL = 3600  # 1 hour
 
 
+def is_offline_refresh_token(token: object) -> bool:
+    """Classify a refresh JWT by its unverified ``typ``; never used to authenticate.
+
+    Older releases rewrite an offline session without ``refresh_offline``, so
+    the token itself is the durable source of truth for its kind.
+    """
+    if not isinstance(token, str):
+        return False
+    try:
+        encoded = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+    except (ValueError, IndexError, UnicodeError):
+        return False
+    return isinstance(claims, dict) and claims.get("typ") == "Offline"
+
+
 class SessionExpiredError(_ErrorMetadata):
     """Raised when the web session has expired (401 from server)."""
 
 
 class AuthenticationError(APIError):
     """Authentication requires an explicit device login."""
+
+
+class RefreshRejectedError(AuthenticationError):
+    """A refresh rejection with only a safe OAuth code and HTTP status."""
+
+    def __init__(self, reason: object, status: int) -> None:
+        self.reason = (
+            reason if isinstance(reason, str) and re.fullmatch(r"[a-z_]{1,64}", reason)
+            else "refresh_rejected"
+        )
+        super().__init__(
+            f"Session refresh rejected by server ({self.reason}, HTTP {status}); run inspire login.",
+            status=status,
+        )
 
 
 # Statuses that say the platform did not answer, not that the answer is no.
@@ -166,6 +197,9 @@ def _is_valid_session_cache_payload(data: object) -> bool:
     ):
         return False
 
+    if not isinstance(data.get("refresh_offline", False), bool):
+        return False
+
     for key in ("workspace_id", "login_username", "base_url", "account"):
         if data.get(key) is not None and not isinstance(data[key], str):
             return False
@@ -195,6 +229,7 @@ class WebSession:
     all_workspace_names: Optional[dict[str, str]] = None
     all_workspace_fair_scheduling: Optional[dict[str, bool]] = None
     account: Optional[str] = None
+    refresh_offline: bool = False
 
     def is_valid(self) -> bool:
         """Check if session is still valid (not expired)."""
@@ -206,6 +241,7 @@ class WebSession:
             "refresh_token": self.refresh_token,
             "access_expires_at": self.access_expires_at,
             "refresh_expires_at": self.refresh_expires_at,
+            "refresh_offline": self.refresh_offline,
             "workspace_id": self.workspace_id,
             "login_username": self.login_username,
             "base_url": self.base_url,
@@ -224,6 +260,8 @@ class WebSession:
             refresh_token=data["refresh_token"],
             access_expires_at=data["access_expires_at"],
             refresh_expires_at=data["refresh_expires_at"],
+            refresh_offline=bool(data.get("refresh_offline", False))
+            or is_offline_refresh_token(data["refresh_token"]),
             workspace_id=data.get("workspace_id"),
             login_username=data.get("login_username"),
             base_url=data.get("base_url"),

@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import time
+from unittest.mock import MagicMock
 
 import pytest
 from click.testing import CliRunner
@@ -151,6 +152,8 @@ def test_offline(account_home, monkeypatch, state, as_json):
         assert data["cas"]["login_method"] == "feishu"
     else:
         assert "not verified (offline)" in result.output
+        if state == "refreshable":
+            assert "refreshable by local expiry (not verified offline)" in result.output
 
 
 @pytest.mark.parametrize("refreshed", [False, True])
@@ -241,3 +244,103 @@ def test_offline_still_validates_config(account_home):
     from inspire.cli.context import EXIT_CONFIG_ERROR
 
     assert result.exit_code == EXIT_CONFIG_ERROR
+
+
+@pytest.mark.parametrize("rejected", [False, True])
+@pytest.mark.parametrize("as_json", [False, True])
+def test_live_failure(account_home, monkeypatch, rejected, as_json):
+    from inspire.platform.web.session import auth
+
+    write_session("bob", access=-10)
+    monkeypatch.setattr(auth, "_http", lambda account: MagicMock())
+
+    def fail_refresh(*args):
+        if rejected:
+            raise auth.RefreshRejectedError("invalid_grant", 400)
+        raise auth.AuthenticationError("Other failure")
+
+    monkeypatch.setattr(auth.DeviceAuthorization, "refresh", fail_refresh)
+    monkeypatch.setattr(check_module, "get_web_session", lambda: auth.refresh_cached("bob"))
+    result = CliRunner().invoke(
+        main, ["--account", "bob"] + (["--json"] if as_json else []) + ["account", "check"]
+    )
+    assert result.exit_code == EXIT_AUTH_ERROR, result.output
+    assert "renewed automatically" not in result.output
+    assert "OK Configuration" not in result.output
+    assert "Error: Authentication" not in result.output
+    no_secrets(result.output)
+    if as_json:
+        data = json.loads(result.output)["data"]
+        assert data["authenticated"] is False
+        if rejected:
+            assert data["oauth"]["state"] == "rejected"
+            assert data["oauth"]["refresh_error"] == "invalid_grant"
+            assert "server-side" in data["authentication_error"]
+    else:
+        assert "Configuration: OK" in result.output
+        assert "Authentication: FAILED" in result.output
+        if rejected:
+            assert "rejected by server (invalid_grant); local expiry" in result.output
+            assert "Authentication error: Session refresh was rejected" in result.output
+            assert "inspire login --account bob" in result.output
+
+
+@pytest.mark.parametrize("refreshed", [False, True])
+def test_live_human_success(account_home, monkeypatch, refreshed):
+    session = write_session(issued=time.time() - 100)
+    monkeypatch.setattr(check_module, "get_web_session", lambda: write_session() if refreshed else session)
+    monkeypatch.setattr(check_module.browser_api_module, "get_current_user", lambda **kw: {})
+    result = CliRunner().invoke(main, ["account", "check"])
+    assert result.exit_code == 0, result.output
+    assert "Configuration: OK" in result.output.splitlines()
+    assert "Authentication: OK" + (" (refreshed now)" if refreshed else "") in result.output.splitlines()
+    assert "OAuth refresh token: valid" in result.output
+
+
+def test_local_refreshable_has_no_renewal_promise(account_home):
+    write_session(access=-10)
+    lines = format_auth_status(inspect_auth_status("alice"), "alice")
+    assert "renewed automatically" not in "\n".join(lines)
+
+
+@pytest.mark.parametrize("access", [-10, 3600])
+@pytest.mark.parametrize("estimate", [-10, 2592000])
+@pytest.mark.parametrize("command", ["list", "offline-check", "live-check", "rejected-check"])
+@pytest.mark.parametrize("as_json", [False, True])
+def test_offline_token_status(account_home, monkeypatch, access, estimate, command, as_json):
+    from inspire.platform.web.session.models import RefreshRejectedError
+
+    session = write_session(access=access, refresh=estimate)
+    session.refresh_offline = True
+    session.save()
+    before = snapshot(account_home)
+    monkeypatch.setattr(check_module, "get_web_session", lambda: session)
+
+    def probe(**kwargs):
+        if command == "rejected-check":
+            raise RefreshRejectedError("invalid_grant", 400)
+        return {}
+
+    monkeypatch.setattr(check_module.browser_api_module, "get_current_user", probe)
+    args = ["account", "list"] if command == "list" else ["account", "check"]
+    if command == "offline-check":
+        args.append("--offline")
+    result = CliRunner().invoke(main, (["--json"] if as_json else []) + args)
+    assert result.exit_code == (EXIT_AUTH_ERROR if command == "rejected-check" else 0), result.output
+    assert snapshot(account_home) == before
+    no_secrets(result.output)
+    if as_json:
+        data = json.loads(result.output)["data"]
+        oauth = data["items"][0]["oauth"] if command == "list" else data["oauth"]
+        assert oauth["refresh_kind"] == "offline"
+        assert oauth["refresh_expires_at"] is None
+        assert oauth["refresh_expires_in"] is None
+        assert oauth["state"] == (
+            "rejected" if command == "rejected-check" else "valid" if access > 60 else "offline"
+        )
+    elif command == "rejected-check":
+        assert "rejected by server (invalid_grant)" in result.output
+        assert "local expiry" not in result.output
+    else:
+        assert "no fixed expiry; server-side idle timeout applies" in result.output
+        assert "refreshable" not in result.output
