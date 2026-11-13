@@ -139,6 +139,15 @@ def _image_label(item: object) -> str:
 def public_serving(item: object, *, fallback_name: str = "") -> dict[str, Any]:
     """Project a serving list/detail object onto stable user-facing fields."""
     name = str(_value(item, "name") or fallback_name or "").strip()
+    ports: dict[str, Any] = {}
+    for source in _sources(item):
+        configs = _value(source, "port_configs")
+        if isinstance(configs, list):
+            for entry in configs:
+                if isinstance(entry, dict) and entry.get("type") in (
+                    "PORT_TYPE_HTTP", "PORT_TYPE_METRICS",
+                ):
+                    ports.setdefault(entry["type"], entry.get("port"))
     resource = _value(item, "resource")
     if isinstance(resource, dict):
         resource = None
@@ -200,7 +209,8 @@ def public_serving(item: object, *, fallback_name: str = "") -> dict[str, Any]:
                 ),
                 "priority": _value(item, "task_priority", _value(item, "priority")),
                 "nodes": _node_names(item),
-                "port": _value(item, "port"),
+                "port": ports.get("PORT_TYPE_HTTP", _value(item, "port")),
+                "metrics_port": ports.get("PORT_TYPE_METRICS"),
                 "command": sanitize_public_text(
                     _value(item, "command") or "",
                     omit_urls=True,

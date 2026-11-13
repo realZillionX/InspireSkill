@@ -182,6 +182,7 @@ _EXPORTS = {
     "list_serving_user_project": (".servings", "list_serving_user_project"),
     "list_serving_versions": (".servings", "list_serving_versions"),
     "list_servings": (".servings", "list_servings"),
+    "list_plaza_models": (".servings", "list_plaza_models"),
     "rollback_serving": (".servings", "rollback_serving"),
     "scale_serving": (".servings", "scale_serving"),
     "start_serving": (".servings", "start_serving"),
@@ -565,6 +566,7 @@ if TYPE_CHECKING:
         get_user_permissions,
     )
     from .servings import (
+        list_plaza_models as list_plaza_models,
         SERVING_API_METRIC_TYPES,
         ServingInfo,
         create_serving,

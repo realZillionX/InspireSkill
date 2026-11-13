@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from inspire.platform.web.session.envelope import _v2_error_metadata
 from inspire.services.public_path import public_path_mount_fields
+from inspire.services.serving.serving_contract import model_create_fields, normalize_port_configs
 from .models import Instance
 from .instances import sdk_instances, label_selectors
 from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget
@@ -245,7 +246,6 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         if not isinstance(spec, ServingCreateSpec):
             raise ValidationError("Pass a ServingCreateSpec.")
         for label, value in [
-            ("port", spec.port),
             ("replicas", spec.replicas),
             ("nodes_per_replica", spec.nodes_per_replica),
             ("shm_gib", spec.shm_gib),
@@ -253,14 +253,17 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         ]:
             if value is not None and (type(value) is not int or value < 1):
                 raise ValidationError(f"{label} must be a positive integer.")
-        if spec.port > 65535:
-            raise ValidationError("port must be between 1 and 65535.")
+        ports = normalize_port_configs(spec.port, spec.port_configs)
+        if spec.model_source is not None:
+            model_create_fields(spec.model_source, spec.model_version)
+            if isinstance(spec.model, ModelRef):
+                raise ValidationError("Select a model plaza model by name, not a registry ModelRef.")
         domain = core.validate_custom_domain(spec.custom_domain)
         ws = self.client.workspaces.get(spec.workspace)
         project = self._project(ws, spec.project)
         quota = self._quota(ws, spec.group, spec.quota)
 
-        user_id = self._current_user_id()
+        user_id = self._current_user_id() if spec.model_source is None else ""
         if isinstance(spec.model, ModelRef):
             model = self.client.models.get(spec.model, workspace=ws.ref)
             model_id, model_label = model.ref.key, model.name
@@ -291,9 +294,10 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
                 user_id=user_id,
                 session=self.session,
                 resolve=resolve,
+                model_source=spec.model_source,
             )
         version = spec.model_version or latest
-        if version is None:
+        if version is None and spec.model_source != "MODEL_PLAZA":
             raise ValidationError("Could not infer model version. Pass model_version explicitly.")
         image = self.client.images.get(spec.image, workspace=ws.ref)
         image_id, image_label = image.ref.key, image.name
@@ -309,6 +313,8 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
             mirror_id=image_id,
             command=spec.command,
             port=spec.port,
+            port_configs=ports,
+            model_source=spec.model_source,
             description=spec.description,
             replicas=spec.replicas,
             node_num_per_replica=spec.nodes_per_replica,
@@ -334,7 +340,9 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
                 model_version=version,
                 command=spec.command,
                 description=spec.description,
-                port=spec.port,
+                port=ports[0]["port"],
+                port_configs=ports,
+                **({"model_source": spec.model_source} if spec.model_source else {}),
                 replicas=spec.replicas,
                 nodes_per_replica=spec.nodes_per_replica,
                 shared_memory_gib=spec.shm_gib,

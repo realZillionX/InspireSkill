@@ -2,6 +2,11 @@
 
 各版本条目记录该版本发布时的用户可见变化；当前用法以 README 和 CLI Help 为准。
 
+## Unreleased
+
+- 修复 Serving 创建仍发送旧 `port` 字段：现有 `--port` / SDK `port` 转换为 HTTP `port_configs`，新增 `--metrics-port` 和 SDK `port_configs`；详情优先读取实际 HTTP / Metrics 端口。
+- Serving 支持按名称直接引用已发布的广场模型：CLI 使用 `--model-source plaza`，batch 使用 `model_source="plaza"`，SDK 使用 `model_source="MODEL_PLAZA"`，不登记或复制模型。广场创建省略 `model_version`；旧 Browser API 调用须移除显式广场版本，冲突会在发送前报错。已登记模型继续使用指定或最新版本（#113）。
+
 ## v7.2.1
 
 修复：

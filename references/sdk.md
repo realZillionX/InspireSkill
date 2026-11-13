@@ -417,6 +417,33 @@ Like `HPCJob`, `RayJob`, and `Serving`, `Job` exposes `.view` (the sanitized pub
 
 ### servings
 
+`ServingCreateSpec.port` remains the HTTP-port shorthand. Set `port=None` and
+provide `port_configs` to use the structured form without repeating the HTTP
+port, for example:
+
+```python
+ports = [
+    {"port": 30000, "type": "PORT_TYPE_HTTP", "path": "/"},
+    {"port": 30001, "type": "PORT_TYPE_METRICS", "path": "/metrics"},
+]
+```
+
+A required HTTP entry and optional metrics entry use the console paths shown
+above. If both `port` and `port_configs` are supplied, their HTTP ports must
+agree. The final request carries only `port_configs`.
+
+For a published model plaza name, pass `model_source="MODEL_PLAZA"` and leave
+`model_version=None`. The SDK completes the live workspace catalogue, resolves
+a unique published name, and creates directly without model registration or
+file upload. Registry `ModelRef` values cannot be used as plaza references.
+`ServingPlan.model_version` is `None` for plaza models; registered models still
+resolve their latest version when none is supplied. An explicit plaza version
+is rejected before lookup, including in the low-level Browser API. Callers
+migrating from that API must remove the old plaza `model_version` argument.
+The async client uses the same spec and validation. Planning and offline
+payload validation do not establish that a real deployment is healthy.
+
+
 | Method | Return Type | Equivalent CLI Command |
 | --- | --- | --- |
 | `servings.api(ref, *, affinity_key=None, workspace=None)` | `ServingInvocationInfo` | `serving api` |
@@ -541,7 +568,7 @@ finished = client.jobs.wait(handle.ref, raise_on_failure=True)
 | `NotebookCreateSpec` | `name`, `workspace`, `project`, `group`, `quota`, `image` | `shm_gib=None`, `auto_stop=False`, `auto_stop_after=None`, `datasets=[]`, `enable_notification=None`, `public_path_mount_mode=None`, `public_path_readonly=None`, `project_path_readonly=None`, `priority=None`, `node=None` |
 | `HPCJobCreateSpec` | `name`, `entrypoint`, `workspace`, `project`, `group`, `quota`, `image` | `image_type='SOURCE_PRIVATE'`, `instance_count=1`, `priority=None`, `number_of_tasks=1`, `cpus_per_task=None`, `memory_per_cpu=None`, `enable_hyper_threading=False`, `max_time_hours=None`, `keep_after_finish_hours=None`, `datasets=[]`, `description=None`, `enable_notification=False`, `public_path_mount_mode=None`, `public_path_readonly=None` |
 | `RayJobCreateSpec` | `name`, `command`, `workspace`, `project`, `group`, `quota`, `image` | `image_type='SOURCE_PUBLIC'`, `description=''`, `priority=None`, `shm_gib=None`, `workers=[]`, `public_path_mount_mode=None`, `public_path_readonly=None` |
-| `ServingCreateSpec` | `name`, `model`, `command`, `port`, `workspace`, `project`, `group`, `quota`, `image` | `model_version=None`, `replicas=1`, `nodes_per_replica=1`, `shm_gib=None`, `priority=None`, `custom_domain=None`, `description=''`, `auto_scaling=None`, `public_path_mount_mode=None`, `public_path_readonly=None` |
+| `ServingCreateSpec` | `name`, `model`, `command`, `port`, `workspace`, `project`, `group`, `quota`, `image` | `model_version=None`, `replicas=1`, `nodes_per_replica=1`, `shm_gib=None`, `priority=None`, `custom_domain=None`, `description=''`, `auto_scaling=None`, `public_path_mount_mode=None`, `public_path_readonly=None`, `port_configs=None`, `model_source=None` |
 | `TensorboardCreateSpec` | `name`, `workspace`, `project`, `group` | `summary_path=None` (required non-empty at creation), `job=None`, `auto_stop_hours=None` |
 
 ## 9. Write Semantics (`single_send`), Errors & Timeouts

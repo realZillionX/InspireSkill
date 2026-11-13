@@ -63,7 +63,7 @@ Use Ray only when your workload genuinely needs autoscaling Worker Groups, long-
 
 ## 6. Serving (`inspire serving`)
 
-Serving deploys a registered model version (from `inspire model`) as an online HTTP service:
+Serving deploys a registered model version (from `inspire model`) or a published model from the model plaza as an online HTTP service:
 
 1. **Preparation:** Confirm the model version is ready (`model status`), check the minimum hardware spec (`model deploy-config`), pick a Serving quota (`serving quota` / `serving configs`), and verify that the image contains the serving framework.
 2. **Lifecycle:** Create with `serving create` or `serving batch`; observe with `serving list|status|events|instances|logs|metrics|api-metrics`; control with `serving stop|start|scale|rollback|delete`.
@@ -75,6 +75,20 @@ Serving deploys a registered model version (from `inspire model`) as an online H
    - `serving metrics` shows container GPU, CPU, and memory usage.
    - `serving api-metrics` shows request QPS, success/failure rates, latency, and token throughput — the only way to distinguish "nobody is calling the service" from "every request is failing".
 5. **Startup failures:** Check `serving events` (which merges deployment-level and instance-level events by default). Readiness probe failures appear only as instance-level `Unhealthy` events while deployment-level events merely show `GroupsProgressing` or `Pending`.
+
+For a published plaza model, use `serving create --model-source plaza --model <published-name>`
+with the usual explicit scheduling fields. Choose the name from the QZ model plaza;
+this path does not register a model or copy its files. Omit `--model-version` because
+the plaza creation form selects the published model without a version field.
+Registered models retain their explicit/latest-version behavior. Catalogue lookup
+must complete before an ambiguous or unpublished name can be rejected.
+
+`--port` is the application's HTTP listening port; it is serialized as a
+`port_configs` HTTP entry. `--metrics-port` adds the optional `/metrics` endpoint.
+Keep both aligned with the actual application listeners. Batch items use
+`model_source = "plaza"` and `metrics_port` for the same behavior. Use `--dry-run`
+to inspect the resolved plan before allocating resources; it does not prove that
+a service has started.
 
 ### Calling Endpoints & Managing API Keys (`INF_API_KEY`)
 
