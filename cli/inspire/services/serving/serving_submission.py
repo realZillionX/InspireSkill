@@ -113,7 +113,10 @@ def resolve_model_for_create(
     user_id: str,
     session,
     resolve,
+    model_source: str | None = None,
 ) -> tuple[str, Optional[int], str]:
+    if model_source == "MODEL_PLAZA":
+        return _resolve_plaza_model(name, workspace_id, session, resolve)
     # Complete the filtered catalogue before resolving: later pages can contain
     # another exact match, which must still participate in --pick ambiguity.
     items: list[browser_api_module.ModelInfo] = []
@@ -173,6 +176,44 @@ def resolve_model_for_create(
             except ValueError:
                 return model_id, None, item.name
     return model_id, None, name
+
+
+def _resolve_plaza_model(name, workspace_id, session, resolve):
+    """Complete the live plaza catalogue before resolving a published name."""
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("Use a non-empty published model name.")
+    if not workspace_id:
+        raise ConfigError("Workspace is required for model plaza lookup.")
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for page in range(1, 101):
+        batch, total = browser_api_module.list_plaza_models(
+            workspace_id=workspace_id, page=page, page_size=100, session=session,
+        )
+        ids = [row.get("model_id") for row in batch]
+        if (any(not isinstance(key, str) or not key or key in seen for key in ids)
+                or len(set(ids)) != len(ids)):
+            raise ConfigError("Incomplete model plaza lookup: duplicate or missing model identities.")
+        seen.update(ids)
+        rows.extend(batch)
+        if len(rows) >= total:
+            break
+        if not batch:
+            raise ConfigError("Incomplete model plaza lookup: empty page before all models were read.")
+    else:
+        raise ConfigError("Incomplete model plaza lookup after 100 pages; narrow the workspace.")
+    candidates = [
+        {"id": row["model_id"], "name": row["name"], "status": row["status"]}
+        # Match before the frontend-specific resolver so SDK casefold matching
+        # cannot select a different published name than the CLI's exact rule.
+        for row in rows if row.get("status") == "PUBLISHED" and row.get("name") == name.strip()
+    ]
+    model_id = resolve(candidates)
+    for row in candidates:
+        if row["id"] == model_id:
+            # Plaza catalogue/detail versions are not CreateServingConsole versions.
+            return model_id, None, row["name"]
+    raise ConfigError("Published model not found in the selected workspace's model plaza.")
 
 
 def create_serving(payload: dict[str, Any], *, session: WebSession | None = None) -> dict[str, Any]:

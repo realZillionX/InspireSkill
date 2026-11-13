@@ -358,7 +358,7 @@ Referer: `/jobs/modelDeployment`. Route uses an **underscore** (`inference_servi
 | --- | --- | --- | --- |
 | `CreateServingConsole` † | See [Section 9](#9-creation-payload-fields) | `{inference_serving_id, sub_code, sub_msg}` | `serving create`, `serving batch` |
 | `ListServings` | `{workspace_id, page, page_size, filter_by:{my_serving:true, keyword?, project_id[]?, status[]?, inference_serving_type[]?}}` | `{inference_servings[], total}` | `serving list`, Name Resolver |
-| `GetServing` | `{inference_serving_id}` | `status`, `replicas`, `node_num_per_replica`, `model_id`, `model_version`, `mirror_id`, `port`, `command`, `resource_spec_price{}`, `extra_info{node_names[], service}` | `serving status` / `api` / `metrics` |
+| `GetServing` | `{inference_serving_id}` | `status`, `replicas`, `node_num_per_replica`, `model_id`, `model_version`, `mirror_id`, `port_configs[]` (legacy `port` fallback), `command`, `resource_spec_price{}`, `extra_info{node_names[], service}` | `serving status` / `api` / `metrics` |
 | `ListServingVersions` | `{inference_serving_id}` | `{inference_servings[]\|list[], total}` | `serving versions` |
 | `ListServingInstances` | `{inference_serving_id, page, page_size}` | `{groups[{items[]}], total}` | `serving instances` / `logs` / `events --instance` |
 | `ListServingEvents` | `{page, page_size, filter:{object_type, object_ids[]}}` | `{events[]\|items[]\|list[]}` | `serving events`, `--instance` |
@@ -378,6 +378,10 @@ Referer: `/jobs/modelDeployment`. Route uses an **underscore** (`inference_servi
 
 **Serving notes:**
 - Always use `CreateServingConsole` (not OpenAPI `CreateServing`). `ScaleServing` takes singular `replica`.
+- The creation form inspected on 2026-11-13 sends `port_configs: [{port, type, path}]`, not scalar `port`. HTTP uses `PORT_TYPE_HTTP` with `/`; optional metrics uses `PORT_TYPE_METRICS` with `/metrics`. The wrapper translates legacy `port` into an HTTP entry. These two console paths are the supported input contract; this is not evidence that the server rejects every other path.
+- For a model plaza create, the form sends `model_source: "MODEL_PLAZA"` and omits `model_version`. For registered models it sends the selected version. The wrapper rejects an explicit plaza version so callers must intentionally remove it, rather than silently ignoring a version selection. `GetServing`/catalogue versions and the update form are not evidence for create-time version semantics.
+- The model plaza selector is `POST /api/v2/model_plaza?Action=GetModelListInPlaza` with `{page, page_size, filter:{workspace_id}}`; the result is `{items[], total_count}`. `list_plaza_models` exposes this read. Creation resolves a unique `PUBLISHED` name only after completing the workspace catalogue; it never registers or copies a model. This is separate from the CAS-authenticated data plaza.
+- These create changes are backed by the console bundle and offline wire-payload regression tests (issue #113). A corrected live create has not yet been verified; a service ID, instance resources and application health are still required for online acceptance. No write retries were added.
 - `ListServingInstances` nests instances inside `groups[].items[]` (one group per replica), and instance `name` is namespaced (`<project>/<pod>`).
 - `ListServingEvents` uses `object_type: "INFERENCE_SERVING"` for deployment events and `"INFERENCE_SERVING_INSTANCE"` (with namespaced pod IDs) for pod events such as `Unhealthy`.
 - `GetServingApiMetric` accepts multiple `metric_types` in one request (`QPS`, `SUCCESS_QPS`, `FAIL_QPS`, `SUCCESS_RATE`, `FAIL_RATE`, `REQUEST_COUNT`, `LATENCY`, `TTFT`/`_P50`/`_P95`/`_P99`, `TTLT`/`_P50`/`_P95`/`_P99`, `INPUT_TOKENS`, `OUTPUT_TOKENS`).

@@ -21,6 +21,7 @@ class ServingVersion(ResourceView):
     replicas: int | None = None
     port: int | None = None
     resource: str | None = None
+    metrics_port: int | None = None
 
 
 @dataclass(frozen=True)

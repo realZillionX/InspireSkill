@@ -252,14 +252,18 @@ def _resolve_image_id(raw: str, *, session, workspace_id: str) -> str:
 
 
 
-def _resolve_model_for_create(*, name, workspace_id, project_id, user_id, session, ctx):
+def _resolve_model_for_create(
+    *, name, workspace_id, project_id, user_id, session, ctx, model_source=None,
+):
     from inspire.services.serving.serving_submission import resolve_model_for_create
     return resolve_model_for_create(
         name=name, workspace_id=workspace_id, project_id=project_id,
         user_id=user_id, session=session,
+        model_source=model_source,
         resolve=lambda candidates: resolve_by_name(
             ctx, name=name, resource_type="model", list_candidates=lambda: candidates,
-            session=session, workspace_id=str(workspace_id or ""), owner_scope="self",
+            session=session, workspace_id=str(workspace_id or ""),
+            owner_scope="plaza" if model_source else "self", require_live=True,
         ),
     )
 
@@ -373,6 +377,8 @@ def _format_serving_versions(versions: list[dict[str, Any]]) -> str:
             ("status", "Status"),
             ("model", "Model"),
             ("replicas", "Replicas"),
+            ("port", "Port"),
+            ("metrics_port", "Metrics Port"),
             ("resource", "Resource"),
             ("created_at", "Created"),
         )
@@ -819,6 +825,7 @@ def status_serving(
             ("nodes", "Nodes"),
             ("command", "Command"),
             ("port", "Port"),
+            ("metrics_port", "Metrics Port"),
             ("created_at", "Created"),
             ("updated_at", "Updated"),
         ):
@@ -1729,21 +1736,29 @@ def configs_serving(
     "model_name",
     required=True,
     metavar="NAME",
-    help="Registered model name; scans up to 100 pages of 100 models. "
+    help="Model name in the selected source; scans up to 100 pages of 100 models. "
     "Incomplete lookup fails before creation; use a more specific name or workspace.",
+)
+@click.option(
+    "--model-source", type=click.Choice(["registered", "plaza"]), default="registered",
+    show_default=True, help="Use a registered model or a published model from the model plaza.",
 )
 @click.option(
     "--model-version",
     type=click.IntRange(1),
     default=None,
-    help="Model version (default: latest version from model list)",
+    help="Registered model version (default: latest). Omit for --model-source plaza.",
 )
 @click.option("--command", "-c", required=True, help="Serving startup command")
 @click.option(
     "--port",
     type=click.IntRange(1, 65535),
     required=True,
-    help="Service port in the container",
+    help="HTTP port in the container (sent as a PORT_TYPE_HTTP port_configs entry).",
+)
+@click.option(
+    "--metrics-port", type=click.IntRange(1, 65535), default=None,
+    help="Optional container metrics port, exposed at /metrics.",
 )
 @click.option(
     "--workspace",
@@ -1845,6 +1860,7 @@ def create_serving(
     name: str,
     model_name: str,
     model_version: Optional[int],
+    model_source: str,
     workspace: Optional[str],
     project: Optional[str],
     group: Optional[str],
@@ -1852,6 +1868,7 @@ def create_serving(
     image: Optional[str],
     command: str,
     port: int,
+    metrics_port: int | None,
     replicas: int,
     nodes_per_replica: int,
     shm_size: Optional[int],
@@ -1863,12 +1880,14 @@ def create_serving(
     public_path_mount_mode: int | None,
     dry_run: bool,
 ) -> None:
-    """Create an inference serving from a registered model.
+    """Create an inference serving from a registered or published plaza model.
 
     Pick the model with `model list/status/versions`, choose a serving spec
     with `serving quota --workspace <name>`, then submit the service with a
     visible image, startup command, and container port. Omit
     `--model-version` to use the latest version reported by the model list.
+    With `--model-source plaza`, select a published name from the model plaza;
+    omit `--model-version`. No model registration or file upload is performed.
 
     \b
     Examples:
@@ -1879,6 +1898,12 @@ def create_serving(
     """
     validate_create_name(ctx, name, "serving")
     public_path_mount_mode = public_path_mode(public_path_mount_mode, public_path_readonly)
+    if model_source == "plaza" and model_version is not None:
+        raise click.UsageError("Omit --model-version with --model-source plaza.")
+    source = "MODEL_PLAZA" if model_source == "plaza" else None
+    ports = [{"port": port, "type": "PORT_TYPE_HTTP", "path": "/"}]
+    if metrics_port is not None:
+        ports.append({"port": metrics_port, "type": "PORT_TYPE_METRICS", "path": "/metrics"})
     try:
         from inspire.cli.utils.quota_resolver import (
             QuotaMatchError,
@@ -1946,9 +1971,10 @@ def create_serving(
             user_id=current_user_id,
             session=session,
             ctx=ctx,
+            model_source=source,
         )
         final_model_version = model_version or latest_version
-        if final_model_version is None:
+        if final_model_version is None and source is None:
             raise ConfigError(
                 "Could not infer model version. Pass --model-version explicitly."
             )
@@ -1982,7 +2008,9 @@ def create_serving(
             "description": description,
             "model_id": model_id,
             "model_version": final_model_version,
+            "model_source": source,
             "port": port,
+            "port_configs": ports,
             "replicas": replicas,
             "node_num_per_replica": nodes_per_replica,
             "shm_gi": shm_size,
@@ -2016,6 +2044,8 @@ def create_serving(
                     "command": command,
                     "description": description,
                     "port": port,
+                    "port_configs": ports,
+                    **({"model_source": source} if source else {}),
                     "replicas": replicas,
                     "nodes_per_replica": nodes_per_replica,
                     "shared_memory_gib": shm_size,
@@ -2028,7 +2058,8 @@ def create_serving(
                 omit_urls=True,
             )
             if ctx.json_output:
-                click.echo(json_formatter.format_json(plan))
+                # These are fixed HTTP route paths, not private filesystem paths.
+                click.echo(json_formatter.format_json(plan, preserve_paths={"path"}))
             else:
                 click.echo(
                     f"Create plan: {sanitize_public_text(name, omit_urls=True)}"
@@ -2043,10 +2074,12 @@ def create_serving(
                 click.echo(f"Image: {sanitize_public_text(image_label, omit_urls=True)}")
                 click.echo(
                     f"Model: {sanitize_public_text(model_label, omit_urls=True)} "
-                    f"v{final_model_version}"
+                    + ("(model plaza)" if source else f"v{final_model_version}")
                 )
                 click.echo(f"Command: {sanitize_public_text(command, omit_urls=True)}")
                 click.echo(f"Port: {port}")
+                if metrics_port is not None:
+                    click.echo(f"Metrics port: {metrics_port} (/metrics)")
                 click.echo(f"Replicas: {replicas} x {nodes_per_replica} node(s)")
                 if shm_size is not None:
                     click.echo(f"Shared memory: {shm_size} GiB")
@@ -2077,6 +2110,8 @@ def create_serving(
             mirror_id=mirror_id,
             command=command,
             port=port,
+            port_configs=ports,
+            model_source=source,
             description=description,
             replicas=replicas,
             node_num_per_replica=nodes_per_replica,
