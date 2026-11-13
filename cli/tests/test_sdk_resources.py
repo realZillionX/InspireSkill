@@ -755,3 +755,22 @@ def test_account_check_refresh_rejected(client, monkeypatch):
     result = client.account_info.check()
     assert result.oauth["state"] == "rejected"
     assert result.oauth["refresh_error"] == "invalid_grant"
+
+
+def test_account_check_refresh_unavailable(client, monkeypatch):
+    from inspire.platform.web.session.models import RefreshUnavailableError
+    from inspire.services.account.auth_status import inspect_auth_status
+
+    before = inspect_auth_status(client.account)
+
+    def unavailable(**kwargs):
+        raise RefreshUnavailableError("temporarily_unavailable", 503)
+
+    monkeypatch.setattr(api, "get_current_user", unavailable)
+    result = client.account_info.check()
+    assert result.ok is False
+    assert result.oauth["state"] == before["oauth"]["state"]
+    assert result.oauth["refresh_error"] == "temporarily_unavailable"
+    assert result.oauth["refresh_retryable"] is True
+    assert result.oauth["refresh_status"] == 503
+    assert "retry later" in result.issues[0]

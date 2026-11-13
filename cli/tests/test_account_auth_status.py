@@ -275,7 +275,7 @@ def test_live_failure(account_home, monkeypatch, rejected, as_json):
         if rejected:
             assert data["oauth"]["state"] == "rejected"
             assert data["oauth"]["refresh_error"] == "invalid_grant"
-            assert "server-side" in data["authentication_error"]
+            assert "for example, the login session ended or was revoked" in data["authentication_error"]
     else:
         assert "Configuration: OK" in result.output
         assert "Authentication: FAILED" in result.output
@@ -344,3 +344,35 @@ def test_offline_token_status(account_home, monkeypatch, access, estimate, comma
     else:
         assert "no fixed expiry; server-side idle timeout applies" in result.output
         assert "refreshable" not in result.output
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("offline_token", [False, True])
+def test_live_transient_failure(account_home, monkeypatch, as_json, offline_token):
+    from inspire.cli.context import EXIT_API_ERROR
+    from inspire.platform.web.session import auth, RefreshUnavailableError
+
+    cached = write_session("bob", access=-10)
+    cached.refresh_offline = offline_token
+    cached.save()
+    error = RefreshUnavailableError("temporarily_unavailable", 503)
+    assert isinstance(error, ValueError)
+    monkeypatch.setattr(auth.DeviceAuthorization, "refresh", MagicMock(side_effect=error))
+    monkeypatch.setattr(check_module, "get_web_session", lambda: auth.refresh_cached("bob"))
+    result = CliRunner().invoke(
+        main, ["--account", "bob"] + (["--json"] if as_json else []) + ["account", "check"]
+    )
+    assert result.exit_code == EXIT_API_ERROR, result.output
+    no_secrets(result.output)
+    assert "rejected" not in result.output
+    assert "retry later" in result.output
+    if as_json:
+        data = json.loads(result.output)["data"]
+        assert data["authenticated"] is False
+        assert data["oauth"]["state"] == ("offline" if offline_token else "refreshable")
+        assert data["oauth"]["refresh_error"] == "temporarily_unavailable"
+        assert data["oauth"]["refresh_retryable"] is True
+        assert data["oauth"]["refresh_status"] == 503
+    else:
+        assert "OAuth refresh: temporarily unavailable (HTTP 503); retry later" in result.output
+        assert "Authentication: FAILED" in result.output

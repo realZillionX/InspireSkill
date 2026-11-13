@@ -572,3 +572,32 @@ def test_offline_refresh_protocol_failure_falls_back_to_cas(account, monkeypatch
     monkeypatch.setattr(auth, "_renew_with_cas", renew)
     assert auth.refresh_cached(account) is renewed
     renew.assert_called_once()
+
+
+@pytest.mark.parametrize("kind", ["connection", "timeout", "request", "transient"])
+@pytest.mark.parametrize("cas_succeeds", [False, True])
+def test_refresh_retryable_failure_tries_cas(account, monkeypatch, kind, cas_succeeds):
+    import requests
+    from inspire.platform.web.session.models import RefreshUnavailableError
+
+    errors = {
+        "connection": requests.ConnectionError("connection failed"),
+        "timeout": requests.Timeout("timed out"),
+        "request": requests.RequestException("request failed"),
+        "transient": RefreshUnavailableError("temporarily_unavailable", 503),
+    }
+    error = errors[kind]
+    session(account, expired=True).save()
+    monkeypatch.setattr(auth.DeviceAuthorization, "refresh", Mock(side_effect=error))
+    renewed = session(account)
+    cas_error = AuthenticationError("CAS unavailable")
+    renew = Mock(return_value=renewed, side_effect=None if cas_succeeds else cas_error)
+    monkeypatch.setattr(auth, "_renew_with_cas", renew)
+    if cas_succeeds:
+        assert auth.refresh_cached(account) is renewed
+    else:
+        with pytest.raises(type(error)) as caught:
+            auth.refresh_cached(account)
+        assert caught.value is error
+        assert caught.value.__cause__ is cas_error
+    renew.assert_called_once()

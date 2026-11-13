@@ -17,6 +17,7 @@ import click
 from inspire.cli.context import (
     Context,
     EXIT_AUTH_ERROR,
+    EXIT_API_ERROR,
     EXIT_CONFIG_ERROR,
     EXIT_GENERAL_ERROR,
     pass_context,
@@ -30,7 +31,7 @@ from inspire.config import (
     SOURCE_DEFAULT,
 )
 from inspire.platform.web import browser_api as browser_api_module
-from inspire.platform.web.session import SessionExpiredError, get_web_session
+from inspire.platform.web.session import SessionExpiredError, TransientAPIError, get_web_session
 from inspire.platform.web.session.proxy import describe_effective_proxy_config
 
 from inspire.services.account.auth_status import (
@@ -229,7 +230,8 @@ def check(ctx: Context, details: bool, offline: bool) -> None:
                     click.echo(line)
 
         if not auth_ok:
-            sys.exit(EXIT_AUTH_ERROR)
+            sys.exit(EXIT_API_ERROR if isinstance(auth_exception, TransientAPIError)
+                     else EXIT_AUTH_ERROR)
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
     except Exception as e:

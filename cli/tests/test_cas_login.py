@@ -943,7 +943,7 @@ def test_rejected_refresh_preserves_reason(monkeypatch, cas_state, offline):
     with pytest.raises(auth.AuthenticationError) as caught:
         auth.refresh_cached("tester")
     assert caught.value.__cause__ is rejected
-    for text in ("invalid_grant", "server-side", "CAS renewal", "inspire login --account tester"):
+    for text in ("invalid_grant", "for example", "CAS renewal", "inspire login --account tester"):
         assert text in str(caught.value)
 
 

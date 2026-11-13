@@ -21,6 +21,7 @@ from inspire.platform.web.session.auth import (
 from inspire.platform.web.session.models import (
     AuthenticationError,
     RefreshRejectedError,
+    RefreshUnavailableError,
     DEFAULT_WORKSPACE_ID,
     SESSION_TTL,
     TRANSIENT_HTTP_STATUSES,
@@ -54,6 +55,7 @@ __all__ = [
     "create_browser_client",
     "AuthenticationError",
     "RefreshRejectedError",
+    "RefreshUnavailableError",
     "DEFAULT_WORKSPACE_ID",
     "SESSION_TTL",
     "TRANSIENT_HTTP_STATUSES",

@@ -28,7 +28,7 @@ from .cas import (
 )
 from .envelope import _v2_result
 from .identity import token_login_username
-from .models import AuthenticationError, RefreshRejectedError, WebSession
+from .models import AuthenticationError, RefreshRejectedError, TransientAPIError, WebSession
 from .oauth import DeviceAuthorization
 from .proxy import resolve_requests_proxy_config
 from .refresh_lock import exclusive_session_refresh
@@ -105,10 +105,16 @@ def refresh_cached(account: str | None, observed: float | None = None) -> WebSes
         except AuthenticationError:
             raise AuthenticationError(
                 f"Session refresh was rejected by the server ({rejected.reason}, "
-                f"HTTP {rejected.status}): the login session ended server-side before "
-                "the local refresh token expired. CAS renewal unavailable or failed. "
+                f"HTTP {rejected.status}); the refresh credential is no longer accepted "
+                "(for example, the login session ended or was revoked). "
+                "CAS renewal unavailable or failed. "
                 + str(login_required(account))
             ) from rejected
+    except (requests.RequestException, TransientAPIError) as refresh_error:
+        try:
+            return _renew_with_cas(cached, account)
+        except Exception as cas_error:
+            raise refresh_error from cas_error
     except AuthenticationError:
         # Any working credential is enough: CAS stays the fallback for every session kind.
         return _renew_with_cas(cached, account)

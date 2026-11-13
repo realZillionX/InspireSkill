@@ -11,7 +11,9 @@ from datetime import datetime
 from typing import Any
 
 from inspire.platform.web.session.cas import CasSession
-from inspire.platform.web.session.models import RefreshRejectedError, WebSession, get_session_cache_file
+from inspire.platform.web.session.models import (
+    RefreshRejectedError, RefreshUnavailableError, WebSession, get_session_cache_file,
+)
 
 
 def login_hint(account: str | None, *, cas: bool = False) -> str:
@@ -91,6 +93,12 @@ def inspect_auth_status(
         if id(current) in seen:
             continue
         seen.add(id(current))
+        if isinstance(current, RefreshUnavailableError):
+            oauth.update(
+                refresh_error=current.reason, refresh_retryable=True, refresh_status=current.status,
+            )
+            oauth.pop("note", None)
+            break
         if isinstance(current, RefreshRejectedError):
             oauth.update(state="rejected", refresh_error=current.reason)
             oauth.pop("note", None)
@@ -145,6 +153,10 @@ def format_auth_status(
             else ""
         )
         lines.append(f"OAuth {token} token: {state}{detail}")
+    if oauth.get("refresh_retryable"):
+        lines.append(
+            f"OAuth refresh: temporarily unavailable (HTTP {oauth['refresh_status']}); retry later"
+        )
     if oauth["state"] == "refreshable":
         if authenticated is True:
             lines.append("OAuth: refreshable; renewed automatically on next use.")

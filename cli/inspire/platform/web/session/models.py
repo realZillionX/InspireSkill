@@ -51,12 +51,20 @@ class AuthenticationError(APIError):
     """Authentication requires an explicit device login."""
 
 
+OAUTH_ERROR_CODES = frozenset({
+    "invalid_request", "invalid_client", "invalid_grant", "unauthorized_client",
+    "unsupported_grant_type", "invalid_scope", "access_denied",
+    "unsupported_response_type", "server_error", "temporarily_unavailable",
+    "invalid_token", "insufficient_scope",
+})
+
+
 class RefreshRejectedError(AuthenticationError):
     """A refresh rejection with only a safe OAuth code and HTTP status."""
 
     def __init__(self, reason: object, status: int) -> None:
         self.reason = (
-            reason if isinstance(reason, str) and re.fullmatch(r"[a-z_]{1,64}", reason)
+            reason if isinstance(reason, str) and reason in OAUTH_ERROR_CODES
             else "refresh_rejected"
         )
         super().__init__(
@@ -101,6 +109,19 @@ class TransientAPIError(APIError):
         super().__init__(
             message, status=status, retry_after=retry_after, code=code,
             service=service, action=action, request_id=request_id,
+        )
+
+
+class RefreshUnavailableError(TransientAPIError):
+    """Retryable refresh failure with allowlisted response metadata only."""
+
+    def __init__(self, reason: object, status: int) -> None:
+        self.reason = (
+            reason if isinstance(reason, str) and reason in OAUTH_ERROR_CODES else "unavailable"
+        )
+        super().__init__(
+            f"OAuth refresh: temporarily unavailable (HTTP {status}); retry later",
+            status=status,
         )
 
 
