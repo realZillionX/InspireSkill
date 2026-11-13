@@ -64,7 +64,7 @@ Python 包首次下载约 90 MB，Playwright Chromium 运行时约 150 MB（随�
 curl -fsSL https://raw.githubusercontent.com/realZillionX/InspireSkill/main/scripts/install.sh | bash -s -- --index-url https://mirrors.aliyun.com/pypi/simple/
 ```
 
-脚本不会自动切换镜像。未指定参数时保留已有环境变量：uv 使用 `UV_DEFAULT_INDEX`（优先）或 `UV_INDEX_URL`，pipx 使用 `PIP_INDEX_URL`；显式参数覆盖本次安装的索引。日志显示自定义索引时会移除 URL 中的用户名和密码。该参数只影响 Python 包下载，不改变 Chromium 或 Skill 文件的下载源。
+脚本不会自动切换镜像。未指定参数时保留已有环境变量：`uv` 使用 `UV_DEFAULT_INDEX`（优先）或 `UV_INDEX_URL`，`pipx` 使用 `PIP_INDEX_URL`；显式参数覆盖本次安装的索引。日志显示自定义索引时会移除 URL 中的用户名和密码。该参数只影响 Python 包下载，不改变 Chromium 或 Skill 文件的下载源。
 
 ### Windows
 
@@ -87,29 +87,24 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ## 账号与初始化
 
-Run `inspire login --account <name>` to create a local account and authorize it with the official OAuth device flow. Without `--account`, login uses the active account, or creates `default` when no accounts exist. Connection settings live in `~/.inspire/accounts/<name>/config.toml`; access and rotating refresh tokens live in `web_session.json`. Passwords are neither stored nor read from configuration or environment variables. `account add` remains the compatible account creation entry point.
+运行 `inspire login --account <name>` 创建本地账号并通过官方 OAuth 设备授权完成登录；省略 `--account` 时登录当前默认账号，若本地尚无任何账号则自动创建 `default`。连接配置保存在 `~/.inspire/accounts/<name>/config.toml`（`--base-url` 与 `--proxy` 仅对新建账号生效，不会覆盖已有配置），OAuth 访问令牌与轮换刷新令牌保存在 `web_session.json`，CLI 不会存储密码，也不会从配置文件或环境变量中读取密码。`inspire account add <name>` 仍保留为兼容创建入口（支持 `--no-login` 仅创建配置）。首个创建的账号自动设为默认账号；也可通过 `--use` 强制切换、`--no-use` 保持当前默认账号不变（重新登录已有账号默认不切换）。
 
-For data plaza catalogue access, use `inspire login --cas feishu` and scan the QR with Feishu, or `inspire login --cas sms --phone NUMBER`. Bare `--cas` asks for the method in a terminal (default: Feishu); scripts and JSON mode must specify a method. Feishu requires Playwright Chromium; the command renders the QR to stderr, prints its private PNG path, refreshes it as needed, and removes the PNG on completion or failure. Install missing Chromium with `inspire update --cli-only`.
+如需访问数据广场（`aip.sii.edu.cn`）目录，请使用 `inspire login --cas feishu`（飞书扫码）或 `inspire login --cas sms --phone <手机号>`（短信验证码）登录 CAS；在交互终端下直接传 `--cas` 会提示选择登录方式（默认飞书），脚本与 `--json` 模式须显式指定。飞书扫码依赖 Playwright Chromium，命令会将二维码渲染至 stderr 并在账号私有目录写入临时 PNG，登录完成或失败后自动清理；若缺少 Chromium，可运行 `inspire update --cli-only` 补装。短信登录须使用 11 位大陆手机号（`1` 开头，可选 `+86` 前缀，不支持学号）：交互模式下提示输入验证码（最多尝试 3 次）；非交互模式下发送验证码后立即成功退出，请在 10 分钟内对同一 `--account` 执行 `inspire login --cas sms --phone <手机号> --sms-code <验证码>` 完成登录，手机号与短信验证码均不会保存。
 
-SMS login requires a mobile phone number (11 digits starting with 1, optionally `+86`), not a student ID. Interactive login prompts for the SMS code, allowing three attempts. Noninteractive login sends a code and exits successfully; complete within ten minutes with `inspire login --cas sms --phone NUMBER --sms-code CODE`, using the same `--account`. Neither the phone number nor the SMS code is saved. The private pending state contains only CAS cookies and form controls.
-
-CAS credentials are stored separately in the account's private `cas_session.json`. After CAS login, the CLI automatically approves OAuth device authorization; if approval cannot be completed, it prints the normal URL/code and waits for manual approval. Plain login also tries a valid stored CAS session first. Platform requests continue to use Bearer tokens. When refresh credentials expire or are refused, a valid CAS session can silently obtain new tokens; otherwise run login again. `--json` returns metadata including `cas` (stored and just validated) and `cas_method`, never credentials.
-
-`inspire logout --account <name> --yes` 与 `inspire account remove <name> --yes` 等价：删除整个本地账号目录，包括令牌、配置及 bridge/tunnel 状态，平台工作负载继续运行。删除活动账号后不再保留活动指针。首个账号默认激活，`--use` 强制激活、`--no-use` 阻止激活；登录已有账号默认不切换活动账号。`login` 的 `--base-url` / `--proxy` 仅用于新配置，已有配置不会被覆盖。
+CAS 凭据独立保存在账号私有的 `cas_session.json` 中。完成 CAS 登录后，CLI 会自动批准 OAuth 设备授权（若无法自动完成则回退打印授权链接与设备码等待手动确认）；普通 `inspire login` 及平台刷新令牌失效时，若本地存在有效 CAS 会话也会优先自动续期，否则重新执行 `inspire login` 即可。平台接口继续使用 Bearer 令牌通信；`login --json` 仅返回 `cas`、`cas_method` 等状态元数据，从不输出凭据。
 
 ```bash
 inspire login --account <name>
+inspire login --cas feishu               # 可选：登录 CAS 以检索数据广场目录
 inspire account check                    # 实时验证 OAuth 与 CAS，显示有效期和刷新结果
 inspire account check --offline          # 只读本地状态，不联网或刷新
 inspire init
 inspire resources availability --workspace 分布式训练空间 --include-cpu
 ```
 
-`account check` 和 `account list` 会显示 OAuth 访问／刷新令牌的到期时间和 CAS（数据广场）登录状态；`--offline` 不验证平台认证（JSON `authenticated: null`），有效或可自动刷新时退出 0，其余情况返回认证错误码。
+`account check` 和 `account list` 会显示 OAuth 访问/刷新令牌的到期时间及 CAS（数据广场）登录状态；`--offline` 不验证平台认证（JSON 中 `authenticated: null`），本地状态有效或可自动刷新时退出码为 `0`，其余情况返回认证错误码。`inspire init` 用于校验并补全账号配置（未登录时会自动发起设备授权）。在校园网外访问平台时，请先参考下文[代理配置](#代理配置)完成网络设置。
 
-`inspire init` 用于校验并补全账号配置。在校园网外访问平台时，请先参考下文[代理配置](#代理配置)完成网络设置。
-
-多账号管理可使用 `inspire account use <name>` 切换默认账号、`inspire account current` 查看当前默认账号、`inspire account rename <old> <new>` 重命名别名。所有命令均支持通过 `--account <name>` 临时指定单次命令使用的账号（如 `inspire --account <name> notebook list --workspace CPU资源空间`），切换账号不会清理已有的登录 Session、SSH 连接或本地缓存。
+多账号管理可使用 `inspire account use <name>` 切换默认账号、`inspire account current` 查看当前默认账号、`inspire account rename <old> <new>` 重命名别名。所有命令均支持通过 `--account <name>` 临时指定单次命令使用的账号（如 `inspire --account <name> notebook list --workspace CPU资源空间`），切换账号不会清理已有的登录 Session、SSH 连接或本地缓存。`inspire logout --account <name> --yes` 与 `inspire account remove <name> --yes` 等价，会删除整个本地账号目录（含令牌、配置及本地隧道状态，删除默认账号后不再保留默认指向），平台侧运行中的任务不受影响。
 
 ## 更新与卸载
 
@@ -226,7 +221,7 @@ inspire uninstall               # 卸载 CLI 与已安装的 Skill 文档
 
 - **镜像管理（`inspire image`）**：`image list / detail / register / sync / set-visibility / delete`，支持 `--keyword` 模糊搜索、`--source all` 并发检索四个可见性目录（`official` / `public` / `project` / `private`）、注册外部 Docker 镜像、push 后同步镜像以及调整自定义镜像可见范围。
 - **模型注册表（`inspire model`）**：`model list / register / status / versions / deploy-config / delete`，支持将共享盘模型目录注册到平台、查询实时 vLLM 兼容性与最小部署硬件规格（`deploy-config`），并在删除模型前自动检查是否仍有推理服务占用。
-- **Dataset Hub (`inspire dataset`)**: run `inspire login --cas feishu` or `inspire login --cas sms --phone NUMBER` to enable `dataset list / show / tags / applications`. `dataset validate` and `--dataset <dataset>:<version>` mounts remain available through the platform Bearer session. If CAS expires, log in with `--cas` again.
+- **数据广场官方数据集（`inspire dataset`）**：通过 `inspire login --cas feishu` 或 `inspire login --cas sms --phone <手机号>` 登录 CAS 后，即可使用 `dataset list / show / tags / applications` 检索数据广场（`aip.sii.edu.cn`）目录、版本、权限与申请进度（CAS 过期后重新执行 `--cas` 登录即可）；`dataset validate` 挂载预检及创建 Notebook、Job、HPC 时的 `--dataset <数据集名>:<版本名>` 只读挂载（挂载至 `/inspire/dataset/<数据集名>/<版本名>`）则继续通过平台 Bearer 会话直接完成。
 - **项目与预算（`inspire project`）**：`project list / detail / owners` 查看全局项目列表、个人可用点券额度（`My Budget`）与项目总余额（`Project Budget`）、各项支出明细以及项目负责人列表。
 
 </details>
@@ -318,6 +313,7 @@ with InspireClient(account="research") as client:
 - [`SKILL.md`](SKILL.md)：Agent 技能主入口，包含核心操作模型、执行闭环与参考文档路由。
 - [`references/assets.md`](references/assets.md)：`INSPIRE.md` 持久资产约定与生命周期管理。
 - [`references/resources.md`](references/resources.md)：Workspace、计算组、配额规格、实时余量、用量归因与本地缓存。
+- [`references/agent-ops.md`](references/agent-ops.md)：跨会话任务交接、计算组选型与并发会话共享配额规范。
 - [`references/paths.md`](references/paths.md)：共享盘作用域、存储池、挂载隔离与远端路径规范。
 - [`references/dataset.md`](references/dataset.md)：数据广场检索、版本与权限核验、`--dataset` 只读挂载。
 - [`references/internal-sources.md`](references/internal-sources.md)：联网准备流程、内部软件源配置与镜像固化策略。
