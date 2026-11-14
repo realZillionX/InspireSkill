@@ -689,9 +689,17 @@ class TestAccountJsonOutput:
             "data": {
                 "items": [
                     {"name": "alice", "active": True, "oauth_state": "missing",
-                     "refresh_expires_at": None, "cas_state": "missing"},
+                     "refresh_expires_at": None, "cas_state": "missing", "refresh_kind": "session",
+                     "oauth": {"state": "missing", "refresh_kind": "session",
+                               "access_expires_at": None, "access_expires_in": None,
+                               "refresh_expires_at": None, "refresh_expires_in": None,
+                               "issued_at": None}},
                     {"name": "bob", "active": False, "oauth_state": "missing",
-                     "refresh_expires_at": None, "cas_state": "missing"},
+                     "refresh_expires_at": None, "cas_state": "missing", "refresh_kind": "session",
+                     "oauth": {"state": "missing", "refresh_kind": "session",
+                               "access_expires_at": None, "access_expires_in": None,
+                               "refresh_expires_at": None, "refresh_expires_in": None,
+                               "issued_at": None}},
                 ]
             },
         }

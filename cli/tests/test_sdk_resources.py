@@ -713,7 +713,8 @@ def test_training_job_list_and_iter_views(client, catalog, monkeypatch, nested_r
 
 
 @pytest.mark.parametrize("renew", [False, True])
-def test_account_check_local_metadata_and_refresh(client, monkeypatch, renew):
+@pytest.mark.parametrize("offline", [False, True])
+def test_account_check_local_metadata_and_refresh(client, monkeypatch, renew, offline):
     from inspire.platform.web.session.models import WebSession
     from inspire.services.account.auth_status import inspect_auth_status
     from inspire.sdk.models_resources import AccountCheck
@@ -722,7 +723,7 @@ def test_account_check_local_metadata_and_refresh(client, monkeypatch, renew):
     original = WebSession(
         access_token="SECRET-ACCESS", refresh_token="SECRET-REFRESH",
         access_expires_at=time.time() + 3600, refresh_expires_at=time.time() + 86400,
-        created_at=time.time() - 100, login_username="sdk-user",
+        created_at=time.time() - 100, login_username="sdk-user", refresh_offline=offline,
     )
     original.save(account=client.account)
 
@@ -735,7 +736,41 @@ def test_account_check_local_metadata_and_refresh(client, monkeypatch, renew):
     result = client.account_info.check()
     expected = inspect_auth_status(client.account)
     assert result.oauth == expected["oauth"]
+    assert result.oauth["refresh_kind"] == ("offline" if offline else "session")
     assert result.cas == expected["cas"]
     assert result.refreshed is renew
     assert "SECRET-" not in repr(result)
     assert AccountCheck(True, None, None, ()).oauth is None
+
+
+def test_account_check_refresh_rejected(client, monkeypatch):
+    from inspire.platform.web.session.models import AuthenticationError, RefreshRejectedError
+
+    def refused(**kwargs):
+        raise AuthenticationError("CAS renewal failed; run inspire login.") from RefreshRejectedError(
+            "invalid_grant", 400
+        )
+
+    monkeypatch.setattr(api, "get_current_user", refused)
+    result = client.account_info.check()
+    assert result.oauth["state"] == "rejected"
+    assert result.oauth["refresh_error"] == "invalid_grant"
+
+
+def test_account_check_refresh_unavailable(client, monkeypatch):
+    from inspire.platform.web.session.models import RefreshUnavailableError
+    from inspire.services.account.auth_status import inspect_auth_status
+
+    before = inspect_auth_status(client.account)
+
+    def unavailable(**kwargs):
+        raise RefreshUnavailableError("temporarily_unavailable", 503)
+
+    monkeypatch.setattr(api, "get_current_user", unavailable)
+    result = client.account_info.check()
+    assert result.ok is False
+    assert result.oauth["state"] == before["oauth"]["state"]
+    assert result.oauth["refresh_error"] == "temporarily_unavailable"
+    assert result.oauth["refresh_retryable"] is True
+    assert result.oauth["refresh_status"] == 503
+    assert "retry later" in result.issues[0]

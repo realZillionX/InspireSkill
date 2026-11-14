@@ -17,6 +17,8 @@ import contextlib
 import logging
 import time
 
+from inspire.platform.web.session.models import TransientAPIError
+from inspire.platform.web.transport_policy import is_request_error
 from inspire.platform.web.flow import Program as FlowProgram, workflow, call, http_call
 
 from dataclasses import dataclass, field
@@ -388,6 +390,8 @@ def refresh(self: Any, *, require_cas_ticket: bool = False) -> FlowProgram[Any]:
             raise
         except Exception as error:
             self.check_deadline()
+            if isinstance(error, TransientAPIError) or is_request_error(error):
+                raise TransportError(str(error), **_error_metadata(error)) from error
             raise AuthenticationError(str(error), **_error_metadata(error)) from error
         finally:
             if self._browser is not None:
@@ -510,15 +514,13 @@ def acquire_session(self: Any) -> FlowProgram[None]:
     from inspire.platform.web import session as web_session
 
     with self.scope(timeout=None):
-        if self.cli_compat:
-            self._session = yield call(
+        try:
+            session = yield call(
                 web_session.get_web_session, account=self.account, lock_timeout=self.remaining()
             )
-            return
-        self._session = self._validate_session(
-            (
-                yield call(
-                    web_session.get_web_session, account=self.account, lock_timeout=self.remaining()
-                )
-            )
-        )
+            self._session = session if self.cli_compat else self._validate_session(session)
+        except Exception as error:
+            self.check_deadline()
+            if isinstance(error, TransientAPIError) or is_request_error(error):
+                raise TransportError(str(error), **_error_metadata(error)) from error
+            raise

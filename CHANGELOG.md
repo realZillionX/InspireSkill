@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- OAuth 登录和 CAS 续期统一请求离线刷新令牌，保留离线标记并兼容旧缓存；本地 30 天估计不阻止刷新。请勿再用 <= 7.2.1 操作同一账号，旧版会丢失离线标记；可用本版本按 JWT 恢复。严格校验令牌有效期，Offline JWT 允许缺失或 null 刷新有效期。
+- OAuth 刷新失败仍尝试 CAS，任一成功即可继续访问；网络和暂时性故障在 CLI、transport 和 SDK 中保持可重试。账号检查保留安全错误原因、HTTP 状态、JSON 和代理诊断，失败时不再按本地有效期宣称访问令牌有效；明确拒绝才提示重新登录。
 - 修复 Serving 创建仍发送旧 `port` 字段：现有 `--port` / SDK `port` 转换为 HTTP `port_configs`，新增 `--metrics-port` 和 SDK `port_configs`；详情和版本历史优先读取实际 HTTP / Metrics 端口，旧响应继续回退到 `port`。
 - Serving 支持按名称直接引用已发布的广场模型：CLI 使用 `--model-source plaza`，batch 和 SDK 使用 `model_source="plaza"`；SDK 也接受 `registered` 和兼容的 `MODEL_PLAZA`。广场名称在三端统一区分大小写精确匹配，不登记或复制模型。广场创建省略 `model_version`；旧 Browser API 调用须移除显式广场版本，冲突会在发送前报错。已登记模型继续使用指定或最新版本（#113）。
 
