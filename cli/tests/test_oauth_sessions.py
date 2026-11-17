@@ -2,6 +2,7 @@
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
+import sys
 import json
 import time
 
@@ -490,7 +491,8 @@ def test_refresh_kind_cache_roundtrip(account, monkeypatch, offline):
     assert (path.read_bytes(), path.stat().st_mtime_ns) == before
     restored.save()
     assert WebSession.load(account=account).refresh_offline is bool(offline)
-    assert path.stat().st_mode & 0o777 == 0o600
+    if sys.platform != "win32":
+        assert path.stat().st_mode & 0o777 == 0o600
 
 
 def test_offline_refresh_ignores_local_estimate(account, monkeypatch):
