@@ -2,6 +2,11 @@
 
 各版本条目记录该版本发布时的用户可见变化；当前用法以 README 和 CLI Help 为准。
 
+## Unreleased
+
+文档：
+- 平台自 2026-11-18 起不再签发离线刷新令牌，登录得到普通会话刷新令牌（12 小时空闲超时、每次刷新顺延，单次登录会话最长 7 天）。README、SDK 与 Browser API 文档改为描述实测行为，并说明 CAS 静默续期与定时运行 `inspire account check` 保活；CLI 仍请求 `offline_access`，平台恢复后无需升级。
+
 ## v7.2.2
 
 修复：
