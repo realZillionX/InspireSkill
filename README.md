@@ -102,11 +102,11 @@ inspire init
 inspire resources availability --workspace 分布式训练空间 --include-cpu
 ```
 
-设备登录请求 `offline_access`：访问令牌仍为 1 小时，离线刷新令牌不随浏览器 / CAS SSO 会话结束而失效，但受服务端空闲超时与撤销限制。离线令牌是长期凭证，保存在权限为 0600 的 `web_session.json`；`inspire logout` 在本地删除它，服务端撤销需使用 Keycloak 账号控制台（applications/sessions）。旧会话需重新登录才能请求离线令牌。
+设备登录仍请求 `offline_access`，但平台自 2026-11-18 起不再签发离线刷新令牌，登录得到的是普通会话刷新令牌（`refresh_kind: session`）。按服务端实测：访问令牌 1 小时；刷新令牌 12 小时内未使用即失效，每次刷新顺延 12 小时；同一次登录的会话最长 7 天，到期后必须重新设备授权。已登录 CAS（`inspire login --cas`）时，刷新失败或会话到期后 CLI 会用 CAS 会话静默完成新的设备授权；否则需要手动运行 `inspire login`。需要长时间无人值守时，可用 cron 或 systemd timer 每 6 小时运行一次 `inspire account check --account <name>`，避免会话因空闲失效（仍受 7 天上限约束）。刷新令牌保存在权限为 0600 的 `web_session.json`；`inspire logout` 在本地删除它，服务端会话可在 Keycloak 账号控制台（sessions）注销。平台恢复离线授权后，重新登录即可再次获得离线令牌（`refresh_kind: offline`），无需升级 CLI。
 
-使用 v7.2.2 及以上版本登录后，请勿再用 <= 7.2.1 的旧版本操作同一账号。v7.2.1 首次刷新离线令牌后会丢失离线标记，并将刷新到期时间写为当前时间；下一次跳过 OAuth 刷新，仅尝试 CAS，无有效 CAS 时即使离线令牌仍可用也会报告未登录。v7.2.2 起可根据刷新 JWT 的 `typ="Offline"` 恢复这类文件；若旧版本报告未登录，请运行 v7.2.2 及以上版本恢复，或在旧版本中重新登录。
+若账号仍持有离线令牌，请勿再用 <= 7.2.1 的旧版本操作该账号。v7.2.1 首次刷新离线令牌后会丢失离线标记，并将刷新到期时间写为当前时间；下一次跳过 OAuth 刷新，仅尝试 CAS，无有效 CAS 时即使离线令牌仍可用也会报告未登录。v7.2.2 起可根据刷新 JWT 的 `typ="Offline"` 恢复这类文件；若旧版本报告未登录，请运行 v7.2.2 及以上版本恢复，或在旧版本中重新登录。
 
-`account check` 和 `account list` 会显示 OAuth 访问令牌到期时间、刷新令牌类型和 CAS（数据广场）登录状态；离线刷新令牌显示无固定有效期，JSON `oauth.refresh_kind` 为 `offline`，不将内部 30 天滑动估计显示为硬过期时间；`--offline` 不验证平台认证（JSON `authenticated: null`），有效或可自动刷新时退出 0，其余情况返回认证错误码。`inspire init` 用于校验并补全账号配置（未登录时会自动发起设备授权）。在校园网外访问平台时，请先参考下文[代理配置](#代理配置)完成网络设置。
+`account check` 和 `account list` 会显示 OAuth 访问令牌到期时间、刷新令牌类型和 CAS（数据广场）登录状态；离线刷新令牌（如有）显示无固定有效期，JSON `oauth.refresh_kind` 为 `offline`，不将内部 30 天滑动估计显示为硬过期时间；`--offline` 不验证平台认证（JSON `authenticated: null`），有效或可自动刷新时退出 0，其余情况返回认证错误码。`inspire init` 用于校验并补全账号配置（未登录时会自动发起设备授权）。在校园网外访问平台时，请先参考下文[代理配置](#代理配置)完成网络设置。
 
 多账号管理可使用 `inspire account use <name>` 切换默认账号、`inspire account current` 查看当前默认账号、`inspire account rename <old> <new>` 重命名别名。所有命令均支持通过 `--account <name>` 临时指定单次命令使用的账号（如 `inspire --account <name> notebook list --workspace CPU资源空间`），切换账号不会清理已有的登录 Session、SSH 连接或本地缓存。`inspire logout --account <name> --yes` 与 `inspire account remove <name> --yes` 等价，会删除整个本地账号目录（含令牌、配置及本地隧道状态，删除默认账号后不再保留默认指向），平台侧运行中的任务不受影响。
 
