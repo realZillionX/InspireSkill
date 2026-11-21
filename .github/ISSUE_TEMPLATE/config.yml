@@ -1,5 +1,5 @@
 blank_issues_enabled: true
 contact_links:
-  - name: 项目 README
+  - name: Project README
     url: https://github.com/realZillionX/InspireSkill#readme
-    about: 先查看安装、使用和平台约束说明。
+    about: Check installation, usage, and platform constraints first.

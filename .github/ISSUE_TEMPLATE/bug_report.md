@@ -1,44 +1,44 @@
 ---
 name: Bug report
-about: 报告可复现的问题或回归
+about: Report a reproducible bug or regression
 title: "[Bug] "
 labels: bug
 assignees: ""
 ---
 
-## 问题描述
+## Problem Description
 
-请简要说明实际发生了什么，以及你期望发生什么。
+Briefly describe what actually happened and what you expected to happen.
 
-## 复现步骤
+## Steps to Reproduce
 
-1. 运行命令：
+1. Run command:
 
    ```bash
    inspire ...
    ```
 
-2. 观察输出或状态：
+2. Observe the output or state:
 
-## 实际结果
+## Actual Result
 
-请粘贴关键输出。请移除 token、cookie、账号密钥、内网凭据和不必要的 raw ID。
+Paste the relevant output. Remove tokens, cookies, account secrets, internal credentials, and unnecessary raw IDs.
 
-## 期望结果
+## Expected Result
 
-请说明正确行为。
+Describe the expected behavior.
 
-## 环境信息
+## Environment
 
-- 操作系统：
-- Python 版本：
-- InspireSkill 版本或 commit：
-- 安装方式：PyPI / install.sh / 本地 checkout
-- 相关 workspace、project、compute group：
+- OS:
+- Python version:
+- InspireSkill version or commit:
+- Installation method: PyPI / install.sh / local checkout
+- Relevant workspace, project, compute group:
 
-## 验证信息
+## Diagnostics
 
-已尝试的排查命令：
+Troubleshooting commands already run:
 
 ```bash
 inspire --help

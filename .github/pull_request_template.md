@@ -11,7 +11,7 @@
 
 ## Checklist
 
-- [ ] 变更范围与 PR 目标一致，没有引入无关格式化或重构。
-- [ ] 文档、help 文本或模板中的中文标点和中英文空格符合项目约定。
-- [ ] 若触碰 live Inspire 平台资源，已说明创建对象、清理状态和残留风险。
-- [ ] 若改变 CLI 行为，已补充或更新测试。
+- [ ] Changes stay within the PR scope without unrelated formatting or refactoring.
+- [ ] Chinese punctuation and spacing in any Chinese documentation follow project conventions.
+- [ ] If live Inspire platform resources were touched, created objects, cleanup status, and residual risks are documented.
+- [ ] Tests were added or updated if CLI behavior changed.

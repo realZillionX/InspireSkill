@@ -1,33 +1,33 @@
 ---
 name: Feature request
-about: 提议新功能、工作流或工程化改进
+about: Propose a new feature, workflow, or engineering improvement
 title: "[Feature] "
 labels: enhancement
 assignees: ""
 ---
 
-## 背景
+## Background
 
-请说明当前工作流的痛点，以及为什么现有命令或文档无法满足需求。
+Explain the pain point in the current workflow and why existing commands or documentation do not cover it.
 
-## 期望能力
+## Desired Capability
 
-请描述理想的用户体验或 Agent 工作流。
+Describe the ideal user experience or agent workflow.
 
-## 建议接口
+## Proposed Interface
 
-如有具体 CLI 设计，请写出示例：
+If you have a concrete CLI design in mind, provide an example:
 
 ```bash
 inspire ...
 ```
 
-## 验收标准
+## Acceptance Criteria
 
-- [ ] 命令或文档变更可通过明确示例验证。
-- [ ] 不破坏现有人类可读输出和 `--json` 脚本接口。
-- [ ] 涉及 live 平台资源时，有清理路径和失败排查方式。
+- [ ] Command or documentation changes can be verified with clear examples.
+- [ ] Existing human-readable output and `--json` scripting interfaces remain intact.
+- [ ] Any live platform resources have a cleanup path and failure troubleshooting guidance.
 
-## 其他信息
+## Additional Context
 
-请补充相关链接、截图或平台上下文。
+Add any relevant links, screenshots, or platform context.
