@@ -1,74 +1,80 @@
-<p align="center"> <img src="https://raw.githubusercontent.com/realZillionX/InspireSkill/main/assets/hero.svg" width="100%" alt="Inspire Skill: the Agent-Native cockpit for the Inspire compute platform"/> </p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/hero-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/hero.svg">
+    <img src="assets/hero.svg" width="100%" alt="InspireSkill — 让 AI Agent 在本地直接操控启智平台">
+  </picture>
+</p>
 
-<p align="center"> <b>让 AI Agent 直接在本地 CLI 里完成启智平台的全部操作。</b><br/> </p>
+<p align="center">
+  <a href="https://pypi.org/project/inspire-skill/"><img src="https://img.shields.io/pypi/v/inspire-skill?style=flat-square&label=PyPI&color=4F52E8&labelColor=262522" alt="PyPI version"></a>
+  <a href="cli/"><img src="https://img.shields.io/badge/Python-3.10%2B-3D3C37?style=flat-square&labelColor=262522" alt="Python 3.10+"></a>
+  <a href="#-支持的-agent-客户端"><img src="https://img.shields.io/badge/Agent%20Clients-13%20Supported-4F52E8?style=flat-square&labelColor=262522" alt="13 Supported Agent Clients"></a>
+  <img src="https://img.shields.io/badge/Platform-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-3D3C37?style=flat-square&labelColor=262522" alt="macOS · Linux · Windows">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-3D3C37?style=flat-square&labelColor=262522" alt="License MIT"></a>
+</p>
 
-<p align="center"> <a href="https://github.com/realZillionX/InspireSkill/tree/main/cli"><img src="https://img.shields.io/badge/CLI-bundled-3366FF?style=for-the-badge" alt="CLI bundled"/></a> <img src="https://img.shields.io/badge/Harness-Codex%20/%20Claude%20Code%20/%20Cursor%20/%20OpenCode%20/%20ZCode%20/%20Kimi%20Code%20/%20Kimi%20Work%20/%20Qoder%20/%20Qoder%20Work%20/%20Antigravity%20/%20OpenClaw%20/%20Pi%20/%20DeepSeek%20Harness-5566FF?style=for-the-badge" alt="Harnesses"/> <img src="https://img.shields.io/badge/status-actively%20maintained-22CCEE?style=for-the-badge" alt="Actively maintained"/> <img src="https://img.shields.io/badge/license-MIT-0f172a?style=for-the-badge" alt="License MIT"/> </p>
+<p align="center">
+  <a href="#-项目初衷与定位">项目定位</a> ·
+  <a href="#-快速上手">快速上手</a> ·
+  <a href="#-日常使用方式">使用体验</a> ·
+  <a href="#-能力全景">能力全景</a> ·
+  <a href="#-python-sdk">Python SDK</a> ·
+  <a href="#-支持的-agent-客户端">支持客户端</a> ·
+  <a href="#-校外访问与代理配置">校外代理</a> ·
+  <a href="#-文档索引">文档索引</a>
+</p>
 
 ---
 
-# 本项目建立的意义
+## ✨ 项目初衷与定位
 
-在本项目开始筹办之初，对于所有 SII 的学生，[启智平台](https://qz.sii.edu.cn)是科研实验链路里最慢的那一环：每次申请资源、新建 Notebook、新建训练任务、同步代码都要反复点点点，SSH 等更进一步的功能更是遥遥无期。
+在上海创智学院（SII）的日常科研中，[启智平台](https://qz.sii.edu.cn)承载着核心算力，但传统的网页端操作往往也是实验链路里最拖慢节奏的一环：查配额、开 Notebook、提训练、同步代码、看日志都要在浏览器里反复点选；碰上 GPU 训练区无法直连外网、`H100` / `H200` 节点不开放常规 SSH 等限制，配环境和排查问题更是费时费力。
 
-本着过渡到大 Agent 时代、将一切重复性机械工作交给 Agent 的初衷，我们创办了 InspireSkill 项目，旨在将启智平台 GUI 打平为 CLI，并建立了 CLI + Skill 的一体化系统，让 InspireSkill 成为所有 Agent 开箱即用的工具、让你的 Codex / Claude Code / Cursor / OpenCode / ZCode / Kimi Code / Kimi Work / Qoder / Qoder Work / Antigravity / OpenClaw / Pi / DeepSeek Harness 成为进行科研工作的唯一入口。
+**InspireSkill** 的目标，是把启智平台的全部操作搬进本地命令行，并配齐面向 AI Agent 的技能手册与 Python SDK。你不需要改变原有的开发习惯——继续在熟悉的 Codex、Claude Code、Cursor 等客户端和本地终端里写代码、管 Git，就能直接通过对话或命令行完成平台上的全套操作。
 
-建立和维护本项目的过程并非易事，InspireSkill 也并非只是将[启智平台](https://qz.sii.edu.cn)的网页 API 打平重构为 CLI 的简单工作，在维护本项目的过程中，设计高于平台语义的高层功能、寻找启智平台中细枝末节的 API 并将其优雅融入 CLI 系统中、尤其是维护一个易于 Agent 阅读且包含平台所有特性的文档系统都给我们带来了不小于 CLI 本身的麻烦。
+在 [@realZillionX](https://github.com/realZillionX)、[@JingYiJun](https://github.com/JingYiJun) 等开发者的长期打磨下，`inspire` CLI 并不是简单地把网页接口翻译成命令，而是围绕真实科研场景把整条实验链路彻底打通：
 
-在长时间的开发与维护中，以 [@realZillionX](https://github.com/realZillionX) 和 [@JingYiJun](https://github.com/JingYiJun) 为首的开发团队始终秉持着注重细节与优雅的开发者精神，最终构建出一个令人满意的项目。时至今日，我们可以自豪地说：**InspireSkill 所包含的功能，只有你想不到，没有我们做不到**。它们包括但不限于：对 HDD / SSD / QB-ILM 等项目路径的优雅维护、翻转镜像的可见范围、将平台内部源入口交给 Agent（从而使在不可上网区配置镜像成为可能）、联网 Notebook 的 SSH 板块、受限 Notebook 的 JupyterTerminal 执行路径、空闲 8 卡整节点总量的查询、低优任务占用总量的查询、将 Notebook / 训练任务的资源视图 / 事件 / 聚合日志交给 Agent。
+- **覆盖实验全流程的平台操作**：从查询项目余额与计算组实时空闲卡数、管理交互式 Notebook、提交单机/多机 GPU 训练、运行 CPU Slurm 批处理、拉起弹性 Ray 集群、部署在线推理服务，到管理自定义镜像、登记模型与挂载数据广场数据集，所有日常操作都能在终端直接完成。
+- **直接按名字操作，人好敲、Agent 也好调**：工作空间、项目、计算组、镜像、模型和任务全部直接使用平台上的名称与本地账号别名，无需翻找底层内部 ID；所有命令均支持 `--json` 输出，方便 Agent 和自动化脚本稳定读取。
+- **填平断网环境、受限节点与参数暗坑**：开放节点支持一键生成 OpenSSH 配置接入本地终端与 VS Code Remote，`H100` / `H200` 受限节点自动切换至 `JupyterTerminal` 执行命令与打开终端；内置断网区平台内部软件源指引、在线保存与单层压平镜像、镜像可见性调整，并在提交 HPC 任务前自动拦截物理配额与 Slurm 参数冲突，避免空跑或卡死排队。
+- **不用打开浏览器也能掌握训练现场**：直接在命令行查询空闲 8 卡整节点数与可抢占低优卡数、合并查看控制器与容器调度事件、汇总多机多卡日志、排查宿主机内核 OOM 等节点故障、进入运行中的任务容器终端，甚至直接读取 TensorBoard 的 loss 与评测指标数值。
 
-# 对初次使用者的简单介绍
+### 套件组成
 
-InspireSkill 是启智平台的本地 Agent 工具套件。你可以继续在熟悉的 Codex、Claude Code、Cursor 等客户端中写代码、管 Git，同时让 Agent 直接通过命令行调度启智算力。项目包含三部分：
+| 组件 | 作用与定位 |
+| --- | --- |
+| **`inspire`&nbsp;CLI** | 覆盖资源与配额查询、Notebook、GPU Job、CPU HPC、Ray、Serving、TensorBoard、镜像、模型注册表与官方数据集的本地命令行工具。 |
+| **`SKILL.md`&nbsp;与&nbsp;`references/`** | 面向 AI Agent 编排的操作规范与领域参考手册，涵盖任务选型、环境准备、实时巡检与清理闭环，由安装器自动部署至本机 Agent 客户端。 |
+| **Python&nbsp;SDK** | 随 `inspire-skill` 一同安装的同步（`InspireClient`）与异步（`InspireAsyncClient`）客户端，与 CLI 共享账号会话与类型化资源模型。 |
 
-- **`inspire` CLI**：把资源查询、Notebook 连接、GPU Job / HPC / Ray 提交、Serving 部署、TensorBoard 曲线读取、镜像与模型管理整合为命令行工具。所有资源直接按名称和本地账号别名寻址，支持 `--json` 结构化输出。
-- **`SKILL.md` 与 `references/`**：配套的 Agent 技能手册，涵盖工作负载选型、资源与配额查询、任务观察和结果验收流程。安装脚本会自动将其部署到本机已安装的 Agent 客户端中。
-- **Python SDK**：随 `inspire-skill` 包一同安装的同步（`InspireClient`）与异步（`InspireAsyncClient`）Python 客户端，方便在脚本、评测流水线或后端服务中直接调用平台接口。
+### 与 QWorks 的区别
 
-在对话中告诉 Agent 你的实验目标，它就可以自动查询可用 Workspace、配额与镜像，同步共享盘代码与数据，提交训练或处理任务，并通过事件、日志、监控指标和 TensorBoard 追踪训练进展，最后清理闲置资源。
+启智推出的 [QWorks](https://qworks.tech/solutions/sii) 是独立桌面客户端，需要将对话与开发迁移至其自有界面。InspireSkill 则直接嵌入你现有的本地开发工具链：
 
-## 为什么不直接使用 QWorks？
-
-启智推出的 [QWorks](https://qworks.tech/solutions/sii) 是独立的桌面客户端，要求用户迁移到它自带的对话界面中，也无法直接复用 Codex、Claude Code、Cursor 等工具已有的订阅套餐。InspireSkill 则以 CLI + Skill 的形式接入你现有的 Agent 工具链：
-
-| 维度 | QWorks | InspireSkill |
+| 对&#8288;比&#8288;维&#8288;度 | QWorks | InspireSkill |
 | --- | --- | --- |
-| Agent 入口 | 绑定 QWorks 自带客户端 | 支持 Codex / Claude Code / Cursor / OpenCode / Antigravity 等主流客户端，也可在终端直接使用 CLI |
-| 模型与套餐 | 无法直接使用其他客户端的订阅套餐，外部模型需按 API 接入 | 直接沿用现有 Agent 客户端的模型配置与订阅套餐 |
-| 启智操作 | 在 QWorks 界面内连接平台环境 | 通过本地 CLI 与 Python SDK 覆盖资源查询、Notebook、GPU Job、HPC、Ray、Serving、TensorBoard、镜像与数据集管理 |
-| 工作流 | 围绕 QWorks 内部会话 | 与本地代码仓库、Git 及其他开发工具无缝配合，支持脚本编排与 `--json` 自动化 |
+| **使&#8288;用&#8288;入&#8288;口** | 绑定 QWorks 独立桌面端 | 接入本地主流 Agent 客户端（共支持 13 款），也可在终端或脚本中直接调用 |
+| **模&#8288;型&#8288;订&#8288;阅** | 无法复用其他客户端已有订阅，外部模型需另配接口 | 直接沿用现有 Agent 客户端的模型配置与订阅套餐 |
+| **平&#8288;台&#8288;覆&#8288;盖** | 在客户端界面内连接平台环境 | CLI 与 Python SDK 完整覆盖配额情报、六类计算负载、镜像、模型与数据广场 |
+| **工&#8288;程&#8288;协&#8288;同** | 围绕客户端内部会话展开 | 与本地 Git 仓库、编辑器、Shell 脚本及 `--json` 自动化流水线无缝配合 |
 
 ---
 
-# 快速上手
+## 🚀 快速上手
 
-支持 macOS、Linux 和 Windows（无需 WSL）。具体命令参数请以 `inspire --help` 和各子命令的 `--help` 为准。
+支持 **macOS**、**Linux** 与原生 **Windows**（无需 WSL）。所有命令与参数的准确用法请以 `inspire --help` 及各子命令 `--help` 为准。
 
-## 安装
+### 1. 安装
 
-### macOS / Linux
-
-需要 `bash`、`curl`、`tar`、Python 3.10+，以及 `uv`（推荐）或 `pipx`。如未安装 `uv`，请先执行第一行：
+**macOS / Linux**（需 Python 3.10+、`bash`、`curl`、`tar`，以及 `uv` 或 `pipx`；若尚未安装 `uv`，先执行第一行）：
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 curl -fsSL https://raw.githubusercontent.com/realZillionX/InspireSkill/main/scripts/install.sh | bash
 ```
 
-安装脚本会从 PyPI 安装 `inspire-skill`，并将 `SKILL.md` 与 `references/` 写入自动检测到的 Agent 客户端目录。可通过 `bash -s -- --harness codex,claude` 指定目标客户端；`--no-cli` 仅安装 Skill 文档，`--no-schedule` 跳过 macOS 每日更新检查。
-
-未检测到 Agent 客户端时，脚本仍会安装 CLI，跳过 Skill 文件并提示；安装 Agent 后运行 `inspire update`，或重新运行脚本并传入 `--harness <name>` 补装。若同时传入 `--no-cli` 且未检测到或指定客户端，则报错退出。
-
-Python 包首次下载约 90 MB，Playwright Chromium 运行时约 150 MB（随平台、版本和缓存而变化），慢速网络下可能需要数分钟。可用 `--index-url URL` 为本次 CLI 安装指定较近的 PyPI 镜像，例如：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/realZillionX/InspireSkill/main/scripts/install.sh | bash -s -- --index-url https://mirrors.aliyun.com/pypi/simple/
-```
-
-脚本不会自动切换镜像。未指定参数时保留已有环境变量：`uv` 使用 `UV_DEFAULT_INDEX`（优先）或 `UV_INDEX_URL`，`pipx` 使用 `PIP_INDEX_URL`；显式参数覆盖本次安装的索引。日志显示自定义索引时会移除 URL 中的用户名和密码。该参数只影响 Python 包下载，不改变 Chromium 或 Skill 文件的下载源。
-
-### Windows
-
-需要 Python 3.10+、`uv`（推荐）或 `pipx`，以及系统自带的 OpenSSH 客户端。在仓库根目录运行 `install.ps1`：
+**Windows PowerShell**（需 Python 3.10+、`uv` 或 `pipx`，以及系统 OpenSSH 客户端；在克隆后的仓库根目录执行）：
 
 ```powershell
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
@@ -77,166 +83,210 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\install.ps1
 ```
 
-脚本会自动检测本机 Agent 客户端；`-SkipPlaywright` 跳过浏览器运行时安装，`-SkipSkill` 仅安装 CLI，`-Version <x.y.z>` 安装指定版本。安装完成后可运行 `inspire --version` 和 `inspire --help` 验证。
+安装器会从 PyPI 安装 `inspire-skill`，准备 Playwright Chromium 运行时，并将 `SKILL.md` 与 `references/` 自动写入本机检测到的 Agent 客户端目录。若本机暂未安装任何 Agent 客户端，CLI 仍会正常安装，后续安装客户端后运行 `inspire update` 即可补装 Skill 文件。
 
-未检测到客户端时仍可完成 CLI 安装，Skill 不会安装；安装 Agent 后运行 `inspire update` 补装。PowerShell 对应的镜像参数为 `-IndexUrl URL`，环境变量优先级与上述说明一致，例如：
+<details>
+<summary><b>⚙️ 可选安装参数、PyPI 镜像加速与 Windows 环境提示</b></summary>
 
-```powershell
-.\scripts\install.ps1 -IndexUrl https://mirrors.aliyun.com/pypi/simple/
-```
+- **安装器参数（macOS / Linux）**：可通过 `bash -s -- --harness codex,claude` 指定目标客户端；`--no-cli` 仅安装 Skill 文档（未检测到且未指定客户端时报错退出）；`--no-schedule` 跳过 macOS 每日更新检查任务。
+- **安装器参数（Windows）**：支持 `-SkipPlaywright`（跳过浏览器运行时下载）、`-SkipSkill`（仅安装 CLI）与 `-Version <x.y.z>`（安装指定版本）。
+- **PyPI 镜像加速**：Python 依赖首次下载约 90 MB，Chromium 运行时约 150 MB。慢速网络下可通过 `--index-url`（或 PowerShell `-IndexUrl`）为本次包安装指定镜像源（仅作用于 Python 包下载，不修改浏览器与 Skill 下载源，日志会自动脱敏凭据）：
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/realZillionX/InspireSkill/main/scripts/install.sh | bash -s -- --index-url https://mirrors.aliyun.com/pypi/simple/
+  ```
+  未显式传参时保留当前环境变量（`uv` 优先读取 `UV_DEFAULT_INDEX` 与 `UV_INDEX_URL`，`pipx` 读取 `PIP_INDEX_URL`）。
+- **Windows 原生 SSH 注意事项**：
+  - 运行 `Get-Command ssh -All` 确认实际调用的 `ssh.exe`；系统 OpenSSH 与 Git for Windows 自带 OpenSSH 对 `ProxyCommand` 的解析存在差异。
+  - Windows PowerShell 5.1 的 `>>` 默认使用 UTF-16LE 编码，写入 SSH 配置时请改用：`inspire notebook ssh-config <notebook> | Out-File -Encoding utf8 -Append $env:USERPROFILE\.ssh\config`（PowerShell 7+ 可直接使用 `>>`）。
+  - 若提示 `UNPROTECTED PRIVATE KEY FILE`，请收紧 `%USERPROFILE%\.ssh` 目录 ACL 权限。文件传输可直接使用 `inspire notebook scp`，无需安装 `rsync`。
 
-## 账号与初始化
+</details>
 
-运行 `inspire login --account <name>` 创建本地账号并通过官方 OAuth 设备授权完成登录；省略 `--account` 时登录当前默认账号，若本地尚无任何账号则自动创建 `default`。连接配置保存在 `~/.inspire/accounts/<name>/config.toml`（`--base-url` 与 `--proxy` 仅对新建账号生效，不会覆盖已有配置），OAuth 访问令牌与轮换刷新令牌保存在 `web_session.json`，CLI 不会存储密码，也不会从配置文件或环境变量中读取密码。`inspire account add <name>` 仍保留为兼容创建入口（支持 `--no-login` 仅创建配置）。首个创建的账号自动设为默认账号；也可通过 `--use` 强制切换、`--no-use` 保持当前默认账号不变（重新登录已有账号默认不切换）。
+### 2. 登录与初始化
 
-如需访问数据广场（`aip.sii.edu.cn`）目录，请使用 `inspire login --cas feishu`（飞书扫码）或 `inspire login --cas sms --phone <手机号>`（短信验证码）登录 CAS；在交互终端下直接传 `--cas` 会提示选择登录方式（默认飞书），脚本与 `--json` 模式须显式指定。飞书扫码依赖 Playwright Chromium，命令会将二维码渲染至 stderr 并在账号私有目录写入临时 PNG，登录完成或失败后自动清理；若缺少 Chromium，可运行 `inspire update --cli-only` 补装。短信登录须使用 11 位大陆手机号（`1` 开头，可选 `+86` 前缀，不支持学号）：交互模式下提示输入验证码（最多尝试 3 次）；非交互模式下发送验证码后立即成功退出，请在 10 分钟内对同一 `--account` 执行 `inspire login --cas sms --phone <手机号> --sms-code <验证码>` 完成登录，手机号与短信验证码均不会保存。
-
-CAS 凭据独立保存在账号私有的 `cas_session.json` 中。完成 CAS 登录后，CLI 会自动批准 OAuth 设备授权（若无法自动完成则回退打印授权链接与设备码等待手动确认）；普通 `inspire login` 及平台刷新令牌失效时，若本地存在有效 CAS 会话也会优先自动续期，否则重新执行 `inspire login` 即可。平台接口继续使用 Bearer 令牌通信；`login --json` 仅返回 `cas`、`cas_method` 等状态元数据，从不输出凭据。
+若在校园网外访问平台，请先参考[校外访问与代理配置](#-校外访问与代理配置)设置网络代理，再执行以下命令完成账号登录与验证：
 
 ```bash
+# 方式一（推荐）：通过飞书扫码一次完成 CAS 与平台 OAuth 登录（同时开通数据广场检索权限）
+inspire login --account <name> --cas feishu
+
+# 方式二：仅通过浏览器完成平台 OAuth 设备授权（暂不登录数据广场 CAS）
 inspire login --account <name>
-inspire login --cas feishu               # 可选：登录 CAS 以检索数据广场目录
-inspire account check                    # 实时验证 OAuth 与 CAS，显示有效期和刷新结果
-inspire account check --offline          # 只读本地状态，不联网或刷新
-inspire init
+
+inspire init                             # 校验并补全当前账号配置
+inspire account check                    # 验证在线会话与令牌有效期
 inspire resources availability --workspace 分布式训练空间 --include-cpu
 ```
 
-设备登录请求 `offline_access`。2026-11-18 的实测中，平台签发了会话刷新令牌（`refresh_kind: session`）。访问令牌有效期为 1 小时，刷新令牌的空闲期限为 12 小时。每次成功刷新都会顺延空闲期限，登录会话最长持续 7 天。无人值守任务可每 6 小时运行一次 `inspire account check --account <name>`，让 CLI 在访问令牌过期后及时刷新。
+- **CAS 与 OAuth 一体化登录流程**：`inspire login` 将统一身份认证（CAS）与平台 OAuth 设备授权整合在同一条命令中：
+  - 传入 `--cas feishu`（终端内渲染飞书二维码扫码）或 `--cas sms --phone <手机号>`（大陆手机号短信验证；非交互模式下先发送验证码，10 分钟内对同一账号补传 `--sms-code <验证码>` 完成验证，手机号与验证码均不落盘）时，CLI 会先保存 CAS 会话（`cas_session.json`），随后**自动使用该 CAS 会话批准平台的 OAuth 设备授权**并保存令牌（`web_session.json`），一步同时打通启智平台与数据广场（`aip.sii.edu.cn`）目录检索（若自动批准受阻则回退打印授权链接与设备码）。
+  - 不传 `--cas` 时，命令直接发起平台 OAuth 设备授权（本地若已有有效 CAS 会话仍会优先自动批准，否则在交互终端下打开浏览器或打印设备码确认）；算力调度、镜像、模型及 `--dataset` 挂载均可正常使用，仅 `dataset list / show / tags / applications` 目录检索需要有效的 CAS 会话。
+- **本地配置与凭据隔离**：省略 `--account` 时默认登录当前激活账号（首次使用自动创建 `default`）。连接配置保存在 `~/.inspire/accounts/<name>/config.toml`（`--base-url` 与 `--proxy` 仅在新建账号时生效），CLI 从不存储或读取明文密码。
+- **会话有效期与自动续期**：平台访问令牌有效期为 1 小时；会话型刷新令牌空闲上限为 12 小时（每次刷新自动顺延，单次会话最长 7 天），离线刷新令牌无固定空闲上限。当平台刷新令牌失效时，若本地 CAS 会话仍然有效，CLI 也会静默自动完成续期；长时间无人值守任务建议每 6 小时执行一次 `inspire account check --account <name>` 保活（`--offline` 可仅读取本地状态而不联网）。
+- **多账号切换与退出**：使用 `inspire account use <name>` 切换默认账号，`account current` / `account list` 查看状态，`account rename <old> <new>` 重命名；任意命令均可传 `--account <name>` 临时指定单次账号，互不干扰已有会话与 SSH 连接。`inspire logout --account <name> --yes`（等价于 `account remove`）仅清理本地账号目录，不影响平台运行中的任务。
 
-达到会话上限或刷新令牌失效后，CLI 可用仍有效的 CAS 登录状态静默完成新的设备授权。需要人工授权时，运行 `inspire login`。刷新令牌保存在账号的 `web_session.json` 中。`inspire logout` 会删除本地凭据，服务端会话可从 Keycloak 账号控制台注销。
-
-若账号仍持有离线刷新令牌，请使用 v7.2.2 及以上版本。v7.2.1 首次刷新后会丢失离线标记，下次可能误报未登录。v7.2.2 起可根据刷新令牌的 JWT 类型恢复这类缓存。
-
-`account check` 和 `account list` 会显示 OAuth 访问令牌到期时间、刷新令牌类型和 CAS（数据广场）登录状态；离线刷新令牌（如有）显示无固定有效期，JSON `oauth.refresh_kind` 为 `offline`，不将内部 30 天滑动估计显示为硬过期时间；`--offline` 不验证平台认证（JSON `authenticated: null`），有效或可自动刷新时退出 0，其余情况返回认证错误码。`inspire init` 用于校验并补全账号配置（未登录时会自动发起设备授权）。在校园网外访问平台时，请先参考下文[代理配置](#代理配置)完成网络设置。
-
-多账号管理可使用 `inspire account use <name>` 切换默认账号、`inspire account current` 查看当前默认账号、`inspire account rename <old> <new>` 重命名别名。所有命令均支持通过 `--account <name>` 临时指定单次命令使用的账号（如 `inspire --account <name> notebook list --workspace CPU资源空间`），切换账号不会清理已有的登录 Session、SSH 连接或本地缓存。`inspire logout --account <name> --yes` 与 `inspire account remove <name> --yes` 等价，会删除整个本地账号目录（含令牌、配置及本地隧道状态，删除默认账号后不再保留默认指向），平台侧运行中的任务不受影响。
-
-## 更新与卸载
+### 3. 更新与卸载
 
 ```bash
 inspire update                  # 升级 CLI 并同步最新 Skill 文档
-inspire update --check          # 仅检查是否有新版本
-inspire update --cli-only       # 仅升级 CLI 与浏览器运行时
-inspire update --skill-only     # 仅更新 SKILL.md 与 references/
-inspire uninstall               # 卸载 CLI 与已安装的 Skill 文档
+inspire update --check          # 仅检查是否有可用更新
+inspire update --cli-only       # 仅升级 CLI 与浏览器运行时（保留本地自定义 Skill）
+inspire update --skill-only     # 仅同步 SKILL.md 与 references/
+inspire uninstall               # 卸载 CLI 与已部署的 Skill 文档
 ```
 
-`inspire uninstall` 默认保留 `~/.inspire` 下的账号配置和 Playwright 浏览器缓存；如需一并清除，可分别加上 `--purge` 和 `--purge-runtime`（仓库中的 `INSPIRE.md` 不会被删除）。若 CLI 环境损坏无法运行，也可使用安装脚本的 `--uninstall` 参数卸载。
-
-## Windows 原生环境提示
-
-- 运行 `Get-Command ssh -All` 确认实际调用的 `ssh.exe` 路径；系统 OpenSSH 与 Git for Windows 自带 OpenSSH 对 `ProxyCommand` 的处理存在差异。
-- Windows PowerShell 5.1 的 `>>` 默认输出 UTF-16LE 编码，会导致 OpenSSH 无法解析配置文件。写入 SSH 配置时请使用：`inspire notebook ssh-config <notebook> | Out-File -Encoding utf8 -Append $env:USERPROFILE\.ssh\config`（PowerShell 7+ 可直接使用 `>>`）。
-- 若遇到 `UNPROTECTED PRIVATE KEY FILE` 报错，请收紧 `%USERPROFILE%\.ssh` 目录的 ACL 权限。文件传输可直接使用 `inspire notebook scp`，无需额外安装 `rsync`。
+`inspire uninstall` 默认保留 `~/.inspire` 账号目录与 Playwright 浏览器缓存；如需一并清除，可附加 `--purge` 与 `--purge-runtime`（业务仓库中的 `INSPIRE.md` 永远不会被删除）。若 CLI 环境损坏无法执行，也可通过 `install.sh --uninstall` 清理。
 
 ---
 
-# 能力一览
+## 💡 日常使用方式
 
-点击展开各模块说明。完整子命令、参数与示例请查看 `inspire <group> <subcommand> --help`。
+### 在 Agent 客户端中自然语言驱动
+
+安装完成后，直接在 Claude Code、Codex、Cursor 等客户端中向 Agent 描述实验目标即可：
+
+> “帮我看看 `分布式训练空间` 哪个 H200 计算组现在有空闲 8 卡整节点，用当前项目的基底镜像提交一个 2 机 16 卡训练任务跑 `/inspire/hdd/project/.../train.sh`，盯一下调度事件和前 50 步 TensorBoard loss 是否正常下降。”
+
+Agent 会按 `SKILL.md` 的标准执行闭环自动完成操作：查询实时计算组余量与匹配配额 → 校验启动参数并提交任务 → 聚合控制器与 Pod 级事件排查排队或拉取异常 → 直读日志与 TensorBoard 标量数据汇报收敛趋势。
+
+### 在终端中直接调用 CLI
+
+所有命令都直接使用你在平台上看到的空间名、项目名和任务名，既方便日常手敲，也可以加上 `--json` 编写自动化脚本：
+
+```bash
+# 1. 查看计算组保障余量、可抢占低优卡数与空闲 8 卡整节点数
+inspire resources availability --workspace 分布式训练空间 --group H200
+
+# 2. 生成 OpenSSH 配置并直接通过本地终端或 VS Code Remote 连接 Notebook
+inspire notebook ssh-config dev-box >> ~/.ssh/config
+
+# 3. 提交挂载数据广场只读数据集的 GPU 训练任务
+inspire job create -n exp-sft --workspace 分布式训练空间 --project <project> \
+  --group H200-2号机房 -q 8,160,1600 --image <image> --nodes 2 \
+  --dataset pixabay-81k:v0 -c "bash /inspire/hdd/project/.../run.sh"
+
+# 4. 巡检任务状态、聚合日志，并直接读取 TensorBoard 训练曲线
+inspire job status exp-sft --workspace 分布式训练空间
+inspire job logs exp-sft --workspace 分布式训练空间
+inspire tensorboard scalars exp-sft-tb --workspace 分布式训练空间 --tag train/loss --points 20
+```
+
+---
+
+## 🧭 能力全景
+
+以下速览表展示了 `inspire` CLI 覆盖的核心功能域，点击下方各分类面板可查看详细机制。完整参数说明请执行 `inspire <group> <subcommand> --help`。
+
+| 功能&#8288;模块 | 命令&#8288;入口 | 核心能力亮点 |
+| --- | --- | --- |
+| **交互&#8288;开发** | `inspire notebook` | OpenSSH 与受限节点 `JupyterTerminal` 双通道执行、`scp` 传输、Web 端口代理、在线固化/压平镜像 |
+| **GPU&nbsp;训练** | `inspire job` | 单卡至多机 8 卡整节点分布式任务、`batch` 批量提交、故障节点排除/指定节点、失败保留容器排查 |
+| **CPU&nbsp;批&#8288;处&#8288;理** | `inspire hpc` | 自动封装 `#SBATCH` 脚本、提交前拦截物理配额与 Slurm 任务划分冲突、`Steps` 确认 `srun` 真实执行 |
+| **弹性&#8288;集群** | `inspire ray` | 单 Head + 多弹性 Worker Group 伸缩配置、停机保留拓扑一键重启、`scaling` 扩缩容历史审计 |
+| **在线&#8288;推理** | `inspire serving` | 支持已注册模型与广场模型（`--model-source plaza`）直连部署、扩缩容与回滚、QPS/吞吐监控、API Key 注入 |
+| **训练&#8288;曲线** | `inspire tensorboard` | 独立轻量实例管理，`tags` 与 `scalars` 免浏览器直读起止值、极值与最新采样点 |
+| **监控&#8288;排&#8288;障** | `events`&nbsp;·&nbsp;`logs`&nbsp;·&nbsp;`shell` | 控制器与 Pod 聚合事件、多实例标注日志、`metrics` 趋势图表、直连运行容器交互式 PTY 终端 |
+| **资源&#8288;情报** | `inspire resources` | 保障余量、可抢占低优 GPU、物理 8 卡整节点容量、按项目/成员用量归因、宿主机内核级节点事件 |
+| **镜像&#8288;与&#8288;数据** | `image`&nbsp;·&nbsp;`model`&nbsp;·&nbsp;`dataset` | 四级镜像目录检索与同步、模型 vLLM 兼容性与部署规格评估、数据广场目录检索与只读挂载 |
+| **项目&#8288;预算** | `inspire project` | 全局项目列表、个人点券额度（`My Budget`）、项目总余额（`Project Budget`）、支出明细与负责人查询 |
 
 <details>
-<summary><b>📝 Notebook</b> —— 交互式开发、远程执行、文件传输与镜像固化</summary>
+<summary><b>📝 Notebook —— 交互式开发、远程连接、端口代理与镜像固化</b></summary>
 
-支持命令：`create / batch / list / status / start / stop / delete / ssh / ssh-config / ssh-proxy / connection / exec / shell / scp / install-deps / proxy-url / quota / metrics / events / lifecycle / save-image / cancel-save-image`。
+子命令：`create / batch / list / status / start / stop / delete / ssh / ssh-config / ssh-proxy / connection / exec / shell / scp / install-deps / proxy-url / quota / metrics / events / lifecycle / save-image / cancel-save-image`
 
-- **远程连接与文件传输**：非 `H100` / `H200` 节点的 Notebook 支持完整的 OpenSSH、`scp` 与 `ssh-config`（可直接接入 VS Code Remote SSH）；`H100` / `H200` 受限节点会自动切换为基于 `JupyterTerminal` 的 `exec` 和 `shell`，文件上传下载可通过同项目下支持 SSH 的 CPU Notebook 经 `/inspire/...` 共享盘中转。
-- **HTTP 服务代理**：容器内启动的 Web 服务（如 Gradio、FastAPI、推理服务）可通过 `notebook proxy-url <name> --port <port>` 获取外部访问地址。
-- **保存为自定义镜像**：环境配置完成后，使用 `notebook save-image` 将当前运行中的容器直接固化为平台镜像（`--dry-run` 可预先估算可写层增量体积，`cancel-save-image` 可中途取消并恢复 Notebook）。默认按增量层追加；使用 `--flatten` 可将镜像压平为单层，适合清理旧层残留文件或收敛项目基底镜像。
+- **自适应远程通道**：非 `H100` / `H200` 节点完整支持 OpenSSH、`scp` 与 `ssh-config`（可直接接入 VS Code / Cursor Remote SSH）；`H100` / `H200` 受限节点自动切换为基于 `JupyterTerminal` 的 `exec` 与 `shell`，大文件可通过同项目联网 CPU Notebook 经 `/inspire/...` 共享盘中转。
+- **HTTP 服务代理**：容器内启动的 Web 应用（如 Gradio、FastAPI、调试面板）可通过 `notebook proxy-url <name> --port <port>` 获取外部访问地址。
+- **环境固化为镜像**：依赖配置完成后，运行 `notebook save-image` 即可将当前容器保存为平台自定义镜像（支持 `--dry-run` 预估可写层体积、`--flatten` 单层压平清理历史层冗余，以及 `cancel-save-image` 中途取消）。
 
 </details>
 
 <details>
-<summary><b>🏃 GPU 后台任务（Job）</b> —— 单卡、多卡与多节点分布式训练 / 批量推理</summary>
+<summary><b>⚡ GPU 后台任务（Job）—— 单卡、多卡与多机分布式训练</b></summary>
 
-支持命令：`inspire job create / batch / list / status / command / wait / stop / delete / events / instances / shell / logs / metrics / quota`。
+子命令：`create / batch / list / status / command / wait / stop / delete / events / instances / shell / logs / metrics / quota`
 
-- 覆盖单卡后台任务、单机多卡与多机分布式训练（多节点任务按每节点 8 卡满节点规格提交）。批量实验可使用 `job batch <file>` 提交，支持 `--dry-run` 预览完整生效配置。
-- 支持 `--exclude-node` 排除故障节点、`--specified-node` 绑定指定节点（需目标 Workspace 开启对应能力）、`--enable-notification` 开启飞书状态通知，以及设置成功/失败后的容器保留时长以便事后用 `job shell` 进入容器排查。
-- 使用 `job command` 可随时查回任务提交时的完整启动命令，`job wait` 可在脚本中阻塞等待任务到达终态。
-
-</details>
-
-<details>
-<summary><b>🚀 CPU 批处理（HPC）</b> —— 自动构建 Slurm 脚本并在提交前校验两层资源规格</summary>
-
-支持命令：`inspire hpc create / batch / list / status / stop / delete / events / instances / shell / logs / metrics / quota`。
-
-- `hpc create -c <slurm-body>` 只需传入 Slurm 执行正文（使用显式 `srun` 启动程序），CLI 会自动封装 `#SBATCH` 头部参数。
-- **双层规格预检**：HPC 同时包含节点物理规格（`--quota gpu,cpu,mem` 与 `--instance-count`）和 Slurm 任务划分（`--number-of-tasks`、`--cpus-per-task`、`--memory-per-cpu`）。平台后端与网页端均不校验两层是否匹配，配置越界会导致任务静默失败或 Slurm step 永久排队；CLI 会在提交前自动拦截冲突组合，并在省略单任务参数时按节点配额自动推导安全值。
-- **执行确认**：`hpc status` 中的 `Steps` 字段（如 `1/1` vs `0/0`）直观反映 `srun` 步骤是否真正执行，避免把漏写 `srun` 的空跑任务误判为成功。
+- 支持单卡任务、单机多卡及多机满节点（每节点 8 卡）分布式训练；矩阵实验可通过 `job batch <file>` 批量编排并支持 `--dry-run` 预览完整配置。
+- 支持 `--exclude-node` 规避异常节点、`--specified-node` 绑定节点、`--public-path-mount-mode` 控制公共路径读写权限、`--enable-notification` 开启飞书通知，以及配置任务结束后容器保留时长以便 `job shell` 现场诊断。
+- `job command` 可随时还原历史任务的完整启动命令，`job wait` 支持在自动化流水线中阻塞等待任务到达终态。
 
 </details>
 
 <details>
-<summary><b>🧬 弹性计算（Ray）</b> —— Head + 可伸缩 Worker Group 集群管理</summary>
+<summary><b>🧮 CPU 批处理（HPC）—— 自动封装 Slurm 与双层规格预检</b></summary>
 
-支持命令：`inspire ray create / batch / list / status / start / stop / delete / events / instances / shell / logs / metrics / scaling / quota`。
+子命令：`create / batch / list / status / stop / delete / events / instances / shell / logs / metrics / quota`
 
-- 支持配置单个 Head 节点与多个可弹性伸缩的 Worker Group（指定 `min` / `max` 副本数）。
-- 停止后的 Ray 任务保留完整集群配置，可通过 `ray start` 直接拉起，并由 CLI 轮询确认状态真正离开 `STOPPED`。
-- `ray scaling` 可查看各 Worker Group 的历史扩缩容记录（`initialized`、`scale_up`、`scale_down`），方便核对弹性策略是否实际触发。
-
-</details>
-
-<details>
-<summary><b>🛰 模型在线部署（Serving）</b> —— 服务部署、扩缩容、版本回滚与 API Key 管理</summary>
-
-支持命令：`inspire serving create / batch / list / status / api / start / stop / delete / scale / scale-history / versions / rollback / configs / events / instances / shell / logs / metrics / api-metrics / quota`。
-
-- **全生命周期管理**：配合 `model deploy-config` 确认模型权重的最小硬件规格后，通过 `serving create` 创建在线推理服务；支持 `serving scale` 调整副本数、`serving versions` 与 `serving rollback` 管理历史部署版本、`serving scale-history` 查看副本扩缩容时间线。
-- **双维度监控**：`serving metrics` 查看容器 GPU / CPU / 内存占用，`serving api-metrics` 查看请求 QPS、成功率、延迟与 Token 吞吐。
-- **调用地址与密钥管理**：`serving api` 可输出完整服务 Endpoint 与 `curl` 调用模板；配套的 `inspire account api-key list / create / export / run / delete` 支持创建推理密钥、以 `0600` 权限安全导出 `.env` 文件，或通过 `api-key run` 直接将 `INF_API_KEY` 注入子进程环境。
+- `hpc create -c <slurm-body>` 仅需传入包含 `srun` 的执行正文，CLI 自动生成匹配的 `#SBATCH` 头部。
+- **双层资源越界拦截**：HPC 同时受物理实例配额（`--quota`、`--instance-count`）与 Slurm 步进划分（`--number-of-tasks`、`--cpus-per-task`、`--memory-per-cpu`）约束。平台原生接口不校验两者冲突，越界配置会导致静默失败或无限排队；CLI 会在提交前自动推导缺省安全值并拦截冲突组合。
+- `hpc status` 直接展示 `Steps` 计数（如 `1/1` 与 `0/0`），一眼区分真实运行与漏写 `srun` 的空跑脚本。
 
 </details>
 
 <details>
-<summary><b>📉 TensorBoard</b> —— 无需浏览器，直接在终端与 Agent 中读取训练曲线</summary>
+<summary><b>🧬 弹性计算（Ray）—— Head 节点与动态伸缩 Worker Group</b></summary>
 
-支持命令：`inspire tensorboard create / list / status / start / stop / delete / tags / scalars`。
+子命令：`create / batch / list / status / start / stop / delete / events / instances / shell / logs / metrics / scaling / quota`
 
-- TensorBoard 在平台中是独立的一等资源（固定 1 CPU / 2 GiB 规格，无需选择配额或镜像）。创建时需指定 `--name`、`--workspace`、`--project`、`--group`，以及指向共享盘日志目录的 `--summary-path`。
-- **`tags` 与 `scalars` 直读曲线**：无需打开浏览器，`tensorboard tags` 即可列出所有 run 与指标名称，`tensorboard scalars` 直接返回各条曲线的起止值、最大最小值、step 范围以及最近 `N` 个采样点（`--points N`），让 Agent 能够直接读取并判断 loss 收敛与评测指标走势。
-
-</details>
-
-<details>
-<summary><b>📈 监控指标、事件、日志、实例与远端 Shell</b> —— 从调度器到容器内部的全链路可观测性</summary>
-
-- **监控指标（`metrics`）**：`notebook` / `job` / `hpc` / `ray` / `serving metrics` 支持导出 PNG 趋势图或在终端渲染字符趋势线（`--no-plot --sparkline`），Notebook 还可通过 `metrics --now` 查看实时负载快照。
-- **平台事件（`events`）**：默认合并控制器级事件与各实例 Pod 级事件（如 `FailedScheduling`、`Pulling`、`Unhealthy`），支持 `--instance` 或 `--workload-level` 过滤。
-- **批量状态与事件查询**：`job status`、`hpc status` 和 `job events` 支持一次传入多个任务名批量查询（按每批 20 个并发请求），方便快速巡检矩阵实验。
-- **聚合日志（`logs`）与实例列表（`instances`）**：自动汇总各实例日志并标注实例角色或 Rank，在 `instances` 与 `status` 中直接展示各 Pod 所在的物理节点名称。
-- **交互式容器终端（`shell`）**：`job` / `hpc` / `ray` / `serving shell` 可直接将本地终端连接到运行中的容器 PTY（HPC 默认进入 `launcher`，Ray 默认进入 `head`，Serving 默认进入首个运行副本，也可通过 `--instance` 指定具体实例）。
+- 支持单 Head 节点搭配多个可配置 `min` / `max` 副本范围的弹性 Worker Group。
+- 停止后的集群保留完整拓扑配置，执行 `ray start` 即可重新拉起并由 CLI 确认状态离开 `STOPPED`；`ray scaling` 清晰呈现各组 `initialized`、`scale_up`、`scale_down` 扩缩容轨迹。
 
 </details>
 
 <details>
-<summary><b>📊 资源与配额情报</b> —— 实时空余容量、8 卡整节点统计、用量归因与节点事件</summary>
+<summary><b>🛰️ 模型在线部署（Serving）—— 服务托管、版本回滚与推理密钥</b></summary>
 
-- **规格与容量查询**：`<workload> quota` 列出各计算组支持的 `gpu,cpu,mem` 规格、允许的优先级（`Priority`）及每小时点券价格（`Points/h`）；`resources availability` 同时展示计算组保障额度余量、可抢占低优 GPU 数量，以及物理 8 卡整节点的完全空闲数（`Free Nodes`）和清退低优任务后可得的整节点数（`High Pri Nodes`）。
-- **占用归因与回收策略**：`resources usage` 按 `Project → User`（或 `--details` 展开到具体任务）统计当前资源占用及可抢占卡数（`Reclaimable`），支持按 `--group`、`--project`、`--user` 过滤；`resources policy` 展示当前 Workspace 对各类任务的空闲自动回收阈值与运行时长上限。
-- **物理节点事件（`resources node-events`）**：按节点名称查询宿主机内核 OOM kill、`TaskHung`、Cordon/Uncordon、重启与 `NodeNotSchedulable` 事件，快速定位单机硬件或内核故障。
-- **按需本地缓存（`inspire cache`）**：`inspire cache status / refresh / clear` 管理本地名称与配额索引缓存，日常查询按需自动读写，无需全量预热。
+子命令：`create / batch / list / status / api / start / stop / delete / scale / scale-history / versions / rollback / configs / events / instances / shell / logs / metrics / api-metrics / quota`
+
+- **灵活模型来源与版本管理**：既支持部署模型注册表中的自有权重（配合 `model deploy-config` 评估最小硬件规格），也支持通过 `--model-source plaza` 按名称直接引用平台广场模型；支持 HTTP 端口与 `--metrics-port` 配置、`serving scale` 扩缩容及 `versions` / `rollback` 版本回滚。
+- **资源与业务双维监控**：`serving metrics` 追踪容器硬件负载，`serving api-metrics` 追踪 QPS、成功率、延迟与 Token 吞吐。
+- **调用模板与密钥安全注入**：`serving api` 直接生成完整 Endpoint 与 `curl` 示例；配套 `inspire account api-key list / create / export / run / delete` 支持以私有权限导出密钥文件，或用 `api-key run` 将 `INF_API_KEY` 安全注入子进程。
 
 </details>
 
 <details>
-<summary><b>🗂 镜像、模型注册表、官方数据集与项目管理</b></summary>
+<summary><b>📈 TensorBoard —— 无需浏览器，终端与 Agent 直读曲线</b></summary>
 
-- **镜像管理（`inspire image`）**：`image list / detail / register / sync / set-visibility / delete`，支持 `--keyword` 模糊搜索、`--source all` 并发检索四个可见性目录（`official` / `public` / `project` / `private`）、注册外部 Docker 镜像、push 后同步镜像以及调整自定义镜像可见范围。
-- **模型注册表（`inspire model`）**：`model list / register / status / versions / deploy-config / delete`，支持将共享盘模型目录注册到平台、查询实时 vLLM 兼容性与最小部署硬件规格（`deploy-config`），并在删除模型前自动检查是否仍有推理服务占用。
-- **数据广场官方数据集（`inspire dataset`）**：通过 `inspire login --cas feishu` 或 `inspire login --cas sms --phone <手机号>` 登录 CAS 后，即可使用 `dataset list / show / tags / applications` 检索数据广场（`aip.sii.edu.cn`）目录、版本、权限与申请进度（CAS 过期后重新执行 `--cas` 登录即可）；`dataset validate` 挂载预检及创建 Notebook、Job、HPC 时的 `--dataset <数据集名>:<版本名>` 只读挂载（挂载至 `/inspire/dataset/<数据集名>/<版本名>`）则继续通过平台 Bearer 会话直接完成。
-- **项目与预算（`inspire project`）**：`project list / detail / owners` 查看全局项目列表、个人可用点券额度（`My Budget`）与项目总余额（`Project Budget`）、各项支出明细以及项目负责人列表。
+子命令：`create / list / status / start / stop / delete / tags / scalars`
+
+- TensorBoard 在平台内作为独立轻量资源运行（固定 1 CPU / 2 GiB，无需消耗计算配额或指定镜像），指向共享盘 `--summary-path` 即可拉起。
+- `tensorboard tags` 列出全部 run 与指标名，`tensorboard scalars` 按真实训练 step 排序返回起止值、极值及最近 `N` 个采样点（`--points N`），方便 Agent 直接判断收敛状态或异常发散。
+
+</details>
+
+<details>
+<summary><b>🔍 日志、事件、监控指标与容器交互式 Shell</b></summary>
+
+- **监控图表与趋势线（`metrics`）**：五大计算负载统一支持导出 PNG 监控图或在终端渲染字符趋势线（`--no-plot --sparkline`），Notebook 额外支持 `metrics --now` 查看瞬时负载。
+- **聚合事件与批量巡检**：`events` 默认合并控制器事件与实例 Pod 事件（如 `FailedScheduling`、`Pulling`、`Unhealthy`）；`job status`、`hpc status` 与 `job events` 支持单次传入多个任务名并发巡检。
+- **多实例日志与直连终端**：`logs` 自动汇总多节点输出并标注角色/Rank，`instances` 显示物理宿主机节点名；`job / hpc / ray / serving shell` 可直接将本地终端接入运行中容器的交互式 PTY。
+
+</details>
+
+<details>
+<summary><b>📊 资源配额情报、整节点统计与节点故障排查</b></summary>
+
+- **规格与实时容量**：`<workload> quota` 展示计算组支持的 `gpu,cpu,mem` 规格、优先级上限与每小时点券单价；`resources availability` 汇总保障额度余量、可抢占低优 GPU 数，以及物理 8 卡整节点的完全空闲数（`Free Nodes`）与清退低优任务后可得整节点数（`High Pri Nodes`）。
+- **用量归因与回收策略**：`resources usage` 按项目与成员（`--details` 展开至具体任务）统计实时占用与可回收卡数；`resources policy` 查询各空间空闲回收阈值与运行时长上限。
+- **宿主机节点事件与缓存**：`resources node-events` 查询物理节点的内核 OOM、`TaskHung`、Cordon 与重启记录，快速区分代码 Bug 与单机硬件故障；`inspire cache status / refresh / clear` 按需管理本地名称解析缓存。
+
+</details>
+
+<details>
+<summary><b>🗂️ 镜像、模型注册表、数据广场与项目预算</b></summary>
+
+- **镜像目录（`inspire image`）**：`list / detail / register / sync / set-visibility / delete`，支持 `--source all` 并发搜索官方、公共、项目与私有四级目录，支持外部镜像注册、推送后目录同步及可见范围调整。
+- **模型注册表（`inspire model`）**：`list / register / status / versions / deploy-config / delete`，支持将共享盘权重目录登记入库、检查 vLLM 兼容性与部署规格，并在删除前自动核验是否有在线推理服务占用。
+- **官方数据集（`inspire dataset`）**：通过 `inspire login --cas` 登录后，可使用 `list / show / tags / applications` 检索数据广场目录与权限状态；通过 `dataset validate` 预检并在创建 Notebook、Job、HPC 时使用 `--dataset <名称>:<版本>` 只读挂载至 `/inspire/dataset/<名称>/<版本>`。
+- **项目与预算（`inspire project`）**：`list / detail / owners` 查看项目列表、个人可用点券（`My Budget`）、项目总额度（`Project Budget`）、支出明细与项目负责人。
 
 </details>
 
 ---
 
-# Python SDK：让启智能力进入你的程序
+## 🐍 Python SDK
 
-`inspire-skill` 内置了完整的 Python SDK。`InspireClient` 提供同步接口，`InspireAsyncClient` 提供基于 `asyncio` 的原生异步接口；两者与 CLI 共享账号配置与资源模型，覆盖 Workspace、Project、Image、Dataset、Model、Notebook、GPU Job、HPC、Ray、Serving 和 TensorBoard，无需在代码中拼接命令或解析终端文本。
+`inspire-skill` 内置完整的类型化 Python SDK，无需在业务代码中拼接 Shell 命令或解析终端文本。同步客户端 `InspireClient` 适合脚本与评测工具，原生异步客户端 `InspireAsyncClient` 适合高并发巡检、流式日志读取与后端服务：
 
 ```python
 from inspire import InspireClient
@@ -247,103 +297,113 @@ with InspireClient(account="research") as client:
         print(job.name, job.status)
 ```
 
-异步客户端支持 `async with`、`asyncio.gather` 并发查询、事件与日志流式迭代、远程命令执行（`exec` / `exec_stream`）以及 Notebook 文件上传下载（`upload` / `download`）。完整 API 说明与示例请参考 [Python SDK 文档](references/sdk.md)。
+异步客户端支持 `async with`、`asyncio.gather` 并发请求、事件与日志异步迭代、远程命令执行（`exec` / `exec_stream`）以及 Notebook 文件上传下载（`upload` / `download`）：
+
+```python
+import asyncio
+from inspire import InspireAsyncClient
+
+async def inspect_workspace(workspace: str) -> None:
+    async with InspireAsyncClient() as client:
+        await client.login()
+        jobs, notebooks = await asyncio.gather(
+            client.jobs.list(workspace, limit=5),
+            client.notebooks.list(workspace, limit=5),
+        )
+        print("Jobs:", [j.name for j in jobs.items])
+        print("Notebooks:", [n.name for n in notebooks.items])
+
+asyncio.run(inspect_workspace("分布式训练空间"))
+```
+
+完整接口说明、异常处理与高级示例请参阅 [`references/sdk.md`](references/sdk.md)。
 
 ---
 
-# 支持的 Agent Harness
+## 🔌 支持的 Agent 客户端
 
-安装脚本会自动把 `SKILL.md` 与 `references/` 部署到本机已安装的 Agent 客户端目录中：
+安装脚本与 `inspire update` 会自动检测本机已安装的客户端，将 `SKILL.md` 与 `references/` 部署至用户级全局 Skills 目录（跨本地所有代码仓库生效），也可通过 `--harness <标识>` 显式指定：
 
-| Harness | 安装后位置 | 备注 |
+| 客&#8288;户&#8288;端 | `--harness` | 默认安装路径与环境变量说明 |
 | --- | --- | --- |
-| [Codex CLI](https://github.com/openai/codex) | `~/.codex/skills/inspire/` | 额外生成 `agents/openai.yaml` |
-| [Claude Code](https://claude.com/claude-code) | `~/.claude/skills/inspire/` | 用户级 Skills 层，跨项目可用 |
-| [Cursor](https://cursor.com/docs/skills) | `~/.cursor/skills/inspire/` | 用户级 Global Skills 层，跨项目可用 |
-| [OpenCode](https://github.com/anomalyco/opencode) | `~/.config/opencode/skills/inspire/` | 遵循 XDG；`$OPENCODE_CONFIG_DIR` 可改根 |
-| [ZCode](https://zcode.z.ai/) | `~/.zcode/skills/inspire/` | 用户级 Skills 层，跨项目可用 |
-| [Kimi Code](https://github.com/MoonshotAI/kimi-code) | `$KIMI_CODE_HOME/skills/inspire/`（默认 `~/.kimi-code/skills/inspire/`） | 用户级 Skills 层，跨项目可用 |
-| [Kimi Work](https://www.kimi.com/) | `~/Library/Application Support/kimi-desktop/daimon-share/daimon/skills/inspire/` | macOS 桌面端共享 Skills 目录 |
-| [Qoder](https://qoder.com/) | `~/.qoder/skills/inspire/` | 用户级 Skills 层，跨项目可用 |
-| [Qoder Work](https://qoder.com/product/qoderwork) | `~/.qoderwork/skills/inspire/` | 用户级 Skills 层，跨项目可用 |
-| [Antigravity](https://antigravity.google/docs/skills) | `~/.gemini/config/skills/inspire/` | 用户级 Global Skills 层，跨项目可用 |
-| [OpenClaw](https://github.com/openclaw/openclaw) | `~/.openclaw/skills/inspire/` | 全局 Managed Skills 层；Workspace 层（`~/.openclaw/workspace/skills/`）可覆盖 |
-| [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | `~/.dsh/skills/inspire/` | 用户级 Skills 层，跨项目可用；设置 `DSH_HOME` 时使用该目录下的 `skills/inspire/`，可用 `--harness deepseek` 显式安装 |
-| [Pi](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/skills.md) | `~/.pi/agent/skills/inspire/` | 用户级 Skills 层，跨项目可用；设置 `PI_CODING_AGENT_DIR` 时使用该目录下的 `skills/inspire/` |
+| [Codex&nbsp;CLI](https://github.com/openai/codex) | `codex` | `~/.codex/skills/inspire/`（额外生成 `agents/openai.yaml`） |
+| [Claude&nbsp;Code](https://claude.com/claude-code) | `claude` | `~/.claude/skills/inspire/` |
+| [Cursor](https://cursor.com/docs/skills) | `cursor` | `~/.cursor/skills/inspire/` |
+| [OpenCode](https://github.com/anomalyco/opencode) | `opencode` | `~/.config/opencode/skills/inspire/`（可通过 `OPENCODE_CONFIG_DIR` 自定义根目录） |
+| [ZCode](https://zcode.z.ai/) | `zcode` | `~/.zcode/skills/inspire/` |
+| [Kimi&nbsp;Code](https://github.com/MoonshotAI/kimi-code) | `kimi-code` | `~/.kimi-code/skills/inspire/`（可通过 `KIMI_CODE_HOME` 自定义根目录） |
+| [Kimi&nbsp;Work](https://www.kimi.com/) | `kimi-work` | `~/Library/Application Support/kimi-desktop/daimon-share/daimon/skills/inspire/`（macOS 桌面端） |
+| [Qoder](https://qoder.com/) | `qoder` | `~/.qoder/skills/inspire/` |
+| [Qoder&nbsp;Work](https://qoder.com/product/qoderwork) | `qoder-work` | `~/.qoderwork/skills/inspire/` |
+| [Antigravity](https://antigravity.google/docs/skills) | `antigravity` | `~/.gemini/config/skills/inspire/` |
+| [OpenClaw](https://github.com/openclaw/openclaw) | `openclaw` | `~/.openclaw/skills/inspire/`（可被 `~/.openclaw/workspace/skills/` 覆盖） |
+| [DeepSeek&nbsp;Harness](https://github.com/deepseek-ai/deepseek-harness) | `deepseek` | `~/.dsh/skills/inspire/`（可通过 `DSH_HOME` 自定义根目录） |
+| [Pi](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/skills.md) | `pi` | `~/.pi/agent/skills/inspire/`（可通过 `PI_CODING_AGENT_DIR` 自定义根目录） |
 
 ---
 
-# 通用 Skill 与项目资产约定（`INSPIRE.md`）
+## 📌 跨会话项目资产约定（`INSPIRE.md`）
 
-- 安装后的 `SKILL.md` 是通用操作手册。日常任务主要使用 `CPU资源空间` 和 `分布式训练空间`；创建任务时显式指定 `workspace`、`project`、`group`、`quota` 和 `image`。
-- 如果某个代码仓库有需要跨会话、跨成员复用的远端共享盘路径、基底镜像、模型或数据集版本，可以在仓库根目录维护一份可选的 `INSPIRE.md`（详见 [`references/assets.md`](references/assets.md)）。
-- 如需在本地自定义已安装的 `SKILL.md` 或 `references/`，升级时可使用 `inspire update --cli-only` 避免覆盖本地文档修改。
-
----
-
-# 🔧 维护承诺
-
-启智平台的调度策略、计算组划分与接口细节会随平台迭代变化。维护者 [@realZillionX](https://github.com/realZillionX) 会持续跟进上游变更并保持 CLI 与文档同步。每次发布新版本后，运行 `inspire` 命令会在 stderr 提示更新，执行 `inspire update` 即可一键升级（详见上方[更新与卸载](#更新与卸载)）。
-
-如遇到平台行为变更或命令异常，欢迎在 [Issue Tracker](https://github.com/realZillionX/InspireSkill/issues) 提交反馈并附上 `inspire --debug <cmd>` 的输出（CLI 会自动脱敏密码、Cookie、Token 与代理凭据）。
+- **显式指定运行参数**：`SKILL.md` 是跨仓库通用的操作手册。CLI 不依赖隐藏的本地默认配置，日常操作主要面向 `CPU资源空间` 与 `分布式训练空间`，创建任务时显式指定 `workspace`、`project`、`group`、`quota` 与 `image`。
+- **共享持久资产清单**：当某个科研代码仓库需要跨会话、跨协作者复用固定的共享盘目录、项目基底镜像、已登记模型或数据集版本时，可在该业务仓库根目录维护一份可选的 `INSPIRE.md`（规范详见 [`references/assets.md`](references/assets.md)）。
+- **保留本地自定义手册**：如果你手工修改了本机已安装的 `SKILL.md` 或 `references/`，升级时使用 `inspire update --cli-only` 即可避免覆盖本地改动。
 
 ---
 
-# 代理配置
+## 🌐 校外访问与代理配置
 
-在校园网外访问 `*.sii.edu.cn` 时，可在 Clash Verge 中新建一个 `SII Proxy` 策略组，加入组织提供的代理节点与 `DIRECT`，并将规则 `DOMAIN-SUFFIX,sii.edu.cn,SII Proxy` 置于通用规则之前（在校园网内直连时切换为 `DIRECT`）。然后将账号配置中的 `proxy` 设为本机实际的 Mixed Port 地址，例如 `http://127.0.0.1:<mixed-port>`。
+在校园网外连接 `*.sii.edu.cn` 时，推荐按以下方式配置分流代理：
 
-如果使用启智官方提供的 aTrust VPN，可参考 [Docker-aTrust](https://github.com/realZillionX/Docker-aTrust) 将 aTrust 运行在 Docker 容器中，在宿主机暴露本地 SOCKS5 / HTTP 代理端口后接入上述分流规则。
+1. **客户端分流规则**：在 Clash Verge 等代理工具中新建 `SII Proxy` 策略组，加入校园代理节点与 `DIRECT`，将规则 `DOMAIN-SUFFIX,sii.edu.cn,SII Proxy` 置于通用规则之前（回到校园网内切换为 `DIRECT` 即可），随后在新建账号时通过 `--proxy http://127.0.0.1:<mixed-port>` 或编辑 `config.toml` 中的 `proxy` 字段接入。
+2. **容器化 aTrust 接入**：若使用学校提供的 aTrust VPN，可参考 [Docker-aTrust](https://github.com/realZillionX/Docker-aTrust) 将其运行于 Docker 容器中，在宿主机暴露本地 HTTP / SOCKS5 端口后接入上述规则。
+3. **协议差异说明**：账号 `proxy` 支持填写 `socks5://127.0.0.1:<port>`，CLI 的 HTTP 请求会自动升级为 `socks5h://` 由代理端解析内网域名；但远程 `shell` / `exec` 所用的 WebSocket 连接目前仅支持 HTTP(S) 代理，如需交互式终端请配置 HTTP 代理端口。
+4. **优先级与连通性自检**：账号配置中的 `proxy` 优先于系统环境变量；未配置账号 `proxy` 时读取 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`，校园网直连环境下也可设置 `NO_PROXY=.sii.edu.cn` 绕过系统代理。可随时运行 `inspire account check --details` 检查生效的代理链路。
 
-账号 proxy 也可以直接写 `socks5://127.0.0.1:<port>`。CLI 的 HTTP 请求会自动改用 `socks5h://`，由代理端解析域名，因此只能在 VPN 内解析的平台域名也能访问；浏览器仍使用原地址。远程 Shell / exec 的 WebSocket 目前只支持 HTTP(S) 代理，需要这些功能时请配置 HTTP 代理端口。
-
-账号配置中的 `proxy` 优先于 Shell 环境变量；未设置账号 `proxy` 时，`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 仍会生效，直连环境下可通过 `NO_PROXY=.sii.edu.cn` 绕过系统代理。可随时运行 `inspire account check --details` 检查当前生效的代理配置与路由状态。
-
-> 代理凭据（Host / User / Password）**请向所在实验室或组织管理员获取**，切勿提交到公开仓库或对话记录中。
-
----
-
-# 开发与贡献
-
-项目由 [@realZillionX](https://github.com/realZillionX) 维护：
-
-- **直接提交 PR**：文档修正、手册补充、已知平台字段适配或小型 Bugfix 欢迎直接提交 PR；长期协作者（如 [@JingYiJun](https://github.com/JingYiJun)）跟进的平台适配改动在通过测试与 Review 后可快速合入。
-- **先提交 Issue**：涉及工作流调整、跨模块重构或多命令行为变更时，建议先在 [Issues](https://github.com/realZillionX/InspireSkill/issues) 描述场景并附上脱敏后的 `inspire --debug <cmd>` 日志，对齐方案后再编码。
-
-开发环境与提交检查说明见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
+> [!IMPORTANT]
+> 代理服务器地址与凭据请向所在实验室或组织管理员获取，切勿写入公开代码仓库或提交记录中。
 
 ---
 
-# 文档索引
+## 📚 文档索引
 
-- [`SKILL.md`](SKILL.md)：Agent 技能主入口，包含核心操作模型、执行闭环与参考文档路由。
-- [`references/assets.md`](references/assets.md)：`INSPIRE.md` 持久资产约定与生命周期管理。
-- [`references/resources.md`](references/resources.md)：Workspace、计算组、配额规格、实时余量、用量归因与本地缓存。
-- [`references/agent-ops.md`](references/agent-ops.md)：跨会话任务交接、计算组选型与并发会话共享配额规范。
-- [`references/paths.md`](references/paths.md)：共享盘作用域、存储池、挂载隔离与远端路径规范。
-- [`references/dataset.md`](references/dataset.md)：数据广场检索、版本与权限核验、`--dataset` 只读挂载。
-- [`references/internal-sources.md`](references/internal-sources.md)：联网准备流程、内部软件源配置与镜像固化策略。
-- [`references/notebook.md`](references/notebook.md)：Notebook 创建、SSH / JupyterTerminal 连接、文件流转、HTTP 代理与保存镜像。
-- [`references/compute-workloads.md`](references/compute-workloads.md)：GPU Job、CPU HPC、Ray、Serving、API Key、TensorBoard、批量提交与任务观察。
-- [`references/workflows.md`](references/workflows.md)：跨 CPU 准备、数据处理、GPU 训练与部署的多阶段项目工作流。
-- [`references/image.md`](references/image.md)：镜像目录、外部镜像注册、可见性级别与清理规则。
-- [`references/model.md`](references/model.md)：Model Registry 模型注册、版本检查、最小部署规格与删除预检。
-- [`references/sdk.md`](references/sdk.md)：Python SDK 同步与异步客户端、资源模型与完整方法参考。
-- [`references/dev/browser-api.md`](references/dev/browser-api.md)：CLI 维护者参考，记录 `/api/v2` 接口契约、认证与登录保护、分页与 scoping、各路由 Action 表、创建字段合同及数据广场协议。
-- [`CONTRIBUTING.md`](CONTRIBUTING.md)：开发环境、测试要求与贡献指南。
-- [`cli/`](cli/)：CLI 与 Python SDK 源码（入口为 `cli/inspire/cli/main.py`）。
-- [`scripts/install.sh`](scripts/install.sh) / [`scripts/install.ps1`](scripts/install.ps1)：跨平台安装脚本。
-- [`scripts/scan_v2_surface.py`](scripts/scan_v2_surface.py)：前端产物 `/api/v2` 接口扫描与 `discovery` 对账工具。
+### Agent 技能与平台参考手册
+
+| 文档&#8288;路径 | 内容说明 |
+| --- | --- |
+| [`SKILL.md`](SKILL.md) | Agent 主入口：四维操作平面、标准闭环、认证与参考路由 |
+| [`references/resources.md`](references/resources.md) | 工作空间、计算组、配额规格、实时余量、用量归因与缓存 |
+| [`references/notebook.md`](references/notebook.md) | Notebook 管理、SSH / `JupyterTerminal`、代理与存镜像 |
+| [`references/compute-workloads.md`](references/compute-workloads.md) | Job、HPC、Ray、Serving、密钥、TensorBoard 与任务监控 |
+| [`references/workflows.md`](references/workflows.md) | 串联联网准备、CPU 处理、GPU 训练与部署的多阶段工作流 |
+| [`references/paths.md`](references/paths.md) | 共享盘存储池、目录作用域、公共路径挂载与远端路径规范 |
+| [`references/internal-sources.md`](references/internal-sources.md) | 离线区依赖准备、平台内部软件源配置与环境镜像构建策略 |
+| [`references/dataset.md`](references/dataset.md) | 数据广场目录检索、权限申请核验与 `--dataset` 只读挂载 |
+| [`references/image.md`](references/image.md) | 镜像四级目录检索、外部镜像注册同步、可见性与清理规范 |
+| [`references/model.md`](references/model.md) | 模型注册表入库、版本检查、最小部署规格评估与删除预检 |
+| [`references/assets.md`](references/assets.md) | 业务仓库 `INSPIRE.md` 持久资产记录约定与生命周期管理 |
+| [`references/agent-ops.md`](references/agent-ops.md) | 跨会话任务交接、计算组选型原则与多会话共享配额规范 |
+| [`references/sdk.md`](references/sdk.md) | Python SDK 同步与异步客户端、账号管理、模型与 API 手册 |
+
+### 工程源码与维护者文档
+
+| 路径 | 内容说明 |
+| --- | --- |
+| [`cli/`](cli/) | `inspire-skill` CLI 与 Python SDK 源码（命令行入口为 [`cli/inspire/cli/main.py`](cli/inspire/cli/main.py)） |
+| [`scripts/install.sh`](scripts/install.sh)&nbsp;/&nbsp;[`install.ps1`](scripts/install.ps1) | macOS / Linux 与 Windows 跨平台安装及卸载脚本 |
+| [`scripts/scan_v2_surface.py`](scripts/scan_v2_surface.py) | 平台前端 `/api/v2` 接口扫描与字段契约对账工具 |
+| [`references/dev/browser-api.md`](references/dev/browser-api.md) | 维护者协议参考：`/api/v2` 路由契约、认证与会话机制、分页及数据广场协议 |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | 本地开发环境搭建、契约准则与提交前检查清单 |
+| [`CHANGELOG.md`](CHANGELOG.md) | 历次版本发布说明与兼容性变更记录 |
 
 ---
 
-# License
+## 🔧 维护、贡献与致谢
 
-[`LICENSE`](LICENSE)（MIT）
+启智平台的计算组划分、调度策略与接口细节会随平台演进调整。维护者 [@realZillionX](https://github.com/realZillionX) 与核心协作者（如 [@JingYiJun](https://github.com/JingYiJun)）持续跟进上游变化，保持 CLI、Python SDK 与参考手册同步更新。新版本发布后，执行任意命令会在 stderr 给出升级提示，运行 `inspire update` 即可完成升级。
 
-# Acknowledgements
-
-- 启智平台团队提供的公开资料与协助。
-- [EmbodiedForge/Inspire-cli](https://github.com/EmbodiedForge/Inspire-cli) 提供了 CLI 的初步框架。
+- **反馈问题**：遇到平台行为变化或命令异常时，欢迎在 [GitHub Issues](https://github.com/realZillionX/InspireSkill/issues) 提交反馈并附上 `inspire --debug <cmd>` 输出（敏感凭据与代理口令会自动脱敏）。
+- **参与贡献**：文档改进、已知字段适配与小型修复欢迎直接提交 Pull Request；涉及跨模块设计或命令契约变更时建议先通过 Issue 对齐方案。详细开发流程请参阅 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
+- **开源协议**：本项目基于 [MIT License](LICENSE) 开源。
+- **致谢**：感谢启智平台团队提供的公开资料与协助，以及 [EmbodiedForge/Inspire-cli](https://github.com/EmbodiedForge/Inspire-cli) 提供的早期 CLI 框架参考。
 
 <p align="center"><sub>Made for researchers who'd rather think than click.</sub></p>
