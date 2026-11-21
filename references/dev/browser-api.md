@@ -2,23 +2,23 @@
 
 > **Audience:** CLI and SDK maintainers. Do not load this file during normal workload operations — regular CLI usage relies solely on the name-based CLI surface and `--help`.
 >
-> **Scope:** Covers both the main compute console (`/api/v2` Action gateway on `{base_url}`, Sections 1–10) and the Dataset Hub (`plaza`, Section 11). The compute console uses OAuth device authorization; the separate Dataset Hub protocol is documented below.
+> **Scope:** Covers both the main compute console (`/api/v2` Action gateway on `{base_url}`, Sections 1–10) and the Dataset Hub (`plaza`, Section 11). The compute console uses OAuth device authorization; the separate Dataset Hub protocol uses CAS SSO.
 
 ## 1. Sources of Truth & Invariants
 
 | Priority | Source | What It Defines |
 | --- | --- | --- |
 | 1 | [`browser_api/`](../../cli/inspire/platform/web/browser_api/) | Canonical request construction, response key extraction, and normalization |
-| 2 | [`session/`](../../cli/inspire/platform/web/session/), [`plaza/`](../../cli/inspire/platform/web/plaza/) | Per-account isolation, login, cookies, proxies, transport retries, and Dataset Hub client |
+| 2 | [`session/`](../../cli/inspire/platform/web/session/), [`plaza/`](../../cli/inspire/platform/web/plaza/) | Per-account isolation, OAuth/CAS login, proxies, transport retries, and Dataset Hub client |
 | 3 | `cli/tests/test_browser_api_*.py` | Unit tests checking wrapper behavior and output boundaries |
 | 4 | Live console SPA network requests | Authoritative proof of whether a platform capability exists and what payload it sends |
 | 5 | `GET {base_url}/discovery` | Candidate Action names and request schemas (**a hint, not proof of supported behavior** — see Section 6) |
 | 6 | Click `--help` | Public CLI interface |
 
 **Core invariants:**
-- All `/api/v2` JSON Action requests are constructed inside `browser_api/` (instance PTY WebSockets in `job_shell.py` and login bootstrap in `session/auth.py` are the only non-Action console flows).
-- All v2 JSON responses are unpacked through `_v2_result()` in `session/envelope.py` (re-exported by `browser_api/core.py`).
-- Only verified, reproducible behavior with active or explicitly evaluated consumers belong in this document.
+- All `/api/v2` JSON Action requests are constructed inside `browser_api/` (except `user.GetUserDetail` / `user.ListAccessibleWorkspaces` during session bootstrap in `session/`, and non-Action instance PTY WebSockets in [`pty_socket.py`](../../cli/inspire/platform/web/pty_socket.py)).
+- All v2 JSON responses are unpacked through `_v2_result()` in [`session/envelope.py`](../../cli/inspire/platform/web/session/envelope.py) (re-exported by [`browser_api/core.py`](../../cli/inspire/platform/web/browser_api/core.py)).
+- Only verified, reproducible behavior with active or explicitly evaluated consumers belongs in this document.
 
 ## 2. Request & Response Contract
 
@@ -35,7 +35,7 @@ Referer: {base_url}/{console_page_path}
 | Aspect | Rule |
 | --- | --- |
 | Method & Shape | Always `POST` with a JSON body and `?Action={Action}` in the query string (for non-Action WebSocket/proxy routes, see Section 10). |
-| Authentication | Requires Bearer authorization and `X-Inspire-Client-Source: inspire-cli/inspireskill-<version>`. |
+| Authentication | Requires `Authorization: Bearer …` and `X-Inspire-Client-Source: inspire-cli/inspireskill-<version>` (sent only to the configured platform origin). |
 | `Referer` | Must match the origin and corresponding console page path; constructed per wrapper. |
 | Field Casing | Protobuf JSON unmarshaling is case- and underscore-insensitive (`ImageId` / `image_id` / `Image_Id` map to the same field), **except** when the underlying field name itself differs (e.g., `image.UpdateImage` requires `id`, whereas `image_id` is silently ignored). |
 | Account Isolation | Every request uses the OAuth token session and proxy configuration of the selected Account Alias; cross-account commands never fall back to the active default account. |
@@ -50,13 +50,13 @@ Both successes and business errors return **HTTP 200** with an AWS-style JSON en
 ```
 
 - **Unpacking order:** Check `429` → `401/302` → non-JSON content-type → `ResponseMetadata.Error` → `Result` (defaulting missing `Result` to `{}`). Always check `429` before sniffing `Content-Type` because gateway rate-limiting returns an HTML error page.
-- **List keys vary per Action:** There is no universal list key (`jobs`, `items`, `list`, `logs`, `events`, `scale_history_items`, `logic_compute_groups`, `node_dimensions`, etc.); declare the expected key explicitly in each wrapper.
+- **List keys vary per Action:** Declare the expected list key explicitly in each wrapper (`jobs`, `items`, `list`, `logs`, `events`, `scale_history_items`, `logic_compute_groups`, `node_dimensions`, etc.).
 
 | Error `Code` | Meaning | Handling |
 | --- | --- | --- |
 | `InvalidAction` | Action does not exist on this route | Route itself is alive (a missing route returns HTTP `404 page not found`) |
 | `InvalidParameter` | Schema violation (`proto: unknown field "X"`, missing required field, `page or page_size too large`) | Fix request payload |
-| `AccessForbidden` |Genuine permission denial **or** missing workspace scoping | Verify workspace scoping placement (Section 5) before concluding lack of permission |
+| `AccessForbidden` | Genuine permission denial **or** missing workspace scoping | Verify workspace scoping placement (Section 5) before concluding lack of permission |
 | `ResourceNotFound` | Target object does not exist | Standard on `notebook` / `hpc` / `serving`; note that `train.DeleteJob` returns `AccessForbidden` instead |
 | `Conflict` | Invalid state transition (e.g., deleting a running workload or starting an already running one) | `stop` and poll until stopped before deleting |
 | `InternalError` / `Throttling` / `ServiceUnavailable` / `SlowDown` / `RequestTimeout` / `TooManyRequests` | Transient server or gateway error | Raised as `TransientAPIError` and retried by the transport layer |
@@ -67,48 +67,36 @@ Both successes and business errors return **HTTP 200** with an AWS-style JSON en
 ### Transport Layer & Empty Results
 
 `request_json()` in [`session/__init__.py`](../../cli/inspire/platform/web/session/__init__.py) is the single entrypoint for both `requests` and Playwright channels:
-- **Retries:** HTTP `408/425/429/500/502/503/504` and transient envelope codes raise `TransientAPIError` (`ValueError` subclass) and retry up to 3 times (honoring `Retry-After` up to 8s, otherwise exponential backoff with jitter). Keep rate-limit retries in the transport layer, never in individual wrappers.
-- **`page_size` clamping:** `_clamped_page_size()` caps generic requests at `5000` (preserving `-1` for "fetch all"). `train.ListJobs` follows the console window: clamp size to `[1, 5000]`, page to `[1, floor(5000 / size)]`. Scanners must stop before requesting another page beyond that window; do not repeatedly fetch the clamped final page. Its `created_by` filters rows but its `total` is platform-wide, so short/empty pages establish exhaustion. CLI history scans prefer 999 rows and explicitly report truncation when a query fills the reachable window.
-- **Never conflate request failure with an empty result:** Only a successful response with zero items means "none exist". Wrappers must never swallow `TransientAPIError` or `SessionExpiredError` into `[]`, `None`, or `0`. Fan-out wrappers (such as per-group quota fetches) must track partial completion explicitly (`QuotaCatalog.complete`).
+- **Retries:** HTTP `408/425/429/500/502/503/504` and transient envelope codes raise `TransientAPIError` (`ValueError` subclass) and retry up to 3 times (honoring `Retry-After` up to 8s in session requests, otherwise exponential backoff with jitter). Keep rate-limit retries in the transport layer, never in individual wrappers.
+- **`page_size` clamping:** `_clamped_page_size()` caps generic requests at `5000` (preserving `-1` for "fetch all"). `train.ListJobs` follows the console window: clamp size to `[1, 5000]`, page to `[1, floor(5000 / size)]`. Scanners stop before requesting beyond that window and never repeatedly fetch a clamped final page. Because `train.ListJobs` filters rows by `created_by` while returning a platform-wide `total`, short or empty pages establish completion; CLI history scans use 999-row pages and report truncation explicitly when filling the 5,000-row window.
+- **Never conflate request failure with an empty result:** Only a successful response with zero items means "none exist". Wrappers must never swallow `TransientAPIError` or `SessionExpiredError` into `[]`, `None`, or `0`. Fan-out wrappers (such as per-group quota fetches) track partial completion explicitly (`QuotaCatalog.complete`).
 
-### OAuth session lifecycle
+### OAuth Session Lifecycle
 
-Device login and silent CAS renewal request `openid profile email offline_access`. On 2026-11-18 the `inspire-studio` client in the `inf-internal` realm received a session-bound refresh token (JWT `typ: "Refresh"`, `refresh_expires_in: 43200`). The access token lasted one hour. A successful refresh advanced the 12-hour idle deadline. The Keycloak account endpoint (`GET /realms/inf-internal/account/sessions`) reported an absolute session expiry seven days after its start. An earlier offline token returned `invalid_grant`. [Platform observations in PR #116](https://github.com/realZillionX/InspireSkill/pull/116)
-
-An online `inspire account check` every six hours gives the CLI an opportunity to refresh an expired access token before the idle deadline. At absolute expiry, a valid CAS session can authorize a new device grant silently. Otherwise run `inspire login`.
-
-When granted, offline refresh tokens survive the end of the browser/CAS SSO session and have no fixed expiry (`refresh_expires_in: 0`, no JWT `exp`). They remain subject to server-side idle timeout and revocation. Token responses with refresh JWT `typ: "Offline"` are classified as offline; unverified JWT claims are used only for this metadata classification. Lifetimes must be finite numbers, never booleans: access lifetime must be positive, and non-offline refresh lifetime must be positive. Offline JWTs allow missing or null refresh lifetime, treated as absent, or a nonnegative finite lifetime.
-
-`WebSession.refresh_offline` is persisted (old files default to `false` unless the refresh JWT itself has `typ="Offline"`; this recovers files rewritten by older releases without migration writes). Its finite `refresh_expires_at` is an informational 30-day estimate based on Keycloak's default offline session idle, advanced on every successful refresh; the actual timeout is server-side. Offline refresh always runs even after this estimate passes, with CAS fallback on credential rejection, transient failure, network failure, or malformed response. Session-bound refresh tokens keep the server-provided expiry: once it passes locally, refresh skips OAuth and goes straight to CAS renewal.
-
-OAuth refresh is attempted first whenever the refresh token is eligible. Either successful OAuth refresh or successful CAS renewal keeps API access available. If both fail, network errors are re-raised unchanged with the CAS failure chained; transient refresh errors are likewise re-raised as `RefreshUnavailableError(TransientAPIError)`, never as login-required errors. Transport acquisition/refresh and SDK operations map these network and transient errors to retryable `TransportError`, preserving metadata before considering chained CAS causes. Plaza CLI compatibility never converts `TransportError` to `SessionExpiredError`. CAS deadline, client lifecycle and programming errors propagate unchanged. Credential rejection plus an authentication failure from CAS reports that the credential is no longer accepted, with session expiry or revocation as examples rather than an asserted cause. Other malformed/protocol failures fall back to CAS and propagate its failure.
-
-HTTP 400/401 with `invalid_grant`, `invalid_token`, `invalid_client`, or `unauthorized_client` is a credential rejection. HTTP 408/425/429/5xx or `temporarily_unavailable` is transient; other failures are generic authentication errors. Reasons use an explicit RFC 6749/6750 code allowlist; other server text is never echoed. Unknown reasons become `refresh_rejected` for rejection metadata or `unavailable` for transient metadata.
-
-Do not use releases <= 7.2.1 on an account that still holds an offline token. Released v7.2.1 saves `refresh_expires_at = now` and drops `refresh_offline` after the first offline refresh. On the next refresh it skips OAuth and tries CAS, reporting not logged in without valid CAS even if the offline token still works. v7.2.2 and later recover those files through JWT `typ="Offline"`. If an older release reports not logged in, run v7.2.2 or later to recover, or log in again with the older release.
-
-The CLI stores refresh tokens in the account's `web_session.json` (mode `0600` on POSIX). `inspire logout` removes them locally along with the account profile; server-side revocation is performed in the **Keycloak account console (applications/sessions)**. Local logout does not invoke a server revoke API.
-
-Login JSON exposes `refresh_kind`; status, account list and SDK `AccountCheck` expose `oauth.refresh_kind` (`offline` or `session`). Offline expiry metadata is `null`, and human output explains “no fixed expiry; server-side idle timeout applies”. With expired access credentials, local OAuth state is `offline`, not `refreshable` based on the estimate. A server rejection still takes precedence as `rejected`. Access-token JSON expiry metadata remains local; after a failed live check the human display says not accepted by server, or could not be verified for retryable failures.
-
-`inspire login` explicitly runs device authorization. `get_web_session()` never prompts; it refreshes access tokens within 60 seconds of expiry. Refresh takes the per-account process lock, rereads disk, and persists both rotating tokens atomically. Expired or refused refresh credentials trigger silent device authorization only when a stored CAS session validates and auto-approval succeeds; otherwise explicit `inspire login` is required. The caller retains the refresh lock and saving uses `_save_existing_account`.
-
-Refresh rejections retain HTTP status and an allowlisted OAuth error code (otherwise `refresh_rejected`) in `RefreshRejectedError`, an `AuthenticationError` subclass. If CAS renewal also fails, the login-required error preserves that rejection as its cause and explains that the refresh credential is no longer accepted, without assuming whether the session ended or was revoked. No raw response body is exposed.
-
-`account check` prints consistent `Configuration: OK` and `Authentication: OK` / `FAILED` status lines. A rejected live refresh reports `OAuth refresh token: rejected by server (<reason>); local expiry ...`, with JSON `oauth.state="rejected"` and `oauth.refresh_error`. Only `RefreshRejectedError` sets `oauth.state="rejected"`. Transient refresh failures retain the state derived from local token data and add `oauth.refresh_error` (allowlisted reason or `unavailable`), `oauth.refresh_retryable: true`, and `oauth.refresh_status` (HTTP status). Network and transport failures reuse these fields with reason `unavailable` and HTTP status `null` when unavailable; no new JSON fields are added. These optional fields are absent when no retryable failure was observed. Human output adds `OAuth refresh: temporarily unavailable (HTTP 503); retry later`. SDK `AccountCheck` exposes the same metadata with `ok=false`; CLI `account check` reports authentication failure and exits with API error code 13 for network or transient errors, retaining JSON and effective proxy diagnostics (authentication failures retain code 11). Failed live checks do not promise automatic renewal. For session-bound tokens, `--offline` reports refreshability only by local expiry, explicitly unverified; `account list` also describes local cache state.
-
-Platform requests carry `Authorization: Bearer …` and `X-Inspire-Client-Source: inspire-cli/inspireskill-<version>` only for the configured platform origin. A 401 or authentication redirect refreshes once and retries once. Notebook automation obtains `jupyter_url` from `GetNotebookAccessUrl`, using the application's own cookies without forwarding platform tokens. Old cookie-only caches are logged out.
+- **Grant & token types:** Device login and silent CAS renewal request `openid profile email offline_access` and store tokens in `web_session.json` (`0600` on POSIX, current-user ACL on Windows). Access tokens last ~1 hour and refresh automatically within 60 seconds of expiry under the per-account file lock (rereading disk first and atomically persisting rotated tokens via `_save_existing_account`).
+  - **Session-bound refresh tokens (`typ: "Refresh"`):** Observed on `inspire-studio` (`inf-internal` realm) with a 12-hour rolling idle timeout (`refresh_expires_in: 43200`) and a 7-day absolute session limit (`GET /realms/inf-internal/account/sessions`). Running an online `inspire account check` every 6 hours refreshes access tokens before idle expiry. Once `refresh_expires_at` passes locally, refresh skips OAuth and attempts silent CAS renewal directly.
+  - **Offline refresh tokens (`typ: "Offline"`):** Survive browser/CAS SSO expiry and carry no fixed deadline (`refresh_expires_in: 0` or `null`/absent, no JWT `exp`), remaining subject to server-side idle timeout and revocation. `WebSession.refresh_offline` is persisted (and recovered from unverified JWT `typ == "Offline"` if missing on disk). Its local 30-day `refresh_expires_at` is purely informational: offline refresh is always attempted even past that timestamp, falling back to CAS on rejection, transient/network failure, or malformed response.
+  - **Lifetime validation:** Token lifetimes must be finite numbers (never booleans): positive for access tokens and session-bound refresh tokens; absent, `null`, or non-negative finite for offline refresh tokens.
+- **Refresh fallback & error classification:**
+  - `get_web_session()` never prompts interactively; HTTP `401` or auth redirects refresh once and retry once. Notebook `GetNotebookAccessUrl` sessions use Jupyter's own cookies without forwarding platform Bearer tokens.
+  - OAuth refresh runs first whenever eligible; if it fails (or a session refresh token is expired), silent device authorization runs when a valid `cas_session.json` is present. Either path succeeding preserves API access.
+  - HTTP `400/401` with `invalid_grant`, `invalid_token`, `invalid_client`, or `unauthorized_client` raises `RefreshRejectedError(AuthenticationError)` carrying HTTP status and an allowlisted RFC 6749/6750 error code (`refresh_rejected` for unknown codes; raw server text is never echoed). HTTP `408/425/429/5xx` or `temporarily_unavailable` raises `RefreshUnavailableError(TransientAPIError)` (`unavailable` when unknown).
+  - If both OAuth refresh and CAS fallback fail, network errors re-raise unchanged (with CAS failure chained) and transient errors re-raise as `RefreshUnavailableError` — never misclassified as login-required errors. Transport and SDK layers map these to retryable `TransportError` before inspecting chained CAS causes, and plaza CLI handling preserves `TransportError` rather than converting it to `SessionExpiredError`.
+- **Diagnostics (`account check` & `AccountCheck`):**
+  - `login --json` exposes `refresh_kind`; `account check`, `account list`, and SDK `AccountCheck` expose `oauth.refresh_kind` (`"offline"` or `"session"`), with `refresh_expires_at: null` for offline tokens (`state: "offline"` when the access token is expired locally).
+  - Only `RefreshRejectedError` sets `oauth.state = "rejected"` (with `oauth.refresh_error`). Transient or network failures preserve the local token state and attach `oauth.refresh_error`, `oauth.refresh_retryable: true`, and `oauth.refresh_status` (HTTP status or `null`); CLI `account check` exits with API error code `13` (vs. `11` for authentication rejection) while still emitting JSON and effective proxy diagnostics.
+  - Local `inspire logout` deletes the account directory without calling a server revocation endpoint; server-side session revocation lives in the Keycloak account console.
 
 ## 3. Route Names
 
-Gateway URLs use the route slug in `/api/v2/{route}`, which does **not** always match the Service `Name` in `/discovery`:
+Gateway URLs use `/api/v2/{route}`, which does **not** always match the Service `Name` in `/discovery`:
 
 | Discovery Service `Name` | Gateway Route | Notes |
 | --- | --- | --- |
 | `inference-serving` | **`inference_serving`** | Hyphenated form returns 404 |
 | `model-hub` | **`model-hub`** | Underscore form returns 404 |
 | `train` / `hpc` / `ray` / `notebook` / `workspace` / `user` / `project` / `image` / `cluster` | Same as `Name` | — |
-| *(Not in discovery)* | **`resource-price`**, **`file`**, **`dataset`** | Plural variants (`files`, `datasets`, etc.) return 404 |
+| *(Not in discovery)* | **`model_plaza`**, **`resource-price`**, **`file`**, **`dataset`** | `model_plaza` uses an underscore; plural variants (`files`, `datasets`, etc.) return 404 |
 
 ## 4. Pagination & `total` Quirks
 
@@ -119,41 +107,40 @@ Gateway URLs use the route slug in `/api/v2/{route}`, which does **not** always 
 | Omitting `page_size` | `ListLogicComputeGroups` and `hpc.ListSlurmdPodEvent` return `[]` with a non-zero `total` | Always send an explicit `page_size` |
 | `total` type | Either `int` (`notebook.ListNotebooks`) or numeric `str` (`hpc.ListJobs` returns `"202"`) | Always coerce via `_coerce_total()`, never `isinstance(total, int)` |
 | Unpaginated Actions | `notebook.ListRunIndex` rejects `PageNumber` | Do not send pagination keys |
-| Unknown field unmarshaling | Most Actions reject unknown keys with `proto: unknown field`, but `train.CreateTensorboard` and `notebook.SaveMirror` silently drop unknown keys | Test with a known-invalid key first before relying on `unknown field` probes |
+| Unknown field unmarshaling | Most Actions reject unknown keys with `proto: unknown field`, while `train.CreateTensorboard` and `notebook.SaveNotebookImage` ignore unknown keys | Test with a known-invalid key first before relying on `unknown field` probes |
 
 ## 5. Workspace Scoping
 
-The same `workspace_id` is placed in four different locations depending on the Action:
+`workspace_id` is placed in five different shapes depending on the Action:
 
 | Placement | Actions |
 | --- | --- |
-| Unscoped, empty body | `user.ListAccessibleWorkspaces` |
+| Unscoped (`{}`) | `user.ListAccessibleWorkspaces` |
 | Top-level `workspace_id` | `ListJobs` (`train`/`hpc`/`ray`), `notebook.ListNotebooks`, `inference_serving.ListServings`, `model-hub.ListModels`, `workspace.GetWorkspaceQuota`, `workspace.GetWorkspaceComputeResource`, `workspace.GetLogicComputeGroupResource`, `workspace.Get*NodeSpecs`, `dataset.ValidateDataset` |
-| Nested `filter.workspace_id` | `workspace.ListNodeDimension` / `ListTaskDimension` / `ListUserDimension`, `workspace.ListLogicComputeGroups`, `project.ListProjects`, `file.*` |
+| Nested `filter.workspace_id` | `workspace.ListNodeDimension` / `ListTaskDimension` / `ListUserDimension`, `workspace.ListLogicComputeGroups`, `project.ListProjects`, `model_plaza.GetModelListInPlaza`, `file.*` |
 | Top-level `workspace_id` + nested `filter_by` | `notebook.ListNotebooks`, `ray.ListJobs`, `inference_serving.ListServings`, `model-hub.ListModels` (filters go inside `filter_by`, while `workspace_id` stays at top level) |
-| PascalCase `WorkspaceId` | `user.GetPermissions`, `notebook.GetScheduleConfig` |
+| PascalCase `WorkspaceId` / camelCase `workspaceId` | `user.GetPermissions` (`WorkspaceId`), `notebook.GetScheduleConfig` (`WorkspaceId`), `image.SyncImage` (`workspaceId`) |
 
-Workspace discovery uses `user.ListAccessibleWorkspaces` with `{}` and reads `Result.items`, including `workspace_id`, `name`, and `is_fair_workspace`. It requires no current workspace. The console uses `GetRoutes` separately for navigation; its route groups do not establish the accessible-workspace catalog. Login and runtime share the parser in [`session/workspaces.py`](../../cli/inspire/platform/web/session/workspaces.py). Missing or malformed `items` raises an error so cache refresh cannot interpret a changed response shape as a complete empty catalog; `items: []` is a valid empty result.
+Workspace discovery calls `user.ListAccessibleWorkspaces` with `{}` and parses `Result.items` (`workspace_id`, `name`, `is_fair_workspace`) via [`session/workspaces.py`](../../cli/inspire/platform/web/session/workspaces.py). Missing or malformed `items` raises an error so cache refresh never mistakes a broken response for an empty catalog (`items: []` is a valid empty result).
 
 ### `cluster.*` vs. `workspace.*`
 
-- The 8 dimension/resource Actions shared between `cluster.*` and `workspace.*` (`ListNodeDimension`, `ListTaskDimension`, `ListProjectDimension`, `ListUserDimension`, `ListLogicComputeGroups`, `GetOverviewResourceMetric`, etc.) return `AccessForbidden` for regular users under `cluster.*` and must be called under `workspace.*` with `filter.workspace_id`.
+- Dimension and resource Actions shared between `cluster.*` and `workspace.*` (`ListNodeDimension`, `ListTaskDimension`, `ListProjectDimension`, `ListUserDimension`, `ListLogicComputeGroups`, `GetOverviewResourceMetric`, etc.) return `AccessForbidden` for regular users under `cluster.*` and must be called under `workspace.*` with `filter.workspace_id`.
 - **Exception:** `cluster.ListNodeEvents` has no `workspace.*` counterpart and is readable by regular users (`inspire resources node-events`).
 
-## 6. Surface Discovery & `scripts/scan_v2_surface.py`
+## 6. Surface Discovery & Contract Verification
 
 | Source | What It Proves | Limitations |
 | --- | --- | --- |
-| `GET {base_url}/discovery` | Static list of public Services/Actions and request field schemas (`Version` is a content etag) | Response list keys (`Items`/`TotalCount`) are inaccurate; omits `resource-price`, `file`, `dataset`, and `*Console` write Actions; does not reflect RBAC permissions |
-| Console SPA bundles (`scripts/scan_v2_surface.py`) | Lower bound of Actions and REST paths actively called by the web UI | Must recursively follow lazy-loaded JS chunks from the entrypoint and normalize template literals |
+| `GET {base_url}/discovery` | Static list of public Services/Actions and request field schemas (`Version` is a content etag) | Response list keys (`Items`/`TotalCount`) are inaccurate; omits `model_plaza`, `resource-price`, `file`, `dataset`, and `*Console` write Actions; does not reflect RBAC permissions |
+| Console SPA bundles (`scripts/scan_v2_surface.py`) | Lower bound of Actions and REST paths called by the web UI | Must recursively follow lazy-loaded JS chunks from the entrypoint and normalize template literals |
 | `user.GetMyPermissions` | Returns `{Services: {svc: {Read, Write, Actions: {Action: bool}}}}` for RBAC-gated services | Does not cover `train`, `notebook`, `workspace`, `project`, `ray`, or `hpc` |
 
 Never conclude a capability is missing based solely on `/discovery` — always check `*Console` variants and the SPA bundle first.
 
-### Offline request-field evidence
+### Offline Bundle Field Evidence (`scan_v2_surface.py --bundles`)
 
-From `cli/`, scan an already downloaded directory without loading credentials or
-contacting any server:
+Scan downloaded JS bundles offline from `cli/` without loading credentials or making network calls:
 
 ```bash
 uv run python ../scripts/scan_v2_surface.py \
@@ -162,64 +149,27 @@ uv run python ../scripts/scan_v2_surface.py \
   --json /tmp/request-field-evidence.json
 ```
 
-`--bundles` reads only immediate `*.js` files, skips session loading, fetching and
-`/discovery`, and rejects `--probe`. An empty directory is an error. Existing
-flags, default output and default JSON schema remain unchanged. `--fields` is
-opt-in in both local and normal scanning modes; it adds a `field_evidence`
-JSON section and a text field section.
+`--bundles` reads immediate `*.js` files in the directory (rejecting empty directories and `--probe`). `--fields` adds a `field_evidence` report in both offline and live modes, classifying each requested identifier's `token_presence` (`present` or `no token evidence`) with `request_field_evidence: "not linked to a request body"` (identifier matching cannot distinguish submit payloads from read/compatibility code). Output includes only field names and classifications — never source excerpts, matched values, or bundle filenames.
 
-Each requested name is reported once with two observations: `token_presence`
-is `present` or `no token evidence`; `request_field_evidence` is always
-`not linked to a request body`. Whole JavaScript identifier matching across all
-input bundles cannot associate a token with a submit call. A token may come from
-read/compatibility code or a `delete` expression. Neither presence nor absence
-proves that a field is sent, omitted, accepted, or rejected by the platform.
-Reports contain field names and classifications, never source excerpts, matched
-values, or bundle filenames. Only scan sanitized bundles when sharing the
-existing Action/REST inventory.
+### Request Contract Snapshots (`compare_request_contracts.py`)
 
-### Comparing request contracts
-
-The [public-path mount snapshot](contracts/public-path-mount.json) records the console submit forms inspected on 2026-11-11. It covers two top-level fields across five create Actions. Issue #95 independently confirms the HPC gateway rejected the legacy field and accepted mode 0. Modes 1 and 2 have console evidence. Batched reads have a separate [contract inventory](#815-batch-reads--listjobs--listjobevents) because console forms do not exercise those request shapes.
-
-To review a platform change, take a copy of the snapshot and update it from a dated platform schema or a reviewed console submit handler. Record the source and list only the Actions with the same observed fields. Each field records its JSON type and, when known, its allowed enum literals. Use `"type": "absent"` for verified exclusion and leave unreviewed fields out. A missing key in a single request cannot establish exclusion or the full allowed enum.
-
-Run these commands from the repository root. The first compares snapshots. The second checks a local JSON request body against the tracked fields.
+[`contracts/public-path-mount.json`](contracts/public-path-mount.json) records verified field types and enum values across the five workload creation Actions (`"type": "absent"` marks verified exclusion; unreviewed fields are omitted). Compare two snapshots or validate a request body offline from the repository root:
 
 ```bash
 python3 scripts/compare_request_contracts.py references/dev/contracts/public-path-mount.json reviewed.json
 python3 scripts/compare_request_contracts.py references/dev/contracts/public-path-mount.json request.json --request hpc.CreateJobConsole
 ```
 
-The diff reports additions, removals, type changes and changes in enum membership for Actions covered by both snapshots. A single addition paired with a single removal is a rename candidate. Missing coverage is reported separately. The request check exits 1 for an excluded field, wrong type or value outside the enum. Omitted optional fields pass. Both commands run offline and print field metadata only. Request values, untracked keys and source excerpts stay out of reports.
+Snapshot diffs report additions, removals, type/enum changes, and single-addition/single-removal rename candidates; `--request` exits `1` on excluded fields, wrong types, or out-of-range enum values while allowing omitted optional fields. SDK and CLI unit tests validate outgoing create payloads against the same snapshot.
 
-The SDK and CLI tests check the actual outgoing create body against the same snapshot. Separate assertions cover omission, legacy booleans, the exact mode requested and the single write. For JSON and TOML batches, dry runs show the resolved mount mode when specified. Each explicit legacy boolean produces one deprecation warning.
+### Manual Maintainer Write Smoke Checklist
 
-### Optional maintainer write regression (manual only)
-
-There is no automatic write mode in this scanner or its tests. A maintainer may
-run a separate, explicitly authorized smoke only after all of the following:
-
-1. Select a dedicated test account with credentials configured locally; never
-   place credentials, cookies, raw responses or resource identities in test data
-   or reports. Explicitly approve the selected workload and one create attempt.
-2. Pin the workspace, project, group, quota, image and unique disposable name.
-   Set hard CPU/GPU/memory, replica/worker, cost and wall-time caps before submit
-   (for example one minimal CPU allocation, zero GPUs where supported, and a
-   five-minute deadline). Verify quota and cleanup permissions. For Ray bound
-   both head and worker totals; for Serving bound replicas and disable scaling.
-3. Check current `<workload> create/status/stop/delete --help`, prepare the exact
-   stop/delete commands and an independent cleanup operator/watchdog, and review
-   a dry-run plan before the single create. Start with a harmless short command.
-4. Query that exact created resource, compare the requested optional setting to
-   its observed state, then stop it in a `finally` cleanup path. Confirm terminal
-   state and delete the disposable resource when appropriate. Clean up even if
-   the query or assertion fails; record only sanitized field-level outcomes.
-5. If submission times out, fails, or returns no identity, do not guess a renamed
-   field and resubmit. Reconcile the unique name in the selected workspace using
-   read-only queries or ask the cleanup operator to identify the resource. An
-   uncertain result is not permission for a second create. Escalate cleanup
-   failure and verify no resource remains running before calling the smoke done.
+Write probes are never automated. Before running an authorized live smoke test:
+1. Use a dedicated local test account with explicit approval for one create attempt; never commit credentials, cookies, raw responses, or resource IDs.
+2. Pin `workspace`, `project`, `group`, minimal `quota`, `image`, a unique disposable name, replica/worker bounds (`1` replica, autoscaling disabled), and a short wall-time cap (e.g., 5 minutes).
+3. Review `--help` and `<workload> create --dry-run` first, and prepare the exact `stop` and `delete` commands before submitting.
+4. Inspect the created resource, then stop and delete it inside a `finally` path regardless of assertion outcome, confirming terminal state.
+5. If submission times out or returns no ID, reconcile the unique name via read-only list queries before taking further action — never blindly resubmit or guess renamed fields.
 
 ## 7. Probing Methodology
 
@@ -229,26 +179,26 @@ When verifying undocumented Actions or fields without mutating state:
 3. **Field existence:** Send `{"candidate_field": "x"}`. `InvalidParameter: proto: unknown field` means the field is not in the schema.
    - **Caveat 1 (`InternalError`):** Always compare against a control request with a known-invalid field (`{"nonexistent_xyz": 1}`) to verify the handler performs strict protobuf unmarshaling.
    - **Caveat 2 (Fake resource IDs mask unknown fields):** Gateway auth middleware checks resource IDs (`notebook_id`, `ray_job_id`, etc.) *before* strict protobuf decoding. Sending a fake ID returns `ResourceNotFound` even when accompanied by unknown fields. Probe either without a resource ID or with a real resource ID owned by the test account.
-4. **Write semantics & round-trip:** Only trust a write field if the resulting resource state actually changes and `Get*` (or container inspection) reflects the written value.
+4. **Write semantics & round-trip:** Trust a write field only when the resulting resource state changes and `Get*` (or container inspection) reflects the written value.
 
 ## 8. Action Reference by Route
 
 Every entry below is called via `POST {base_url}/api/v2/{route}?Action={Action}` and unpacked from `Result`. `†` indicates an Action absent from `/discovery`; `‡` indicates an entire route absent from `/discovery`.
 
-| Route | Domain | Action Count | Primary CLI Groups |
+| Route | Domain | Wrapped Actions | Primary CLI Groups |
 | --- | --- | --- | --- |
 | [`train`](#81-train--distributed-training--tensorboard) | GPU Jobs & TensorBoard | 16 | `job`, `tensorboard` |
 | [`hpc`](#82-hpc--cpu-slurm-batch) | CPU Slurm Batch | 11 | `hpc` |
 | [`ray`](#83-ray--elastic-compute) | Ray Clusters | 12 | `ray` |
 | [`notebook`](#84-notebook--interactive-modeling) | Notebooks & Image Snapshots | 18 | `notebook`, `image` |
-| [`inference_serving`](#85-inference_serving--model-serving) | Online Model Serving | 19 | `serving` |
-| [`workspace`](#86-workspace--cluster--workspace-resources) | Compute Groups, Nodes, Quotas, Usage | 9 (+1 `cluster`) | `resources`, `<workload> quota`, `create` |
-| [`user`](#87-user--account--api-keys) | Identity, Permissions & API Keys | 7 | `account`, owner-filtered lists |
-| [`project`](#88-project--projects) | Projects & Budgets | 4 | `project`, `create` |
-| [`image`](#89-image--image-catalog) | Image Registry | 5 | `image` |
+| [`inference_serving`](#85-inference_serving--model-serving) (+ `model_plaza` ‡) | Online Model Serving & Plaza Selector | 19 (+1 `model_plaza`) | `serving` |
+| [`workspace`](#86-workspace--cluster--workspace-resources) (+ `cluster`) | Compute Groups, Nodes, Quotas, Usage | 7 (+1 `cluster`) | `resources`, `<workload> quota`, `create` |
+| [`user`](#87-user--account--api-keys) | Identity, Workspaces, Permissions & API Keys | 7 | `account`, `login`, owner-filtered lists |
+| [`project`](#88-project--projects) | Projects & Budgets | 5 | `project`, `create` |
+| [`image`](#89-image--image-catalog) | Image Registry | 6 | `image` |
 | [`model-hub`](#810-model-hub--model-registry) | Model Registry | 14 | `model`, `serving create` |
 | [`resource-price`](#811-resource-price--quota-catalog-) ‡ | Per-Group Quota & Price Catalog | 1 | `<workload> quota`, `create` |
-| [`file`](#812-file--storage-discovery-) ‡ | Storage Pools & Directories | 2 | *(No active CLI consumer)* |
+| [`file`](#812-file--storage-discovery-) ‡ | Storage Pools & Directories | 0 (documented, not wrapped) | — |
 | [`dataset`](#813-dataset--dataset-mount-validation-) ‡ | Official Dataset Validation | 1 | `dataset validate`, `--dataset` |
 
 ---
@@ -281,13 +231,13 @@ Referer: `/jobs/distributedTraining` (detail: `/jobs/distributedTrainingDetail/{
 - `GetJobLog` requires string epoch-ms timestamps and rejects windows wider than 30 days.
 - `DeleteJob` requires the job to be stopped first (`Conflict` if running) and returns `AccessForbidden` (not `ResourceNotFound`) when the job ID does not exist.
 - `node_infos[]` holds assigned runtime nodes (cleared once stopped), whereas `specified_nodes[]` and `exclude_nodes[]` echo creation constraints. Per-rank node mapping comes from `ListJobInstances`.
-- `job list --workspace all` fans out across visible Workspaces with up to eight independent concurrent workspace readers.
+- `job list --workspace all` fans out across visible Workspaces with up to 8 independent concurrent workspace readers.
 
 **TensorBoard notes:**
 - `CreateTensorboard` requires `auto_stop_time_ms` as a **string** (max 72h; missing field error misleadingly says `tensorboard_auto_stop_time_ms is required`). Its unmarshaller ignores unknown fields and returns `{}` on success, so the CLI resolves the newly created board by name via `ListTensorboards`.
 - `GetTensorboard` on an unknown ID returns `InvalidParameter: 用户不存在。` (treat as not found, not an account error).
 - `ListTensorboards` requires PascalCase `PageNumber`; `job_id` filter is ignored by the server and filtered client-side.
-- `GetTensorboard.url` points to a live TensorBoard web app authenticated by `inspire-session`, exposing `data/runs`, `data/plugin/scalars/tags`, and `data/plugin/scalars/scalars?run=&tag=` (used by `tensorboard tags` and `scalars`).
+- `GetTensorboard.url` points to a live TensorBoard web app exposing `data/runs`, `data/plugin/scalars/tags`, and `data/plugin/scalars/scalars?run=&tag=` (used by `tensorboard tags` and `scalars`).
 
 ---
 
@@ -311,9 +261,9 @@ Referer: `/jobs/highPerformanceComputing` (detail: `/jobs/hpcDetail/{job_id}`).
 
 **HPC notes:**
 - Casing inconsistencies: `ListJobInstances` requires camelCase `jobId`; `ListJobEvents` requires `pageNum`/`pageSize`; list rows populate `job_name` (never `name`).
-- `GetJob.steps` (`completed/total`, e.g., `1/1` vs `0/0`) is statically parsed from `srun` invocations in `entrypoint` and is the only field that distinguishes a job that ran `srun` steps from one that did not.
-- `GetJobLog` and `ListSlurmdPodEvent` require namespaced `<ns>/<pod>` identifiers. `GetJobLog` rejects windows > 30 days (`HPC_LOG_MAX_WINDOW_MS`), ignores `PageNumber`, and returns the **oldest** `page_size` lines (so tailing requires fetching the window and slicing client-side). `ListSlurmdPodEvent` emits one duplicate row per occurrence without a `count` field (deduplicated client-side).
-- Jobs in `SUCCEEDED_RETAINING` or `FAILED_RETAINING` reject `DeleteJob` with `Conflict`, and `StopJob` is a no-op on retaining jobs — wait for the platform to transition them to `SUCCEEDED` / `FAILED`.
+- `GetJob.steps` (`completed/total`, e.g., `1/1` vs `0/0`) is statically parsed from `srun` invocations in `entrypoint` and distinguishes a job that ran `srun` steps from one that did not.
+- `GetJobLog` and `ListSlurmdPodEvent` require namespaced `<ns>/<pod>` identifiers. `GetJobLog` rejects windows > 30 days (`HPC_LOG_MAX_WINDOW_MS`), ignores `PageNumber`, and returns the **oldest** `page_size` lines (tailing fetches the window and slices client-side). `ListSlurmdPodEvent` emits one duplicate row per occurrence without a `count` field (deduplicated client-side).
+- Jobs in `SUCCEEDED_RETAINING` or `FAILED_RETAINING` reject `DeleteJob` with `Conflict`, and `StopJob` is a no-op on retaining jobs — wait for transition to `SUCCEEDED` / `FAILED`.
 
 ---
 
@@ -326,7 +276,7 @@ Referer: `/jobs/ray`.
 | `CreateJob` | See [Section 9](#9-creation-payload-fields) | `{ray_job_id, sub_code, sub_msg}` | `ray create`, `ray batch` |
 | `GetJob` | `{ray_job_id}` | `status`, `head_node{}`, `worker_groups[]`, `entrypoint`, `creator{}`, `priority_name` | `ray status`, `ray metrics` |
 | `ListJobs` | `{workspace_id, page_num, page_size, filter_by:{user_id:[…]}}` | `{items[], total}` (`str`) | `ray list`, Name Resolver |
-| `ListJobCreators` | `{workspace_id}` | `{items[]}` | — |
+| `ListJobCreators` | `{workspace_id}` | `{items[]}` | Wrapped helper |
 | `ListJobEvents` | `{ray_job_id, page_num, page_size, sorter:[{field:"last_timestamp", sort}], filter:{object_ids[]}?}` | `{items[], total}` | `ray events`, `--instance` |
 | `ListJobInstances` | `{ray_job_id, page_num, page_size}` | `{items[], total}` | `ray instances` |
 | `ListJobScalingHistories` | `{ray_job_id, page_num, page_size, worker_group_name?}` | `{items[], total}` (`str`) | `ray scaling` |
@@ -340,7 +290,7 @@ Referer: `/jobs/ray`.
 - Every Action uses `ray_job_id` except `GetJobLog`, which scopes solely via `filter.podNames` (rejecting empty `podNames` client-side).
 - `ListJobEvents` returns both `"job"` and `"instance"` events in a single call; use monotonic event `id` as a tiebreaker for identical 1-second timestamps.
 - Invalid state transitions on `StartJob` / `StopJob` return `InternalError: RayJob status not allow <verb>` rather than `Conflict` (do not retry as transient).
-- `UpdateJob` only allows mutating `name` and `description` on stopped jobs (worker group min/max replicas are immutable after creation) and is intentionally not wrapped.
+- `UpdateJob` only mutates `name` and `description` on stopped jobs (worker group min/max replicas are immutable after creation) and is intentionally not wrapped.
 
 ---
 
@@ -353,9 +303,9 @@ Referer: `/jobs/interactiveModeling`.
 | `CreateNotebook` | See [Section 9](#9-creation-payload-fields) | `{notebook_id, sub_code, sub_msg}` | `notebook create`, `notebook batch` |
 | `GetNotebook` | `{notebook_id}` | `status`, `sub_status`, `workspace{}`, `project{}`, `logic_compute_group{}`, `quota{}`, `node{}`, `extra_info{}`, `dataset_info[]` | `notebook status` / `metrics` / `exec` / `shell` / `ssh` / `proxy-url`, `wait` |
 | `ListNotebooks` | `{workspace_id, page, page_size, filter_by:{keyword, user_id[], logic_compute_group_id[], status[], mirror_url[]}, order_by:[{field:"created_at", order:"desc"}]}` | `{list[], total}` (`int`) | `notebook list`, Name Resolver |
-| `ListNotebookCreators` † | `{workspace_id}` | `{list[], total}` | — |
+| `ListNotebookCreators` † | `{workspace_id}` | `{list[], total}` | Wrapped helper |
 | `ListNotebookEvents` | `{notebook_id, page, page_size}` | `{list[]\|events[], total}` | `notebook events`, `create --wait` |
-| `ListNotebookLifecycles` | `{notebook_id, page, page_size, start_time?, end_time?}` | `{list[]}` | — |
+| `ListNotebookLifecycles` | `{notebook_id, page, page_size, start_time?, end_time?}` | `{list[]}` | Wrapped helper |
 | `ListRunIndex` | `{notebook_id}` | `{list[{index, start_time, end_time}]}` | `notebook lifecycle` |
 | `StartNotebook` | `{notebook_id}` | `{notebook_id, sub_code, sub_msg}` | `notebook start` |
 | `StopNotebook` | `{notebook_id}` | `{notebook_id, sub_code, sub_msg}` | `notebook stop` |
@@ -381,7 +331,7 @@ Referer: `/jobs/interactiveModeling`.
 
 ### 8.5 `inference_serving` — Model Serving
 
-Referer: `/jobs/modelDeployment`. Route uses an **underscore** (`inference_serving`).
+Referer: `/jobs/modelDeployment`. Route uses an **underscore** (`inference_serving`), with published plaza model lookup on **`model_plaza`** ‡.
 
 | Action | Request Keys | Response (`Result`) | CLI Consumer |
 | --- | --- | --- | --- |
@@ -395,7 +345,7 @@ Referer: `/jobs/modelDeployment`. Route uses an **underscore** (`inference_servi
 | `GetServingLog` | `{page_size, filter:{podNames[], start_timestamp_ms, end_timestamp_ms}}` | `{logs[], total}` | `serving logs` |
 | `GetServingScheduleConfig` | `{workspace_id}` | `{enable_auto_stop, items[{auto_stop_ruleset, gpu_count_min, gpu_count_max}]}` | `resources policy` |
 | `GetServingApiMetric` | `{inference_serving_id, metric_types[], time_range:{start_timestamp, end_timestamp, interval_second}}` | `{metric_groups[]}` | `serving api-metrics` |
-| `GetInferenceServingTerms` | `{inference_serving_id}` | `{terms[]}` | — |
+| `GetInferenceServingTerms` | `{inference_serving_id}` | `{terms[]}` | Wrapped helper |
 | `GetServingConfigByWorkspaceId` | `{workspace_id}` | `{configs{}}` | `serving configs` |
 | `GetInferenceServingUserProjectList` | `{workspace_id}` | `{projects[], users[]}` | Project/user resolution for `create` |
 | `StartServing` | `{inference_serving_id}` | `{inference_serving_id, sub_code, sub_msg}` | `serving start` |
@@ -404,13 +354,12 @@ Referer: `/jobs/modelDeployment`. Route uses an **underscore** (`inference_servi
 | `RollbackServing` | `{inference_serving_id, version}` | `{inference_serving_id, sub_code, sub_msg}` | `serving rollback` |
 | `DeleteServing` | `{inference_serving_id}` | `{inference_serving_id}` | `serving delete` |
 | `GetTaskMetric` | See [Section 8.14](#814-metrics--gettaskmetric) | `{time_seris_metric_groups[]}` | `serving metrics` |
+| `model_plaza.GetModelListInPlaza` ‡ | `{page, page_size, filter:{workspace_id}}` | `{items[], total_count}` | `serving create --model-source plaza`, `serving batch`, SDK `servings` |
 
 **Serving notes:**
 - Always use `CreateServingConsole` (not OpenAPI `CreateServing`). `ScaleServing` takes singular `replica`.
-- The creation form inspected on 2026-11-13 sends `port_configs: [{port, type, path}]`, not scalar `port`. HTTP uses `PORT_TYPE_HTTP` with `/`; optional metrics uses `PORT_TYPE_METRICS` with `/metrics`. The wrapper translates legacy `port` into an HTTP entry. These two console paths are the supported input contract; this is not evidence that the server rejects every other path.
-- For a model plaza create, the form sends `model_source: "MODEL_PLAZA"` and omits `model_version`. For registered models it sends the selected version. The wrapper rejects an explicit plaza version so callers must intentionally remove it, rather than silently ignoring a version selection. `GetServing`/catalogue versions and the update form are not evidence for create-time version semantics.
-- The model plaza selector is `POST /api/v2/model_plaza?Action=GetModelListInPlaza` with `{page, page_size, filter:{workspace_id}}`; the result is `{items[], total_count}`. `list_plaza_models` exposes this read. Creation resolves a unique `PUBLISHED` name only after completing the workspace catalogue; it never registers or copies a model. This is separate from the CAS-authenticated data plaza.
-- These create changes are backed by the console bundle and offline wire-payload regression tests (issue #113). A corrected live create has not yet been verified; a service ID, instance resources and application health are still required for online acceptance. No write retries were added.
+- `CreateServingConsole` sends `port_configs: [{port, type, path}]` rather than scalar `port`: required HTTP uses `PORT_TYPE_HTTP` with `/`, and optional metrics uses `PORT_TYPE_METRICS` with `/metrics` (legacy scalar `port` inputs are translated by the wrapper into the HTTP `port_configs` entry).
+- For Model Plaza deployments, `CreateServingConsole` sends `model_source: "MODEL_PLAZA"` with `model_id` resolved from `model_plaza.GetModelListInPlaza` (filtering `PUBLISHED` entries across the complete workspace catalog via `list_plaza_models`) and omits `model_version` (explicit plaza versions are rejected client-side; this QZ Model Plaza endpoint uses Bearer auth and is distinct from the CAS-authenticated Dataset Hub).
 - `ListServingInstances` nests instances inside `groups[].items[]` (one group per replica), and instance `name` is namespaced (`<project>/<pod>`).
 - `ListServingEvents` uses `object_type: "INFERENCE_SERVING"` for deployment events and `"INFERENCE_SERVING_INSTANCE"` (with namespaced pod IDs) for pod events such as `Unhealthy`.
 - `GetServingApiMetric` accepts multiple `metric_types` in one request (`QPS`, `SUCCESS_QPS`, `FAIL_QPS`, `SUCCESS_RATE`, `FAIL_RATE`, `REQUEST_COUNT`, `LATENCY`, `TTFT`/`_P50`/`_P95`/`_P99`, `TTLT`/`_P50`/`_P95`/`_P99`, `INPUT_TOKENS`, `OUTPUT_TOKENS`).
@@ -431,8 +380,8 @@ Referer: `/jobs/distributedTraining` (`/cluster/nodeList` for `cluster.ListNodeE
 | `GetLogicComputeGroupNodeSpecs` | `{workspace_id, logic_compute_group_id}` | `{node_specs[]}` | `resources availability` |
 | `GetWorkspaceNodeSpecs` | `{workspace_id}` | `{node_specs[]}` | `resources availability` |
 | `GetLogicComputeGroupResource` | `{workspace_id, logic_compute_group_id}` | `{logic_resouces{}, gpu_type_stats[], runtime_attributes[]}` | `resources availability` |
-| `GetWorkspaceQuota` | `{workspace_id}` | `{gpu_high_running, gpu_high_running_used, cpu_*, memory_*, is_fair_workspace, …}` | — |
-| `GetWorkspaceComputeResource` | `{workspace_id}` | `{logic_resouces{cpu_total, cpu_used, memory_gi_total, memory_gi_used, gpu_total, gpu_used, gpu_low_priority_used}}` | — |
+| `GetWorkspaceQuota` | `{workspace_id}` | `{gpu_high_running, gpu_high_running_used, cpu_*, memory_*, is_fair_workspace, …}` | *(Not wrapped)* |
+| `GetWorkspaceComputeResource` | `{workspace_id}` | `{logic_resouces{cpu_total, cpu_used, memory_gi_total, memory_gi_used, gpu_total, gpu_used, gpu_low_priority_used}}` | *(Not wrapped)* |
 | `cluster.ListNodeEvents` | `{PageNumber, page_size, filter:{node_names[], from?}, sorter:[{field:"last_timestamp", sort}]}` | `{events[], total}` | `inspire resources node-events` |
 
 **Workspace & dimension notes:**
@@ -463,8 +412,9 @@ Referer: `/jobs/distributedTraining` (`/cluster/nodeList` for `cluster.ListNodeE
 | --- | --- | --- | --- |
 | `ListProjects` † | `{page, page_size, filter:{workspace_id?, check_admin?}}` | `{items[], total}` | `project list`, project resolution |
 | `GetProjectDetail` † | `{ProjectId}` | `{budget, children_budget, remain_budget, used_budget, created_at, en_name, description, priority, owner…}` | `project detail` |
+| `GetProjectBudgetUsageOverview` † | `{project_id, workspace_id?}` | `{used, remain, train, inference, storage, private_workspace}` (thousands-separated strings) | `project detail` |
 | `GetProjectOwners` † | `{}` | `{items[{id, name, login_name, …}]}` | `project owners` |
-| `GetProjectForPage` | `{page, page_size, filter{}}` | `{items[], total}` | — |
+| `GetProjectForPage` | `{page, page_size, filter{}}` | `{items[], total}` | Wrapped helper |
 
 ---
 
@@ -481,7 +431,8 @@ Referer: `/jobs/interactiveModeling`.
 | `UpdateImage` † | `{id, visibility?, description?}` | — | `image set-visibility` (requires bare `id`, not `image_id`) |
 | `DeleteImage` | `{image_id}` | — | `image delete` |
 
-Direct push was verified against the console request format and a controlled register → push → sync → readiness round trip. The initial state is `PENDING_SYNC`; synchronization transitions the uploaded image to `SUCCESS`. Numeric `add_method: 2` selects `IMAGE_ADDRESS` and is not equivalent to `DIRECT_PUSH`. SyncImage uses camelCase keys even though CreateImage uses snake_case. Registry content and catalog synchronization are separate steps.
+**Image notes:**
+- `CreateImage` with `add_method: "DIRECT_PUSH"` creates a slot in `PENDING_SYNC` (numeric `add_method: 2` maps to `IMAGE_ADDRESS` and is not equivalent). After `docker push`, `SyncImage` (note camelCase `workspaceId`, `imageName`, `imageVersion`) transitions the uploaded image to `SUCCESS`.
 
 ---
 
@@ -494,11 +445,15 @@ Referer: `/jobs/modelService?spaceId={workspace_id}`. Route uses a **hyphen** (`
 | `ListModels` | `{workspace_id, page, page_size, filter_by:{user_id, keyword?, project_id[]?, model_type[]?}}` | `{list[], total}` | `model list`, `serving create` model resolution |
 | `GetModelDetail` | `{model_id}` | `{model{}, user_name, project_name, user_avatar}` | `model status` |
 | `ListModelVersions` | `{model_id}` | `{list[], total, next_version}` | `model versions`, `model status` |
+| `ListModelVersionOptions` | `{model_id}` | `{list[], total}` (compact version list) | Wrapped helper (`list_model_versions`) |
 | `ListModelRelatedServings` | `{model_id, version, page, page_size}` | `{serving[], total}` | `model status` / `model delete` precheck |
 | `GetHasModelPendingServing` | `{model_id, version?}` | `{has_pending_serving}` | `model status` / `model delete` precheck |
 | `GetRecommendedConfig` | `{model_id, version}` | `{min_node_count, min_gpu_count_per_node, min_cpu_count_per_node, min_memory_size_gib_per_node}` | `model deploy-config` |
 | `CheckModelVLLMCompatible` | `{model_id, version, inference_serving_type}` | `{is_vllm_compatible}` | `model deploy-config` |
 | `GetModelVLLMCompatibleData` | `{model_id, inference_serving_type?}` | `{data:[{version, is_vllm_compatible}]}` | `model status`, `model versions` |
+| `GetModelPublishPrefill` | `{model_id, version}` | Publish form prefill metadata | Wrapped helper |
+| `GetModelPublishStatus` | `{model_id, version}` | Model Plaza publish status | Wrapped helper |
+| `ListModelCreators` | `{project_id}` | `{list[]\|items[], total}` | Wrapped helper |
 | `CreateModel` † | `{name, project_id, workspace_id, model_source_path, model_source_type, model_type[], tags[], description}` | `{model_id}` | `model register` (`model_source_type: 1`) |
 | `DeleteModel` † | `{model_id}` | — | `model delete` |
 
@@ -520,13 +475,13 @@ Referer: `/jobs/interactiveModeling`. Resolves `-q gpu,cpu,mem` into `quota_id` 
 
 ### 8.12 `file` — Storage Discovery ‡
 
-Referer: `/jobs/files?spaceId={workspace_id}`.
+Referer: `/jobs/files?spaceId={workspace_id}`. Documented platform route; none of its Actions are wrapped in `browser_api/`:
 
 | Action | Request Keys | Response (`Result`) | Status |
 | --- | --- | --- | --- |
-| `GetSystemStorageTypeList` | `{filter:{workspace_id}}` | `{system_storages[{name, cluster_id}]}` | Wrapped, no active CLI consumer |
-| `GetDirList` | `{filter:{workspace_id, system_storage_type, name, cluster_id?}}` | `{files[{directory}]}` | Wrapped, no active CLI consumer |
-| `GetSftpgoConnectionInfo` † | `{storage_name}` | `{address, webdav_port, auth}` | **Intentionally not wrapped** (`auth` is a plaintext base64 `user:password` credential for WebDAV) |
+| `GetSystemStorageTypeList` | `{filter:{workspace_id}}` | `{system_storages[{name, cluster_id}]}` | Not wrapped |
+| `GetDirList` | `{filter:{workspace_id, system_storage_type, name, cluster_id?}}` | `{files[{directory}]}` | Not wrapped |
+| `GetSftpgoConnectionInfo` † | `{storage_name}` | `{address, webdav_port, auth}` | **Intentionally not wrapped** (`auth` returns a plaintext base64 `user:password` WebDAV credential) |
 | `CreateCopy` / `ListFileCopyTasks` † | — | — | **Intentionally not wrapped** (submits human-reviewed approval tickets rather than immediate file copies) |
 
 ---
@@ -557,7 +512,7 @@ Called per service route (`POST /api/v2/{notebook|train|hpc|ray|inference_servin
 
 - `task_type` values: `interactive_modeling` (`notebook`), `distributed_training` (`job`), `hpc_job` (`hpc`), `ray_job` (`ray`), `inference_serving` (`serving`).
 - **Partial defaults:** CLI default metric queries pass an `errors` collector to the shared wrapper and retain successful responses. Explicit metric selectors and SDK calls remain strict; authentication errors and all-metric failures always propagate.
-- **One metric per request:** Passing multiple `metric_types` only returns the first metric, so the wrapper fans out per metric (`gpu_usage_rate`, `gpu_memory_usage_rate`, `cpu_usage_rate`, `memory_usage_rate`, `disk_io_read`, `disk_io_write`, `network_tcp_ip_io_read`, `network_tcp_ip_io_write`).
+- **One metric per request:** Passing multiple `metric_types` returns only the first metric, so the wrapper fans out per metric (`gpu_usage_rate`, `gpu_memory_usage_rate`, `cpu_usage_rate`, `memory_usage_rate`, `disk_io_read`, `disk_io_write`, `network_tcp_ip_io_read`, `network_tcp_ip_io_write`).
 - **Platform typo:** Response key is spelled `time_seris_metric_groups` (wrapper also accepts `time_series_metric_groups`).
 - **Do not use `GetTaskMetricBatch`:** It drops per-Pod `group_name` labels, returns empty disk I/O and `InternalError` on network I/O, and disagrees with single-task aggregation values.
 
@@ -573,8 +528,7 @@ Called per service route (`POST /api/v2/{notebook|train|hpc|ray|inference_servin
 
 ## 9. Creation Payload Fields
 
-The matrix below describes the documented wrapper surface. “Not exposed” is not
-evidence of platform rejection.
+The matrix below describes the wrapper surface across the five compute workload creation Actions:
 
 | Field | `notebook.CreateNotebook` | `train.CreateJobConsole` † | `hpc.CreateJobConsole` † | `ray.CreateJob` | `inference_serving.CreateServingConsole` † |
 | --- | --- | --- | --- | --- | --- |
@@ -584,30 +538,32 @@ evidence of platform rejection.
 | `publicpath_mount_mode` (`0`, `1`, `2`) | Exposed | Exposed | Exposed | Exposed | Exposed |
 | `is_projectuserspath_readonly` | Exposed (Maintainer only) | Not exposed | Not exposed | — | — |
 
-**Public-path behavior (console bundle inspected offline on 2026-11-11):**
-`publicpath_mount_mode` is an integer: `0` read-write (`xiangMuPublicGuaZaiDuXie`),
-`1` read-only (`ZhiDu`), `2` not mounted (`BuGuaZai`). The Notebook, training, HPC,
-Ray, and Serving forms submit it at the top level to the Actions above. Forms default
-to `0`; the CLI/SDK intentionally omit it when neither public option was specified.
-Legacy data uses `publicpath_mount_mode ?? (is_publicpath_readonly ? 1 : 0)`.
-Creation must not send `is_publicpath_readonly` (HPC rejects it as an unknown field).
-Do not retry a write after removing the rejected field. The public SDK enum
-`PublicPathMountMode` maps to these three integer values. CLI
-`--public-path-mount-mode` and SDK/batch `public_path_mount_mode` select the
-mode; legacy `public_path_readonly=True/False` maps to `1/0` with one
-`DeprecationWarning`. Conflicting options and boolean mode values are rejected.
-
 **Key payload rules:**
-- **Omit unset optional fields:** Optional fields (such as `publicpath_mount_mode` or `is_projectuserspath_readonly`) must be omitted from the JSON body when not explicitly set.
+- **Public-path mount contract (`publicpath_mount_mode`):** Top-level integer enum (`0` read-write, `1` read-only, `2` not mounted), exposed via CLI `--public-path-mount-mode` and SDK/batch `public_path_mount_mode` (`PublicPathMountMode`). Omitted when neither option is specified so the platform applies its default `0`. Never send `is_publicpath_readonly` on creation (`hpc.CreateJobConsole` rejects it as an unknown field); deprecated `public_path_readonly=True/False` maps to `1/0` with a single `DeprecationWarning`, and detail readers fall back to `publicpath_mount_mode ?? (is_publicpath_readonly ? 1 : 0)`.
+- **Omit unset optional fields:** Optional fields (such as `publicpath_mount_mode` or `is_projectuserspath_readonly`) are omitted from the JSON body when unset.
 - **HPC runtime limits & priority:** `job_max_time` (`"D-HH:MM:SS"`) and `max_running_time_days`/`_hours`/`_minutes` live inside `sbatch_script`. Top-level `priority` is required (missing `priority` triggers `InternalError`). Never send `sbatch_script.memory_per_node` (broken in the platform script generator); always send `memory_per_cpu`.
 - **Durations as strings:** `train.CreateJobConsole` expects `max_running_time_ms`, `reserve_on_fail_ms`, and `reserve_on_success_ms` as **string** integers.
 - **Images:** Pass registry URLs (`image` / `mirror_url`) or `mirror_id` as required by each Action, never display names.
+
+### Workload Creation Name Rules
+
+Single-create, batch-expanded, and `--dry-run` names are validated locally in [`workload_names.py`](../../cli/inspire/services/utils/workload_names.py) before platform resolution or submission (`ValidationError` / exit 12; names are never silently truncated or normalized):
+
+| Workload | Max Length | Full-Match Pattern | Console Form Validator Evidence |
+| --- | --- | --- | --- |
+| Notebook | 32 | `[a-z][a-z0-9-]{0,31}` | `interactiveModel`: `name:"name"`, `max:32`, `/^[a-z][a-z0-9-]{0,31}$/g`, `maxLength:32` |
+| Ray (and worker groups) | 32 | `[a-z][a-z0-9-]{0,31}` | `rayService`: task and worker `name:"name"`, `max:32`, same regex, `maxLength:32` |
+| Serving | 32 | `[a-z][a-z0-9.-]*` | Serving form: `/^[a-z][a-z0-9-.]*$/`, `M.length>32`, `maxLength:32` |
+| Job / HPC | 255 | `[a-zA-Z0-9\u4e00-\u9fa5._-]{1,255}` | `distributed` and `hpc` pattern map + task-name input `maxLength:255` |
+| TensorBoard | 255 | `[a-zA-Z0-9\u4e00-\u9fa5._-]{1,255}` | TensorBoard create form: same regex validator, `maxLength:255` (the 64-char limit in `create-sandbox-key-form` is unrelated despite sharing a translation key) |
 
 ---
 
 ## 10. Non-Action `/api/v2` Endpoints (WebSocket PTY & Notebook Proxy)
 
-### Instance PTY WebSockets (`job_shell.py`)
+### Instance PTY WebSockets (`pty_socket.py`)
+
+Implemented in [`pty_socket.py`](../../cli/inspire/platform/web/pty_socket.py) (used by CLI [`job_shell.py`](../../cli/inspire/cli/utils/job_shell.py) and SDK [`remote_exec.py`](../../cli/inspire/sdk/remote_exec.py)):
 
 | Workload | Route | Workload ID Query Param | Instance Query Param |
 | --- | --- | --- | --- |
@@ -620,15 +576,13 @@ mode; legacy `public_path_readonly=True/False` maps to `1/0` with one
 
 `GET {base_url}/api/v2/notebook/lab/{notebook_id}` returns `301` with a token-bearing gateway URL (`https://<gateway>/ws-…/project-…/user-…/jupyter/<notebook>/<token>/lab`).
 - Container port proxying (`/proxy/{port}/`) works **only** on that token-bearing gateway URL (used by `notebook proxy-url` and by `rtunnel` SSH bridging on port 22222).
-- Always scrub the embedded gateway token in logs and errors via `redact_proxy_url` in `rtunnel.py`.
+- Always scrub the embedded gateway token in logs and errors via `redact_proxy_url` in [`browser_api/rtunnel.py`](../../cli/inspire/platform/web/browser_api/rtunnel.py).
 
 ---
 
 ## 11. Dataset Hub (`plaza/`)
 
-The CAS handshake is active with an account's `cas_session.json`, created by `inspire login --cas sms` or `inspire login --cas feishu`. OAuth tokens remain separate in `web_session.json` and all qz requests still use Bearer authorization. CAS cookies are restricted to `cas.sii.edu.cn`, saved atomically with private permissions, and treated as opaque credentials: asking CAS for a service ticket is the validity check. SMS pending state expires after ten minutes and never stores the phone number or SMS code. Feishu uses headless Chromium, a refreshed QR PNG, and a URL predicate to intercept the plaza navigation before its SPA can consume the ticket.
-
-The Dataset Hub (`PLAZA_BASE_URL` in [`plaza/core.py`](../../cli/inspire/platform/web/plaza/core.py)) is a separate service sharing CAS SSO (`CAS_BASE_URL`), implemented in [`plaza/`](../../cli/inspire/platform/web/plaza/).
+The Dataset Hub (`PLAZA_BASE_URL` in [`plaza/core.py`](../../cli/inspire/platform/web/plaza/core.py)) is a separate service sharing CAS SSO (`CAS_BASE_URL`), authenticated via per-account `cas_session.json` (`inspire login --cas feishu` or `inspire login --cas sms`). CAS cookies are scoped to `cas.sii.edu.cn` and saved atomically with private permissions; SMS pending state expires after 10 minutes without persisting phone numbers or codes, and Feishu QR login uses headless Chromium to intercept the CAS redirect before the plaza SPA consumes the ticket.
 
 ### Two Identifier Sets
 - **`datasetCode` / `versionCode`:** User-facing slugs displayed by the CLI and required by `dataset.ValidateDataset` and `--dataset`.
@@ -637,9 +591,9 @@ The Dataset Hub (`PLAZA_BASE_URL` in [`plaza/core.py`](../../cli/inspire/platfor
 ### Three-Step CAS Handshake (Pure HTTP)
 1. `GET {CAS_BASE_URL}/cas/login?service=<urlencode(PLAZA_BASE_URL + "/")>` with the account's stored CAS `CASTGC` cookie (`allow_redirects=False`) → `302` with `?ticket=ST-…`.
 2. `POST {PLAZA_BASE_URL}/api/base/login` with `{"ticket": "…", "service": PLAZA_BASE_URL + "/"}` → issues `datasets-session` cookie and `userInfo`.
-3. Subsequent requests send `datasets-session` (cached in memory per `(account, session_created_at)`). A rejected plaza cookie is re-minted once. If CAS refuses a ticket, raise `PlazaUnavailable` immediately with a `login --cas` hint; do not delete caches or refresh OAuth tokens.
+3. Subsequent requests send `datasets-session` (cached in memory per `(account, session_created_at)`). A rejected plaza cookie is re-minted once; if CAS refuses a service ticket, raise `PlazaUnavailable` immediately with a `login --cas` hint without deleting caches or refreshing OAuth tokens.
 
-CAS also approves device authorization: follow the trusted verification URI to its Keycloak CAS broker, then submit the OAuth consent form (`code`, `accept=Yes`), supporting both embedded `kcContext` and HTML forms. Every redirect and form target is checked against the configured platform, the device endpoint's Keycloak origin, and CAS; loops are bounded. Unknown pages fall back to manual authorization for explicit login; silent renewal fails with `login_required`. No authentication URL query values or server error bodies are logged.
+CAS also auto-approves OAuth device authorization by following the verification URI to its Keycloak CAS broker and submitting the consent form (`code`, `accept=Yes`, supporting both embedded `kcContext` and HTML forms), validating every redirect and form origin against the configured platform, Keycloak, and CAS hosts.
 
 ### Envelope & Wrapped Endpoints
 
@@ -663,28 +617,5 @@ Write endpoints (`datasetApply`, `datasetApprove`, `createDatasetUserRole`, data
 1. **No raw payload leakage:** Unpack via `_v2_result()`, declare list keys explicitly, and project human and `--json` output through explicit allowlists.
 2. **Name-only public identity:** Never expose opaque handles (`ws-`, `project-`, `lcg-`, `quota_id`, `mirror_id`, `notebook_id`, `job_id`, or embedded IDs in error strings) in CLI output.
 3. **Explicit credential/endpoint exceptions:** Only `notebook proxy-url` (`preserve_raw={"url"}`), `serving list/status/create/api` (validated HTTP(S) `endpoint`), and explicit `account api-key export --stdout` / `run` may cross the redaction boundary.
-4. **Distinguish errors from empty catalogs:** Never turn transport/auth failures into `[]` or `0`, and cover failure paths with unit tests.
+4. **Distinguish errors from empty catalogs:** Never turn transport or authentication failures into `[]` or `0`, and cover failure paths with unit tests.
 5. **Synchronize docs and tests:** Update Click `--help`, `cli/tests/test_browser_api_*.py`, and the tables in this file together.
-
-
-### Workload creation name rules
-
-Creation and all expanded Batch names are checked before platform resolution or submission,
-including existing dry-run commands. Violations are `ValidationError` / exit 12;
-no name is silently shortened or normalized. Notebook has a Batch dry-run, but no
-standalone `notebook create --dry-run`; TensorBoard has no Batch/dry-run command.
-
-The console form evidence below is from cached JavaScript bundles. Translation keys
-alone are not limits; these are the input rules and validators actually attached to names.
-
-| Workload | Limit | Full-match pattern | Console bundle / form evidence |
-| --- | --- | --- | --- |
-| Notebook | 32 | `[a-z][a-z0-9-]{0,31}` | `c29247e85686a6014321be3413df3d14.js` (interactiveModel import): `name:"name"`, `max:32`, `/^[a-z][a-z0-9-]{0,31}$/g`, `maxLength:32`; also `8df4de0aeed6daaefa6b9a2df6fb2120.js` |
-| Ray and worker groups | 32 | `[a-z][a-z0-9-]{0,31}` | `09793e9584a6ad261159fec7d805c1ee.js` (rayService import): task and Worker `name:"name"`, `max:32`, same pattern, `maxLength:32` |
-| Serving | 32 | `[a-z][a-z0-9.-]*` | `7c94a3096f933a7933471e2b9837a206.js`: `pt=n=>{const a=/^[a-z][a-z0-9-.]*$/`, name rule `M.length>32`, `maxLength:32` |
-| Job / HPC | 255 | `[a-zA-Z0-9\u4e00-\u9fa5._-]{1,255}` | `149b11d536782e3ee862879edb5c0dd3.js`: `hpc` and `distributed` pattern map both use this pattern; task-name input `maxLength:255` |
-| TensorBoard | 255 | `[a-zA-Z0-9\u4e00-\u9fa5._-]{1,255}` | `e384bc44ca666192780e1479287a408b.js`: TensorBoard create form `name:"name"`, same regex validator, `maxLength:255` |
-
-The 64-character input in `79630c3ad66fbd4c2914048fe8f81f8f.js` belongs to
-`create-sandbox-key-form`, despite reusing a TensorBoard translation key; it is not
-the TensorBoard workload limit.

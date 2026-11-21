@@ -18,21 +18,21 @@ Select `project`, `workspace`, remote paths, and `image` explicitly at each stag
 
 Deliverables from Stage A:
 - **Shared storage layout:** Absolute `/inspire/...` paths for code, datasets, weights, checkpoints, and outputs.
-- **Reusable base image:** Python/system dependencies and required runtimes (CUDA, Slurm, Ray, or serving server) validated in a Notebook, cleaned of temporary files/caches, and committed via `notebook save-image`.
-- **`INSPIRE.md` update:** Record canonical remote paths and the new base image if they will be reused across sessions.
+- **Reusable base image:** Python/system dependencies and required runtimes (CUDA, Slurm/Ray via `notebook install-deps`, or serving frameworks) validated in a Notebook, cleaned of temporary files and caches, and committed via `notebook save-image`.
+- **`INSPIRE.md` update:** Record canonical remote paths and the new base image when they will be reused across sessions.
 
 ## 3. Stage B: CPU Data Processing
 
 - Prefer **HPC** (`inspire hpc`) for fixed-scale CPU batch jobs; use **Ray** (`inspire ray`) only when elastic worker groups or streaming actors are required.
 - Run a small probe matching your production task layout before launching a full batch.
-- For HPC jobs, verify `Steps` in `hpc status` (to confirm `srun` actually executed) and inspect output file counts, sizes, and checksums from a Notebook in the same project.
+- For HPC jobs, verify `Steps` in `hpc status` (confirming `srun` actually executed) and inspect output file counts, sizes, and checksums from a Notebook in the same project.
 
 ## 4. Stage C: GPU Training
 
 Before submitting a multi-node GPU Job, confirm that:
 1. Code, datasets, and weights are in place on project shared storage (or mounted via `--dataset`).
 2. All dependencies are baked into a `READY` image so no outbound internet access is needed at startup.
-3. Target GPU quotas and compute groups have sufficient live capacity (`inspire resources availability`).
+3. Target GPU quotas and Compute Groups have sufficient live capacity (`inspire resources availability`).
 4. A single-node probe has verified CUDA, NCCL, data loading, and checkpoint writing.
 
 During training, monitor four signals:
@@ -44,7 +44,7 @@ During training, monitor four signals:
 ## 5. Deployment & Delivery
 
 For online serving:
-1. Register the model directory in the Model Registry (`inspire model register`) and check minimum hardware specs (`inspire model deploy-config`).
-2. Create the service (`inspire serving create`) and monitor `serving events` and `serving instances`.
-3. Verify both resource load (`serving metrics`) and request traffic (`serving api-metrics`), run an authenticated smoke test with `INF_API_KEY`, and confirm unauthenticated requests are rejected.
-4. Record the production model version, image, launch command, and port in `INSPIRE.md`.
+1. For custom weights on project shared storage, register the directory (`inspire model register`) and check minimum hardware specs (`inspire model deploy-config`); for published Model Plaza weights, select `--model-source plaza --model <published-name>`.
+2. Create the service (`inspire serving create`, aligning `--port` and optional `--metrics-port` with your server listeners) and monitor `serving events` and `serving instances`.
+3. Verify both container load (`serving metrics`) and request traffic (`serving api-metrics`), run an authenticated smoke test with `INF_API_KEY`, and confirm unauthenticated requests are rejected.
+4. Record the production model reference, image, launch command, and ports in `INSPIRE.md`.

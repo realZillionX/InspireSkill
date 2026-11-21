@@ -4,19 +4,21 @@ Use this guide when searching the Dataset Hub, checking dataset permissions and 
 
 ## 1. Two-Stage Workflow
 
-The Dataset Hub is a separate service that shares single sign-on (SSO) with the compute platform. The Dataset Hub manages the catalog, versions, and access approvals, while the compute platform mounts a validated dataset version into your container at creation time.
+The Dataset Hub (`aip.sii.edu.cn`) is a separate service that shares CAS single sign-on (SSO) with the compute platform. The Dataset Hub manages the dataset catalog, versions, and access approvals, while the compute platform mounts validated dataset versions into containers at workload creation time.
 
 Always follow this order:
-1. Query `inspire dataset` to verify that the dataset and version exist and your account has access.
-2. Pass `--dataset <dataset-name>:<version-name>` when creating the workload.
+1. Query `inspire dataset` to confirm that the dataset and version exist and your account has access.
+2. Validate mount readiness with `inspire dataset validate <name>:<version> --workspace <workspace>` or pass `--dataset <name>:<version>` directly at workload creation.
 
-**Enable catalogue queries with CAS login.** Run `inspire login --cas feishu` and scan the QR, or `inspire login --cas sms --phone NUMBER`. In noninteractive mode, SMS sends a code and exits; finish within ten minutes with `inspire login --cas sms --phone NUMBER --sms-code CODE`. Use the same `--account NAME` in both steps. The Dataset Hub (`aip.sii.edu.cn`) uses the separately stored CAS session for `dataset list / show / tags / applications`. Missing or expired CAS sessions raise `PlazaUnavailable` with a login hint; OAuth token refresh cannot repair CAS. `inspire dataset validate` and `--dataset` mounts continue to use the platform Bearer session.
+### Authentication Split (CAS vs. OAuth)
 
-**Access requests must be submitted in the Dataset Hub web UI.** Requesting or approving access triggers notifications to human reviewers, so the CLI only provides read-only status tracking via `inspire dataset applications` (your submitted requests: `pending`, `approved`, `rejected`, or `withdrawn`) and `inspire dataset applications --to-approve` (requests awaiting your approval). Once an application turns `approved`, run `inspire dataset validate <name>:<version> --workspace <workspace>` to confirm mount readiness.
+- **Catalog queries (`dataset list | show | tags | applications`):** Require a stored CAS session for the selected account. Run `inspire login --cas feishu` (scan the QR code) or `inspire login --cas sms --phone <number>` (in non-interactive mode, SMS sends a code and exits; finish within 10 minutes on the same account with `--cas sms --phone <number> --sms-code <code>`). Missing or expired CAS sessions fail with a `login --cas` hint; OAuth token refresh cannot renew CAS cookies.
+- **Mount validation & workload creation (`dataset validate`, `--dataset`):** Use the regular compute-platform OAuth Bearer session and work even without a CAS session once you know the exact `<dataset-name>:<version-name>`.
+- **Access requests:** Submitting or approving dataset access notifies human reviewers and must be performed in the Dataset Hub web UI. Track request status read-only with `inspire dataset applications` (your requests: `pending`, `approved`, `rejected`, `withdrawn`) or `inspire dataset applications --to-approve` (requests awaiting your review). Once approved, run `inspire dataset validate` to confirm the mount is active.
 
 ## 2. Address by Name, Never Numeric ID
 
-The Dataset Hub uses internal numeric `datasetId` and `versionId` keys, but the mount API rejects numeric IDs (`数据集不存在`). Always use the slug and version string shown by `inspire dataset list` and `inspire dataset show`:
+The Dataset Hub uses internal numeric `datasetId` and `versionId` keys, which the compute-platform mount API rejects (`数据集不存在`). Always use the slug and version string shown by `inspire dataset list` and `inspire dataset show`:
 
 | Field | Format | Example |
 | --- | --- | --- |
@@ -32,21 +34,21 @@ Never guess version names (`v0`, `v1`, etc.); read them from `inspire dataset sh
 | --- | --- | --- |
 | `Access` | Whether the current account can mount the dataset | Creation fails with `无访问权限` if false; check `dataset applications` for pending requests |
 | `State` | Dataset state | Only `active` is mountable; `processing`, `wanted`, and `error` cannot be mounted |
-| `Grade` | Security classification (`S2`, `S3`, `S4`) | Informational compliance tier; does not directly grant or deny mount access |
+| `Grade` | Security classification (`S2`, `S3`, `S4`) | Informational compliance tier; does not grant or deny mount access on its own |
 | `Tags` | Modality and domain tags | Grouped across text, image, audio, video, and multimodal; list valid tag names with `dataset tags` |
 
-Individual versions also have their own state: `downloading` and `pending_upload` indicate that files are not yet on disk even if the parent dataset is `active`.
+Individual versions carry their own readiness state: `downloading` and `pending_upload` mean files are not yet on disk even when the parent dataset is `active`.
 
-`--keyword` matches both dataset names and descriptions (case-insensitive). `--tag` can be repeated (combined with OR) and requires exact tag names from `inspire dataset tags`.
+`--keyword` matches both dataset names and descriptions (case-insensitive). `--tag` is repeatable (combined with OR) and requires exact tag names from `inspire dataset tags`.
 
 ## 4. Mounting Semantics
 
-- **Supported workloads:** `notebook create`, `job create`, and `hpc create` accept repeatable `--dataset <name>:<version>` flags (and `dataset` entries in batch files).
-- **Unsupported workloads:** `ray` and `serving` reject dataset mounts at the platform level; stage data on shared storage instead.
+- **Supported workloads:** `notebook create`, `job create`, and `hpc create` accept repeatable `--dataset <name>:<version>` flags (and `datasets` / `dataset` entries in batch files and SDK specs).
+- **Unsupported workloads:** `ray` and `serving` reject dataset mounts at the platform level; stage required files onto shared storage instead.
 - **Container mount path:** Mounted read-only at `/inspire/dataset/<dataset-name>/<version-name>` without consuming project shared-storage quota.
-- **Pre-flight validation:** The platform validates every dataset mount before creating a workload and aborts the entire creation if any mount fails. Use `inspire dataset validate <spec>... --workspace <workspace>` to test mounts beforehand.
-- **Batch deduplication:** Within a single `job`, `hpc`, or `notebook` batch run, successful `(workspace, dataset, version)` validations are cached in memory for subsequent items in that invocation; failed validations are not cached.
-- **Inspecting mounts:** `notebook status`, `job status`, and `hpc status` display all mounted datasets and their container paths.
+- **Pre-flight validation:** Workload creation validates every `--dataset` spec up front and aborts if any mount fails. Run `inspire dataset validate <spec>... --workspace <workspace>` to check beforehand.
+- **Batch deduplication:** Within a single `job`, `hpc`, or `notebook` batch run, successful `(workspace, dataset, version)` validations are cached in memory across items; failed validations are not cached.
+- **Inspecting mounts:** `notebook status`, `job status`, and `hpc status` list mounted datasets and their container paths.
 
 ## 5. Minimal Example
 

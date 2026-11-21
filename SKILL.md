@@ -1,16 +1,28 @@
 ---
 name: inspire
-description: "Use for the Inspire compute platform through the inspire CLI: INSPIRE.md asset upkeep, workspace/project/resource/path selection, Notebook, GPU Job, HPC, Ray, Serving, TensorBoard, Image, Model Registry, observation, cleanup, and Inspire CLI Browser API maintenance. Use CLI Help for syntax and load only the focused reference."
+description: "Use for the Inspire compute platform through the inspire CLI and Python SDK: INSPIRE.md asset upkeep, workspace/project/resource/path selection, Notebook, GPU Job, HPC, Ray, Serving, TensorBoard, Image, Model Registry, Dataset Hub, observation, cleanup, and Browser API maintenance. Use CLI Help for syntax and load only the focused reference."
 ---
 
 # Inspire Skill
 
-`inspire` is the local CLI for the Inspire compute platform. Always treat `inspire --help`, `inspire <group> --help`, and `inspire <group> <subcommand> --help` as the source of truth for commands, flags, defaults, and examples. This document covers platform concepts, project conventions, the core execution loop, and reference routing.
+`inspire` is the local CLI (with a companion Python SDK) for the Inspire compute platform. Always treat `inspire --help`, `inspire <group> --help`, and `inspire <group> <subcommand> --help` as the source of truth for commands, flags, defaults, and examples. This document covers platform concepts, authentication, the core execution loop, and reference routing.
 
 ## Core Operating Model
 
-### Accounts
-`inspire account use <name>` sets the persistent default account. Passing `--account <name>` on any command overrides the account for that invocation only. Accounts are referenced by local alias. Once a command starts, its account is pinned and unaffected by concurrent changes to the default account. Switching accounts preserves each account's web session, SSH connections, and local caches.
+### Accounts & Authentication
+
+- **Account selection:** Accounts are referenced by local alias under `~/.inspire/accounts/<name>/`. `inspire account use <name>` sets the persistent default account; passing `--account <name>` on any command overrides it for that invocation only. Each command pins its account at startup and is unaffected by concurrent switches. Web sessions, CAS sessions, SSH bridges, and local caches are isolated per account.
+- **OAuth device login (`inspire login`):**
+  - `inspire login --account <name>` creates the account profile if missing and starts OAuth device authorization (or re-authenticates an existing account). Without `--account`, it uses the active account, or creates `default` when no accounts exist (if accounts exist with none active, pass `--account` or run `inspire account use`). `inspire account add <name>` creates a new account only and supports `--no-login`.
+  - `--base-url` and `--proxy` configure new accounts (ignored with a warning on existing accounts). When no account is active, the target account becomes active unless `--no-use` is passed; `--use` forces activation.
+  - The verification URL and device code print immediately to stderr (`--no-browser` disables browser launch; `--json` returns account/token metadata without secret tokens). `inspire init` starts device login if the active account is logged out; other commands never prompt interactively for login.
+  - For agents: run `inspire login --account <name>` in the background, relay the printed URL and code to the user immediately, and wait for completion — never retry login in a loop.
+- **CAS login for Dataset Hub (`inspire login --cas`):**
+  - Catalog commands (`dataset list|show|tags|applications`) require a CAS session stored in `cas_session.json`; `dataset validate` and `--dataset` mounts use the regular OAuth Bearer session.
+  - Run `inspire login --cas feishu` (scan the QR code printed to stderr; requires Chromium) or `inspire login --cas sms --phone <number>` (does not require Chromium; bare `--cas` prompts in a TTY). In non-interactive or `--json` mode, `--cas sms --phone <number>` sends the code and exits; complete within 10 minutes on the same account with `--cas sms --phone <number> --sms-code <code>` (phone numbers and codes are never saved).
+  - A valid CAS session automatically approves OAuth device login and silently renews expired OAuth refresh tokens.
+- **Token refresh & health checks:** Access tokens (~1 hour) and rotating refresh tokens live in `web_session.json` and refresh automatically under the account lock. Session-bound refresh tokens carry a 12-hour idle window and 7-day cap; offline refresh tokens have no fixed expiry and follow server-side idle limits. Run `inspire account check` periodically (e.g., every 6 hours in unattended runs) to keep sessions warm, or pass `--offline` to inspect local state without network calls. Usernames and passwords are never stored or read.
+- **Logout (`inspire logout`):** `inspire logout [--account <name>]` (equivalent to `inspire account remove <name>`, `--yes` for non-interactive use) deletes the local account profile, tokens, and bridge/tunnel state while platform workloads keep running.
 
 ### Four Execution Planes
 
@@ -18,45 +30,48 @@ Break every task down into four planes before running commands:
 
 | Plane | What It Binds |
 | --- | --- |
-| Scheduling | `workspace`, `project`, `group`, `quota`, GPU/CPU/Memory/Shared Memory, and `image` — where and at what spec the workload runs. |
-| Remote Files | Absolute shared-storage paths (`/inspire/...`) for code, data, weights, checkpoints, and outputs. Use shell environment variables for shorthand; the CLI does not store path aliases. Official datasets from the Dataset Hub are mounted read-only via `--dataset`. |
-| Workload Type | **Notebook** for interactive debugging and environment setup; **Job** for fixed-scale background GPU workloads; **HPC** for CPU Slurm batch jobs; **Ray** for elastic workers, long-running daemons, or streaming pipelines; **Serving** for online HTTP model deployments. |
-| Observation & Cleanup | **Events** for scheduling/controller state; **Logs** for program output (available on Job, HPC, Ray, and Serving; on Notebook use `exec` or `shell`); **Metrics** and **Instances** for per-unit load and placement; **Status** for platform state and assigned nodes; **`shell`** for interactive container inspection (available on Job, HPC, Ray, and Serving); **TensorBoard** (`inspire tensorboard`) for training curves. Verify outputs and clean up resources when done. |
+| Scheduling | `workspace`, `project`, `group`, `quota` (GPU/CPU/Memory), Shared Memory, and `image` — where and at what spec the workload runs (TensorBoard uses a fixed 1 CPU / 2 GiB spec without `quota` or `image`). |
+| Remote Files | Absolute shared-storage paths (`/inspire/...`) for code, data, weights, checkpoints, and outputs. Use shell environment variables for shorthand; the CLI stores no path aliases. Official datasets from the Dataset Hub mount read-only via `--dataset`. |
+| Workload Type | **Notebook** for interactive debugging, internet staging, and image building; **Job** for fixed-scale background GPU workloads; **HPC** for CPU Slurm batch jobs; **Ray** for elastic workers, long-lived actors, or streaming pipelines; **Serving** for online HTTP model deployments. |
+| Observation & Cleanup | **Events** for scheduling and pod startup; **Logs** for program output (on Job, HPC, Ray, and Serving; on Notebook use `exec` or `shell`); **Metrics** and **Instances** for per-unit load and node placement; **Status** for platform state and assigned nodes; **`shell`** for interactive container inspection; **TensorBoard** (`inspire tensorboard`) for training curves. Verify outputs and clean up resources when done. |
 
 ### Scheduling & Live State
-- Always pass `workspace`, `project`, `group`, `quota`, and `image` explicitly when creating workloads. There are no implicit defaults or saved workload profiles.
-- Copy both `group` and `quota` from the same live quota row, and select `image` from the live image catalog. For GPU Jobs, `--shm-size` cannot exceed the instance memory in the selected quota (see [`references/compute-workloads.md`](references/compute-workloads.md)).
-- Live queries are the source of truth for accounts, workspaces, projects, compute groups, quotas, images, and availability. The local cache only accelerates name and catalog resolution. Manage it with `inspire cache status|refresh|clear` (all accept `--resource <kind>`). `inspire cache refresh` requires an explicit scope (`--resource`, `--workspace`, or `--name`) and is rarely needed in normal operation.
-- The CLI addresses resources by name and alias. Disambiguate duplicate names with `--workspace` or `--pick`.
-- Discovery lists and batch outputs show up to 20 items by default; use `--limit/-n` or `--all` to adjust. Job logs apply line and character budgets with truncation notices. Pass root-level `inspire --json ...` when structured single-document JSON output is needed.
+
+- Pass `workspace`, `project`, `group`, `quota`, and `image` explicitly when creating compute workloads (`workspace`, `project`, `group`, and `summary-path` for TensorBoard). There are no implicit defaults or saved workload profiles.
+- Copy both `group` and `quota` from the same live `<workload> quota` row, and select a `READY` `image` from the target Workspace's image catalog. For GPU Jobs, `--shm-size` cannot exceed the instance memory in `--quota` (see [`references/compute-workloads.md`](references/compute-workloads.md)).
+- Live queries are the source of truth for accounts, workspaces, projects, compute groups, quotas, images, and availability. The local SQLite cache only accelerates name and catalog resolution. Manage it with `inspire cache status|refresh|clear` (`--resource <kind>`). `inspire cache refresh` requires an explicit scope (`--resource`, `--workspace`, or `--name`) and is rarely needed in normal operation.
+- Address resources by name and local account alias. Disambiguate duplicate names with `--workspace` or `--pick`.
+- Discovery lists and batch outputs show up to 20 items by default (`--limit/-n` or `--all` adjusts the bound). Job logs apply line and character budgets with truncation notices. Pass root-level `inspire --json ...` for structured single-document JSON output.
 
 ### Workspaces & Network Boundaries
-- `CPU资源空间` (CPU workspace) and `分布式训练空间` (distributed GPU training workspace) are the default public workspaces available to all users:
+
+- `CPU资源空间` (CPU workspace) and `分布式训练空间` (distributed GPU training workspace) are the two default public Workspaces available to all users:
   - Use `CPU资源空间` for CPU Notebooks, outbound internet downloads, dependency preparation, CPU HPC jobs, and CPU Ray jobs.
-  - Use `分布式训练空间` for GPU Notebooks, GPU Jobs, multi-node training, Serving, and GPU observation.
-- Other workspaces (project-dedicated workspaces, specialized hardware partitions, etc.) must be explicitly specified by the user. Do not select them automatically just because they appear in a listing.
-- `分布式训练空间` typically has no outbound internet access. Download external repositories, weights, and datasets from `CPU资源空间` onto shared storage or bake dependencies into an image before running GPU workloads (see [`references/internal-sources.md`](references/internal-sources.md)).
+  - Use `分布式训练空间` for GPU Notebooks, GPU Jobs, multi-node training, Serving deployments, and GPU observation.
+- Select other Workspaces (project-dedicated workspaces, specialized hardware partitions, etc.) only when explicitly requested by the user — never pick them automatically just because they appear in a listing.
+- `分布式训练空间` typically has no outbound internet access. Stage external repositories, weights, and datasets from `CPU资源空间` onto shared storage or bake dependencies into an image before launching GPU workloads (see [`references/internal-sources.md`](references/internal-sources.md)).
 
 ### Restricted H100/H200 Notebooks
-Notebooks on `H100` or `H200` GPUs run commands over `JupyterTerminal` rather than SSH. `JupyterTerminal` `exec` binds remote stdin to `/dev/null` and does not support local stdin forwarding: never pass `--stdin` / `--bash-stdin`, pipe local data, or redirect local files into `inspire notebook exec` on restricted notebooks (or before transport is confirmed). Stage scripts and input files on `/inspire/...` first, or use `inspire notebook shell` for interactive TTY sessions. SSH-backed notebooks support `exec --stdin` normally (see [`references/notebook.md`](references/notebook.md)).
+
+Notebooks on `H100` or `H200` GPUs execute over `JupyterTerminal` rather than SSH. `JupyterTerminal` `exec` binds remote stdin to `/dev/null` and rejects local stdin forwarding: never pass `--stdin` or `--bash-stdin`, pipe local data, or redirect local files into `inspire notebook exec` on restricted Notebooks (or before transport is known). Stage scripts and input files on `/inspire/...` first, or use `inspire notebook shell` for interactive TTY sessions. SSH-backed Notebooks support `exec --stdin` and `scp` normally (see [`references/notebook.md`](references/notebook.md)).
 
 ## Persistent Asset Contract (`INSPIRE.md`)
 
-The CLI does not use repo-local `./.inspire/` configs or bind a repository to a single project. Select the target project, workspace, paths, and image explicitly for each task.
+The CLI neither reads nor writes repository-local configuration files and never binds a repository to a single project. Select the target Project, Workspace, remote paths, and image explicitly for each task.
 
-Maintain an optional `INSPIRE.md` in a repository only when stable remote paths, base images, models, dataset revisions, or long-lived infrastructure need to be shared across sessions and collaborators. Scope each entry by Project and Workspace; never store credentials, transient status, or raw logs in `INSPIRE.md` (see [`references/assets.md`](references/assets.md)).
+Maintain an optional `INSPIRE.md` in a downstream repository only when stable remote paths, base images, registered models, dataset versions, or long-lived infrastructure need to be shared across sessions and collaborators. Scope each entry by Project and Workspace, and never store credentials, transient status, or raw logs in `INSPIRE.md` (see [`references/assets.md`](references/assets.md)).
 
 ## Standard Execution Loop
 
-1. If `INSPIRE.md` exists, read the entries relevant to the current Project and Workspace.
+1. If `INSPIRE.md` exists, read the entries matching the target Project and Workspace.
 2. Load the single most relevant reference from the index below (load a second only when crossing domain boundaries).
-3. Check `--help` for the exact command syntax and flags.
-4. Query live state for account, workspace, project, compute group, quota, image, and resource availability.
-5. Prepare shared paths, code, and environment; run `--dry-run` or a short probe for complex setups.
+3. Check `--help` for exact command syntax and flags.
+4. Query live state for account, workspace, project, compute group, quota, image, and availability.
+5. Prepare shared paths, code, and environment; run `--dry-run` or a small probe before scaling out.
 6. Submit the workload.
 7. Observe progress via `events`, `logs`, `metrics`, `instances`, `status`, or `tensorboard`.
-8. Verify application health and output integrity; record any new long-lived assets in `INSPIRE.md`.
-9. Stop running workloads before deleting them (`stop` then `delete`); delete finished temporary workloads unless downstream consumers still need them.
+8. Verify application health and output integrity; record any new durable assets in `INSPIRE.md`.
+9. Stop running workloads before deleting them (`stop` then `delete`); clean up finished temporary workloads unless downstream consumers still need them.
 
 ## Reference Index
 
@@ -66,21 +81,19 @@ Always use CLI `--help` for command syntax. Load only the reference needed for t
 
 | Task or Decision | Reference |
 | --- | --- |
-| Account initialization, updates, uninstall, or local proxy checks | `inspire init --help`, `inspire account --help`, `inspire update --help`, `inspire uninstall --help` |
+| Login, logout, account initialization, proxy checks, updates, or uninstall | `inspire login --help`, `inspire logout --help`, `inspire init --help`, `inspire account --help`, `inspire update --help`, `inspire uninstall --help` |
 | `INSPIRE.md` conventions, project metadata (`inspire project`), and asset lifecycle | [`references/assets.md`](references/assets.md) |
 | Workspaces, compute groups, quotas, live availability, usage attribution, and priority rules | [`references/resources.md`](references/resources.md) |
 | Task handoffs, Compute Group selection, and shared quotas across concurrent sessions | [`references/agent-ops.md`](references/agent-ops.md) |
-| Shared storage scopes, storage tiers, mount isolation, and remote paths | [`references/paths.md`](references/paths.md) |
+| Shared storage scopes, storage pools, mount isolation, and remote paths | [`references/paths.md`](references/paths.md) |
 | Dataset Hub search, official dataset mounting (`--dataset`), versions, and access requests | [`references/dataset.md`](references/dataset.md) |
-| Outbound internet staging, internal package mirrors, dependency setup, and image baking | [`references/internal-sources.md`](references/internal-sources.md) |
+| Outbound internet staging, internal package mirrors, runtime dependency setup, and image baking | [`references/internal-sources.md`](references/internal-sources.md) |
 | Notebook creation, account-scoped connections, `exec` / `shell` / `scp`, HTTP proxy URLs, and image saving | [`references/notebook.md`](references/notebook.md) |
 | GPU Job, CPU HPC, Ray, Serving, API keys (`INF_API_KEY`), TensorBoard, batch submission, and observation | [`references/compute-workloads.md`](references/compute-workloads.md) |
 | Multi-stage project workflows across CPU staging, data processing, GPU training, and deployment | [`references/workflows.md`](references/workflows.md) |
-| Image selection, external registration, visibility levels, and cleanup | [`references/image.md`](references/image.md) |
+| Image selection, external Docker registration and sync, visibility levels, and cleanup | [`references/image.md`](references/image.md) |
 | Model Registry, model versions, deployment sizing (`deploy-config`), and Serving boundaries | [`references/model.md`](references/model.md) |
 | Python SDK (`InspireClient`, `InspireAsyncClient`, `Accounts`, typed models, remote exec, file transfer) | [`references/sdk.md`](references/sdk.md) |
-
-`inspire update --check` reports installation audit failure reasons in human and JSON output. A global uv tool pinned to a local source remains a failed audit; the source path is not exposed.
 
 ### CLI Maintenance
 
@@ -88,16 +101,4 @@ Load only when maintaining the CLI's Browser API wrappers, auditing frontend req
 
 | Topic | Reference |
 | --- | --- |
-| `/api/v2` request/response envelopes, OAuth token sessions, pagination, workspace scoping, probing methodology, per-route Action tables, creation payload contracts, and Dataset Hub (`plaza`) protocol | [`references/dev/browser-api.md`](references/dev/browser-api.md) |
-
-## Authentication
-
-An account is a logged-in identity. Run `inspire login --account NAME` to create a missing account and authorize it, or to log in again. Without `--account`, `inspire login` uses the active account; when no account exists at all it creates one named `default` (when accounts exist but none is active it errors). `inspire account add NAME` remains the compatible creation entry point: it rejects existing accounts and supports `--no-login`. The device verification URL and code are printed immediately to stderr; open the URL and approve while the command waits. `--no-browser` disables automatic browser opening; `--json` returns metadata without tokens. New accounts use `--base-url` / `--proxy`; these options warn and are ignored for existing configs. With no active account the selected account becomes active unless `--no-use` is passed; `--use` forces activation. Logging in to an existing account otherwise preserves the active account.
-
-Access and rotating refresh tokens live in the account's `web_session.json`. Access tokens refresh automatically under the account lock. Expired or refused refresh tokens can renew silently using valid stored CAS credentials; otherwise run login again. Usernames and passwords are neither stored in config nor read from config or environment variables. Identity display comes from the session. Old config files still load; `inspire init --force` removes retired authentication fields. `inspire init` (discovery mode) starts device login when the active account is logged out; other API commands never prompt for authorization. Notebook automation still uses Playwright, but OAuth and SMS login do not require Chromium; Feishu QR login does.
-
-`inspire logout --account NAME` is equivalent to `inspire account remove NAME`: both delete the entire local account profile, including tokens and local bridge/tunnel state, while platform workloads keep running. Both require confirmation (`--yes` for non-interactive use). Removing the active account clears the saved active pointer.
-
-For data plaza access, run `inspire login --cas feishu` (scan the QR printed to stderr) or `inspire login --cas sms --phone NUMBER`. Bare `--cas` prompts in a TTY with Feishu as the default; noninteractive/JSON mode requires an explicit method. Noninteractive SMS sends a code and exits: complete within ten minutes using the same account with `--cas sms --phone NUMBER --sms-code CODE`. Phone numbers and SMS codes are never saved. CAS credentials live in private `cas_session.json`; pending state and the temporary QR image also stay inside the account directory and are removed with logout. A valid CAS session automatically approves the OAuth device code, with a manual URL fallback. JSON metadata includes `cas` and `cas_method`.
-
-For agents: to add an account, run `inspire login --account NAME` in the background, relay the printed URL and code to the user immediately, and wait for completion; do not retry login in a loop.
+| `/api/v2` request/response envelopes, OAuth/CAS session lifecycle, pagination, workspace scoping, probing methodology, per-route Action tables, creation payload contracts, and Dataset Hub (`plaza`) protocol | [`references/dev/browser-api.md`](references/dev/browser-api.md) |

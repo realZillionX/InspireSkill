@@ -13,9 +13,9 @@ Outbound network access depends on the Workspace and Compute Group where a conta
 
 When `分布式训练空间` has no public internet access:
 - Never put `git clone`, Hugging Face downloads, or external dataset fetches inside GPU Notebook or GPU Job startup commands. Stage them from a CPU Notebook in `CPU资源空间` onto shared storage (`/inspire/...`) or bake them into an image.
-- If you only need packages covered by internal mirrors, configure the mirrors directly inside the target Notebook, verify the environment, and save a custom image with `notebook save-image` so downstream workloads do not reinstall packages on every start.
+- If you only need packages covered by internal mirrors, configure the mirrors directly inside a Notebook, verify imports, and save a custom image with `notebook save-image` so downstream workloads do not reinstall packages on every start.
 
-To test whether a specific endpoint is reachable from a Notebook, run a one-off check with `inspire notebook exec <name> "..."` against the target URL.
+To test whether a specific endpoint is reachable from a Notebook, run a one-off probe with `inspire notebook exec <name> --workspace <workspace> "curl -I -m 10 <url>"`.
 
 ## 2. Where to Put Staged Artifacts
 
@@ -25,7 +25,7 @@ To test whether a specific endpoint is reachable from a Notebook, run a one-off 
 | Python/system packages, Slurm/Ray runtimes, serving dependencies | Validated in a Notebook and saved as a project image via `notebook save-image` |
 | Small helper scripts or debugging tools | Project personal path or global personal path |
 
-Always bake reusable runtime environments into images, and keep datasets, weights, and checkpoints on shared storage.
+Bake reusable runtime environments into images, and keep datasets, weights, and checkpoints on shared storage.
 
 ## 3. Internal Mirror Endpoints
 
@@ -34,7 +34,7 @@ Always bake reusable runtime environments into images, and keep datasets, weight
 | PyPI (`pip`) | `http://nexus.sii.shaipower.online/repository/pypi/simple/` (`pip download` can also use `http://nexus.sii.shaipower.online/repository/pypi_proxy/simple/`) |
 | PyTorch Wheels | `http://nexus.sii.shaipower.online/repository/pytorch/whl/cu126` |
 | Conda | `http://nexus.sii.shaipower.online/repository/anaconda/pkgs/main`; community channels (`conda-forge`, `bioconda`, `menpo`, `pytorch`) under `http://nexus.sii.shaipower.online/repository/anaconda/cloud` |
-| Ubuntu Apt | `http://nexus.sii.shaipower.online/repository/ubuntu/` (match container distro codename: `plucky`, `jammy`, `focal`, or `xenial`) |
+| Ubuntu Apt | `http://nexus.sii.shaipower.online/repository/ubuntu/` (match container distro codename: `plucky`, `noble`, `jammy`, `focal`, or `xenial`) |
 | Debian 12 Apt | `http://nexus.sii.shaipower.online/repository/debian/`, `http://nexus.sii.shaipower.online/repository/debian-security` |
 | ROS / OpenEuler / NVIDIA CUDA | `http://nexus.sii.shaipower.online/repository/ros/`, `http://nexus.sii.shaipower.online/repository/openeuler/`, `http://nexus.sii.shaipower.online/repository/nvidia-cuda/` |
 | npm / Node.js | `http://nexus.sii.shaipower.online/repository/npm_proxy/`, `http://nexus.sii.shaipower.online/repository/nodejs/` |
@@ -104,4 +104,5 @@ conda clean -i
 
 ## 5. Baking Reusable Images
 
-Once dependencies are installed and verified inside a Notebook, clean up caches and temporary files and save the container as a reusable image with `notebook save-image` (see [`notebook.md`](notebook.md#6-base-environments-and-saving-images)). Record new project base images in `INSPIRE.md` (see [`assets.md`](assets.md)).
+- For HPC or Ray base images on SSH-connected Ubuntu (`jammy` / `noble`) Notebooks, run `inspire notebook install-deps <notebook> --workspace <workspace> [--slurm] [--ray]` (`--ray-version`, `--pip-index-url`) to idempotently install the Slurm userland (`slurm-wlm`, `slurm-client`, `munge`, `hwloc`, `libpmix2`) or Ray runtime.
+- Once dependencies are installed and verified inside the Notebook, clean up caches and temporary files and commit the container via `notebook save-image` (see [`notebook.md`](notebook.md#6-base-environments-and-saving-images)). Record shared project base images in `INSPIRE.md` (see [`assets.md`](assets.md)).

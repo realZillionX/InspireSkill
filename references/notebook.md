@@ -21,16 +21,17 @@ Before running `inspire notebook create`:
 2. Query `inspire notebook quota --workspace <workspace>` and copy both `--group` and `--quota` (`gpu,cpu,mem`) from the same live row.
 3. Pass `workspace`, `project`, `group`, `quota`, and a `READY` `image` explicitly.
 4. If mounting official datasets with `--dataset <name>:<version>`, verify access first (see [`dataset.md`](dataset.md)).
-5. **Keep Notebook names unique within each Workspace.** The platform allows duplicate names, which forces `--pick` on every subsequent name-based command; `notebook create` checks existing names in the target Workspace (case-insensitive) and rejects duplicates before submitting.
+5. **Follow Notebook naming rules:** Names must be 1–32 characters matching `[a-z][a-z0-9-]*` (violations fail locally as `ValidationError` / exit 12) and **unique within the target Workspace** (`notebook create` checks existing names case-insensitively before submitting so subsequent commands do not require `--pick`). Standalone `notebook create` has no `--dry-run` flag; use `notebook batch <file> --dry-run` or SDK `notebooks.plan(spec)` for dry-run validation.
 
 Optional creation controls:
-- **Read-only shared mounts:** Shared storage is mounted read-write by default. Use the read-only mount flags on `notebook create` to downgrade the project public directory or project members directory to read-only (`ro`). Making the project members directory read-only requires Project Maintainer permissions.
-- **Auto-stop vs. platform policies:** `--auto-stop` requests idle auto-stop, whereas scheduled stop sets a fixed runtime countdown (visible under `Auto-stop In` in `notebook status`). Neither overrides Workspace idle-reclaim rules or daily shutdown limits — check `inspire resources policy --workspace <name>` before leaving a Notebook running. Use Job, HPC, Ray, or Serving for long-running workloads.
-- **Node pinning:** Pass a node name from the selected Compute Group only when debugging a specific machine or reproducing hardware issues. `notebook status` shows the assigned `Node` along with its health, cordon, and maintenance state while `RUNNING`.
+- **Shared-directory mount modes:** Pass `--public-path-mount-mode` (`0` read-write default, `1` read-only, `2` not mounted) to control the project public directory (legacy `--public-path-readonly` maps to `1` / `0` with a deprecation warning). Project Maintainers can also pass `--project-path-readonly` to mount per-member directories read-only.
+- **Auto-stop vs. platform policies:** `--auto-stop` requests idle auto-stop, while `--auto-stop-after <MINUTES>` (minimum 2; implies `--auto-stop`) sets a fixed runtime countdown shown under `Auto-stop In` in `notebook status`. Neither overrides Workspace idle-reclaim rules or daily shutdown limits — check `inspire resources policy --workspace <name>` before leaving a Notebook running, and use Job, HPC, Ray, or Serving for unattended runs.
+- **Startup wait & hooks:** Pass `--wait` (on `create` or `start`) to block until `RUNNING`, optionally paired with `--post-start` / `--post-start-script`.
+- **Node pinning (`--node`):** Pin to a specific node in the selected Compute Group only when debugging a machine or reproducing hardware issues. `notebook status` reports the assigned `Node` alongside its health, cordon, and maintenance state while `RUNNING`.
 
 ## 3. Transport & Remote Execution (`exec` / `shell` / `ssh`)
 
-Transport is determined automatically by the machine's actual GPU model:
+Transport is determined automatically from the machine's actual GPU model:
 - **Restricted Notebooks (`H100` / `H200`):** Do not support SSH or `rtunnel`. Commands run over `JupyterTerminal`.
 - **Standard Notebooks (all other GPUs and CPU nodes):** Use SSH over `rtunnel`.
 
@@ -39,8 +40,8 @@ The CLI probes `nvidia-smi` over `JupyterTerminal` once per `(account, base_url,
 | Command | Purpose | Restricted Notebook (`H100`/`H200`) Behavior |
 | --- | --- | --- |
 | `exec` | Run a one-off non-interactive command | Uses `JupyterTerminal` (ephemeral terminal per call); rejects `--stdin`, `--bash-stdin`, local pipes, and `< file` redirection |
-| `shell` | Interactive TTY shell (`exit` to quit, `Ctrl+]` to force-disconnect) | Uses `JupyterTerminal` |
-| `scp` | Upload/download files over SCP | Not supported; transfer via an SSH-capable Notebook through `/inspire/...` shared storage |
+| `shell` | Interactive TTY shell (`exit` to quit, `Ctrl+]` to force-disconnect; `--check` verifies connectivity) | Uses `JupyterTerminal` |
+| `scp` | Upload/download files over SCP | Not supported; relay through `/inspire/...` via an SSH-capable Notebook |
 | `ssh` / `ssh-config` / `ssh-proxy` | OpenSSH session, `~/.ssh/config` stanza, and `ProxyCommand` | Not supported |
 | `connection refresh` | Bootstrap or refresh the SSH / `rtunnel` bridge | Not needed (no SSH bridge) |
 | `proxy-url` | Print external HTTP proxy URL for a container port | Rejected by default (requires `--allow-restricted`) |
@@ -50,18 +51,18 @@ The CLI probes `nvidia-smi` over `JupyterTerminal` once per `(account, base_url,
 - **No local stdin forwarding:** `JupyterTerminal` feeds its internal control wrapper over stdin and binds the user command's stdin to `/dev/null` so commands like `cat` or `bash -s` cannot swallow the completion marker. Passing `--stdin`, `--bash-stdin`, or piping/redirecting local stdin into `inspire notebook exec` is rejected before any command is sent.
 - **Remote redirection works normally:** Redirecting files that already exist on `/inspire/...` inside the remote command string works as expected:
   ```bash
-  inspire notebook exec <name> "python task.py < /inspire/.../input.jsonl"
+  inspire notebook exec <name> --workspace <workspace> "python task.py < /inspire/.../input.jsonl"
   ```
 - **Stale handle recovery:** Before opening a `JupyterTerminal`, the CLI reconciles cached Notebook handles against the live Workspace listing so deleting and recreating a Notebook with the same name automatically picks up the new instance. Pass `--ignore-target-cache` to bypass remembered target caches during diagnostics, or run with root `--debug` to inspect URL, XSRF, proxy (`HTTP(S)_PROXY` / `NO_PROXY`), and WebSocket stages.
 
 ### Working Directory & Long-Running Commands
 
 - When `--cwd` is omitted, `notebook exec` and `notebook shell` preserve the transport's default working directory (the project user directory on `JupyterTerminal`, or the SSH login shell's default directory on SSH). Pass an explicit `/inspire/...` path to `--cwd` when your command depends on a fixed directory.
-- For commands that run longer than 20 minutes, launch them as background processes on the remote container that write a completion sentinel file, and poll from your local machine rather than holding a synchronous `exec` open.
+- For commands that run longer than 20 minutes, launch them in the background on the remote container writing a completion sentinel file, and poll from your local machine rather than holding a synchronous `exec` open.
 
 ### Account Isolation & SSH Connection Cache
 
-- Every `notebook` command accepts `--account <alias>` to operate on another account without changing the global default account. Connection caches and remembered targets (`notebook connection list|status|refresh|forget|prune` and `notebook connection target list|forget`) are strictly isolated per account.
+- Every `notebook` command accepts `--account <alias>` to operate on another account without changing the saved default account. Connection caches and remembered targets (`notebook connection list|status|refresh|forget|prune` and `notebook connection target list|forget`) are strictly isolated per account.
 - **Newly created SSH-capable Notebooks** do not have a cached SSH bridge yet: run `inspire notebook connection refresh <name> --workspace <workspace>` once before calling `exec`, `shell`, or `scp` (or run `ssh` / `ssh-config`, which bootstrap the bridge automatically). Restricted `H100`/`H200` Notebooks skip this step and use `JupyterTerminal` directly.
 - `ssh-config` includes the account alias in the default SSH `Host` name (overridable with `--host`) and pins `--account` inside the generated `ProxyCommand` so VS Code Remote SSH and native `ssh` / `rsync` always use the right account.
 
@@ -78,7 +79,7 @@ Because restricted Notebooks do not support SSH/SCP, relay files through shared 
 inspire notebook scp cpu-box ./dataset.tar /inspire/hdd/project/topic/user/dataset.tar
 
 # 2. Access the same shared path directly inside the restricted GPU Notebook
-inspire notebook exec gpu-box "ls -lh /inspire/hdd/project/topic/user/dataset.tar"
+inspire notebook exec gpu-box --workspace 分布式训练空间 "ls -lh /inspire/hdd/project/topic/user/dataset.tar"
 
 # 3. Download results from shared storage via the SSH-capable CPU Notebook
 inspire notebook scp cpu-box -d /inspire/hdd/project/topic/user/results.tar ./results.tar
@@ -87,7 +88,7 @@ inspire notebook scp cpu-box -d /inspire/hdd/project/topic/user/results.tar ./re
 rsync -av ./dataset/ cpu-box:/inspire/hdd/project/topic/user/dataset/
 ```
 
-Container-local files outside `/inspire/...` on a restricted Notebook must be copied onto `/inspire/...` before they can be downloaded via an SSH Notebook (or use the Python SDK's `notebooks.upload` / `download` with `transport="jupyter"` for small files; see [`sdk.md`](sdk.md)).
+Container-local files outside `/inspire/...` on a restricted Notebook must be copied onto `/inspire/...` before downloading via an SSH Notebook (or use the Python SDK's `notebooks.upload` / `download` with `transport="jupyter"` for single files up to 16 MiB; see [`sdk.md`](sdk.md)).
 
 ## 5. HTTP Proxy (`notebook proxy-url`)
 
@@ -105,11 +106,13 @@ inspire notebook proxy-url <name> --workspace <workspace> --port 7860
 
 To turn a running Notebook into a reusable image for Jobs, HPC, Ray, Serving, or future Notebooks, use `inspire notebook save-image <notebook-name> --workspace <notebook-workspace> --name <image-name>`.
 
+On SSH-connected Ubuntu (`jammy` / `noble`) Notebooks, `inspire notebook install-deps <notebook-name> --workspace <workspace> [--slurm] [--ray]` idempotently installs the Slurm userland or Ray runtime before saving an HPC or Ray base image.
+
 ### Pre-Save Cleanup Checklist
 
 **Always clean the container before saving an image:**
 1. Remove temporary directories, package manager caches (`pip cache purge`, `conda clean --all`, `apt-get clean`), downloaded archives, build intermediates, logs, and debug artifacts.
-2. Ensure no credentials, tokens, private keys, or datasets/checkpoints meant for shared storage are left inside the container filesystem.
+2. Ensure no credentials, tokens, private keys, or datasets/checkpoints meant for shared storage remain inside the container filesystem.
 3. Re-verify that key imports and entrypoints still work after cleanup.
 
 ### Snapshot Lifecycle & `--flatten`
@@ -120,41 +123,27 @@ To turn a running Notebook into a reusable image for Jobs, HPC, Ray, Serving, or
   - Once the snapshot finishes, the Notebook remains running and usable; wait for the resulting image to reach `READY` before scheduling workloads with it.
 - **Layered vs. flattened snapshots (`--flatten`):**
   - By default, each `save-image` appends a new incremental layer on top of the base image.
-  - Passing `--flatten` squashes the image into a single layer and permanently removes files that were overwritten or deleted from older layers. Use `--flatten` whenever you deleted large files from an earlier layer, when finalizing a project base image, or after multiple iterative snapshots. (`--flatten` increases background image build time in `CREATING` state but does not lengthen the Notebook's `COMMITTING` lock window.)
+  - Passing `--flatten` squashes the image into a single layer and permanently removes files overwritten or deleted from older layers. Use `--flatten` whenever you deleted large files from an earlier layer, when finalizing a project base image, or after multiple iterative snapshots (`--flatten` increases background image build time in `CREATING` state without lengthening the Notebook's `COMMITTING` lock window).
 - **Canceling a snapshot (`notebook cancel-save-image <notebook-name>`):** Releases the Notebook back to its pre-save state even after the initial commit phase, leaving behind a `FAILED` image record that can be removed with `image delete` (see [`image.md`](image.md)).
 
-*(Note: Slurm commands like `sinfo` or `srun` will fail inside a regular Notebook because there is no Slurm controller; Slurm is active only inside running `hpc` workloads.)*
+*(Note: Slurm commands like `sinfo` or `srun` fail inside a regular Notebook because there is no Slurm controller; Slurm is active only inside running `hpc` workloads.)*
 
 ## 7. Observation & Large File Operations
 
 | Command | What It Answers |
 | --- | --- |
+| `notebook list` | Notebooks in a Workspace or across `--workspace all` (partial workspace failures warn on stderr and populate `unavailable_workspaces` in `--json`) |
 | `notebook status` | Platform state, assigned `Node` and node health, priority, `Auto-stop In` countdown, mounted datasets |
 | `notebook events` | Scheduling delays, image pull progress, startup failures |
 | `notebook lifecycle` | Historical start/stop run intervals for the instance |
 | `notebook metrics` | Historical time-series load (or pass `--now` for an instant GPU/CPU/Memory utilization snapshot) |
-| `notebook exec` / `shell` | Process table, container logs, and filesystem inspection (Notebooks do not have a platform `logs` subcommand) |
+| `notebook exec` / `shell` | Process table, container logs, and filesystem inspection (Notebooks have no platform `logs` subcommand) |
+
+- **Name resolution & post-create visibility:** Missing Notebook names return `NotFound` (exit 12) immediately after a single live query. Within 30 seconds of a local single, batch, or SDK creation, a live name miss retries with bounded backoff (up to 12 seconds) while the new Notebook propagates into platform listings.
 
 ### Large Directory Operations on Shared Storage
 
 Before running large `mv`, `cp`, or `rm` operations on `/inspire/...`, inspect the directory structure first:
 - **Wide top-level fan-out:** Parallelize across top-level subdirectories with bounded concurrency.
 - **One or two massive subtrees:** Drill down a level before parallelizing so workers do not serialize on a single directory.
-- **Millions of tiny files:** Prefer low-fork commands such as `find <dir> -delete` or `rsync --delete-after`. Run operations taking over 20 minutes in the background with a sentinel file.
-
-
-### Name validation and missing names
-
-Notebook creation names contain 1–32 characters and match `[a-z][a-z0-9-]*`.
-Invalid names fail locally as `ValidationError` (exit 12), including names expanded
-by `notebook batch --dry-run`. Standalone `notebook create` has no `--dry-run` option.
-
-A missing name in the shared Notebook resolver returns `NotFound` (exit 12), matching
-HPC/Ray/Serving/TensorBoard name resolution. Ordinary misses perform one live name
-query without backoff sleeps; this applies to status, events, lifecycle, metrics and
-other commands using that resolver, including connection and lifecycle mutations.
-Successful single, batch and SDK creation records a private local marker scoped to
-the account, workspace and name. For 30 seconds after submission, a live name miss
-retries with bounded backoff (at most 12 seconds of waiting, limited by the remaining
-visibility window), including lifecycle commands that bypass cached identities.
-Expired markers do not trigger retries. API/network failures propagate immediately.
+- **Millions of tiny files:** Prefer low-fork commands such as `find <dir> -delete` or `rsync --delete-after`. Run operations taking over 20 minutes in the background with a completion sentinel file.

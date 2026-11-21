@@ -6,11 +6,11 @@ Use this guide when selecting Workspaces, Projects, Compute Groups, `--quota` sp
 
 | Category | What It Controls | Typical Fields |
 | --- | --- | --- |
-| Scheduling | Where a workload runs, its hardware allocation, and its container image | `workspace`, `project`, `group`, `quota`, `image` |
+| Scheduling | Where a workload runs, its hardware allocation, and its container image | `workspace`, `project`, `group`, `quota`, `image` (`workspace`, `project`, `group`, `summary-path` for TensorBoard) |
 | Remote Paths | Where code, datasets, weights, checkpoints, and outputs are stored | Absolute `/inspire/<tier>/project/...` paths |
 | Object Names | Which platform object you are inspecting, connecting to, or deleting | Name of the Notebook, Job, HPC job, Ray job, Serving deployment, or TensorBoard |
 
-Scheduling parameters have no implicit defaults. Pass all five fields explicitly whenever creating a workload.
+Scheduling parameters have no implicit defaults. Pass all required fields explicitly whenever creating a workload.
 
 ## 2. Workspaces
 
@@ -27,12 +27,14 @@ Other Workspaces (project-dedicated workspaces, specialized accelerator partitio
 
 Always query live platform state before submitting workloads:
 
-1. Check visible Workspaces, Projects, and Compute Groups for the active account.
+1. Check visible Workspaces, Projects, and Compute Groups for the active account (`inspire account context`, `inspire project list`).
 2. Query `<workload> quota --workspace <name>` to list valid `gpu,cpu,mem` specs supported by each Compute Group for that workload type.
 3. Query `inspire resources availability --workspace <name>` to check both guaranteed quota balances and physical 8-GPU full-node capacity.
 4. Use `--group <keyword>` (case-insensitive substring match) to narrow resource queries to relevant Compute Groups, then copy the **full** Compute Group name into `--group` when creating a workload.
 
-**Single-workspace scope:** `resources availability`, `resources policy`, `resources usage`, `<workload> quota`, and `serving configs` require a single `--workspace` and do not accept `all`, because quotas, capacity, reclaim rules, and usage are defined per Workspace. `resources node-events` takes node names and has no `--workspace` option. Only cross-workspace discovery commands (`<workload> list` and `account permissions`) accept `--workspace all`.
+**Workspace scope rules:**
+- `resources availability`, `resources policy`, `resources usage`, `<workload> quota`, `serving configs`, `tensorboard list`, and `image list` require a single `--workspace` and reject `all` (quotas, capacity, reclaim rules, and image registries are scoped per Workspace). `resources node-events` takes node names and has no `--workspace` flag.
+- Cross-workspace `--workspace all` is supported on `notebook list`, `job list`, `hpc list`, `ray list`, `serving list`, `model list`, `account permissions`, and `cache refresh`.
 
 ### `resources availability`: Quota Balance vs. Full Nodes
 
@@ -43,28 +45,28 @@ Always query live platform state before submitting workloads:
 | `Free Nodes` (`full_free_nodes` in JSON) | Physical 8-GPU nodes that are completely idle right now (`READY`, zero tasks, zero used GPUs, uncordoned, not in maintenance or fault pools). |
 | `High Pri Nodes` (`high_priority_free_nodes` in JSON) | Idle 8-GPU nodes plus 8-GPU nodes occupied exclusively by preemptible low-priority tasks (`full_free_nodes + reclaimable_nodes`). |
 | `full_free_gpus` / `high_priority_free_gpus` (JSON) | The corresponding 8-GPU node count multiplied by 8, independent of Workspace quota balance. |
-| `free_nodes` / `gpus_per_node` (JSON) | Idle GPU nodes of any size / largest reported GPU count per node in the group. These do not measure 8-GPU node capacity in mixed groups. |
+| `free_nodes` / `gpus_per_node` (JSON) | Idle GPU nodes of any size / largest reported GPU count per node in the group. Do not use these to measure 8-GPU full-node capacity in mixed groups. |
 
 Multi-node GPU Jobs can only be submitted in full 8-GPU node units (`--nodes n` where each instance uses an 8-GPU quota). Check `Free Nodes` and `High Pri Nodes` before submitting multi-node jobs.
 
-Zero-guarantee groups (`gpu_total == 0`) can still contain active GPU nodes and workloads; the CLI classifies GPU groups using live usage, GPU model metadata, and node dimensions rather than relying on `gpu_total > 0`.
+Zero-guarantee groups (`gpu_total == 0`) can still contain active GPU nodes and workloads; the CLI classifies GPU groups from live usage, GPU model metadata, and node dimensions rather than requiring `gpu_total > 0`.
 
 ### `resources policy`: Auto-Stop & Runtime Limits
 
 `inspire resources policy --workspace <name>` shows how long a workload can keep its resources:
 - **`Reclaim`** — whether the scheduler automatically reclaims idle instances.
-- **`Idle Rule`** — GPU utilization and duration thresholds that trigger reclamation (based on resource metrics, not active SSH/terminal sessions). Serving rules may be broken down by GPU count range.
+- **`Idle Rule`** — GPU utilization and duration thresholds that trigger reclamation (based on resource metrics, not active SSH or terminal sessions). Serving rules may be broken down by GPU count range.
 - **`Time Limit`** — hard runtime ceiling (`max` runtime for Jobs, `daily` shutdown time for Notebooks).
-- A `-` means the Workspace does not declare an explicit rule for that workload (which does not guarantee unlimited runtime). Check `resources policy` before leaving workloads running overnight.
+- A `-` means the Workspace declares no explicit rule for that workload (which does not guarantee unlimited runtime). Check `resources policy` before leaving workloads running overnight.
 
 ### `resources usage`: Usage Attribution & Preemptible GPUs
 
 `inspire resources usage --workspace <name>` attributes active resources using `TaskDimension` records:
 - Defaults to `Project → User` aggregation. Pass `--details` to expand to individual tasks, or filter with `--project`, `--user`, `--task`, or `--group <keyword>`.
-- **`--mine`** queries `UserDimension` filtered to the current user's pre-aggregated project rows (cannot be combined with `--group`, since user-dimension rows are not broken down by compute group).
+- **`--mine`** queries `UserDimension` filtered to the current user's pre-aggregated project rows (cannot be combined with `--group`, since user-dimension rows are not broken down by Compute Group).
 - **`Reclaimable`** shows how many GPUs are held by tasks submitted at preemptible low priority (`< 4` in fair-share Workspaces, `≤ 3` elsewhere; `-` if the Workspace priority contract is unavailable).
-- `Reclaimable` in `usage` and `low_priority_gpus` in `availability` are computed differently (client-side task aggregation vs. platform-side group accounting) and may differ slightly across snapshots. Use `availability` to judge how many GPUs you can claim, and `usage` to see which projects or users hold them.
-- GPU utilization rate is omitted from the human table (still present as `gpu_usage_rate` in `--json`).
+- `Reclaimable` in `usage` and `low_priority_gpus` in `availability` come from separate data sources (client-side task aggregation vs. platform-side group accounting) and may differ slightly across snapshots. Use `availability` to judge how many GPUs you can claim, and `usage` to see which projects or users hold them.
+- GPU utilization rate is omitted from the human table (available as `gpu_usage_rate` in `--json`).
 
 ### Local Cache (`inspire cache`)
 
@@ -73,25 +75,25 @@ The CLI maintains a per-account SQLite cache (`resource-index.sqlite3`) solely t
 Manage the cache with `inspire cache status | refresh | clear`:
 - All three accept repeatable `--resource <kind>` filters across four categories:
   - Platform catalogs: `workspace`, `project`, `compute-group`, `image`, `model`
-  - Workloads: `notebook`, `job`, `hpc`, `ray`, `serving`
-  - Quotas: `quota-<workload>`
+  - Workloads: `notebook`, `job`, `hpc`, `ray`, `serving`, `tensorboard`
+  - Quotas: `quota-notebook`, `quota-job`, `quota-hpc`, `quota-ray`, `quota-serving`
   - Notebook GPU probes: `notebook-gpu` (supports `status` and `clear` only; populated on demand per Compute Group)
-- **TTL:** 1 day for workload names and account/workspace/project/compute-group/model catalogs; 7 days for `image` and `quota-<workload>`.
-- **On-demand population:** Normal commands populate cache scopes on demand and immediately update or tombstone entries when creating or deleting resources via the CLI. They never trigger background full-account scans.
-- **`inspire cache refresh` requires an explicit target** (`--resource`, `--workspace`, or `--name`). Only run it when upstream catalogs changed outside the CLI (e.g., an admin modified compute groups or you deleted an image in the web UI). Workload history scans are capped at 5,000 rows.
+- **TTL:** 1 day for workload names and workspace/project/compute-group/model catalogs; 7 days for `image` and `quota-*`.
+- **On-demand population:** Normal commands populate cache scopes on demand and immediately update or tombstone entries when creating or deleting resources via the CLI, without triggering background full-account scans.
+- **`inspire cache refresh` requires an explicit target** (`--resource`, `--workspace`, or `--name`). Run it only when upstream catalogs changed outside the CLI (e.g., an administrator modified Compute Groups or you deleted an image in the web console). Workload history scans cap at 5,000 rows.
 - **`cache status` states:**
   - `partial`: populated by targeted name lookups rather than a full scan (normal, not an error).
-  - `empty`: a full refresh succeeded within TTL but returned zero items across the entire resource kind. Run `cache refresh --resource <kind>` to verify whether the catalog is genuinely empty.
-  - `error` / `incomplete`: one or more fan-out requests (e.g., per-Compute-Group quota fetches) failed due to throttling or 5xx errors; previously cached rows are preserved for failed groups while the error summary is recorded.
-- `cache clear` only clears name/quota/GPU-probe caches; it does not touch login sessions, SSH connections, or proxy settings.
+  - `empty`: a full refresh succeeded within TTL and returned zero items across the entire resource kind.
+  - `error` / `incomplete`: one or more fan-out requests (such as per-Compute-Group quota fetches) failed due to throttling or 5xx errors; previously cached rows are preserved for failed groups alongside the recorded error summary.
+- `cache clear` clears only name, quota, and GPU-probe caches; login sessions, SSH bridges, and proxy settings are untouched.
 
 ## 4. Quotas, Priorities & Budgets
 
 ### Quota Triples (`--quota` / `-q`)
 
-`--quota` takes a `gpu,cpu,mem` triple where `mem` is regular instance memory in GiB (GPU model is determined by Workspace + Compute Group).
+`--quota` takes a `gpu,cpu,mem` triple where `mem` is instance memory in GiB (GPU model comes from Workspace + Compute Group).
 - For GPU Jobs, `--shm-size <GiB>` configures `/dev/shm` (IPC shared memory) per instance and cannot exceed the quota's `mem`. Verify resolved values with `job create --dry-run`.
-- If the same `gpu,cpu,mem` triple exists in multiple Compute Groups, disambiguate by passing the full Compute Group name in `--group`.
+- When multiple Compute Groups offer the same `gpu,cpu,mem` triple, `--group` with the full Compute Group name disambiguates the row.
 
 ### Priority Contracts (`--priority`)
 
@@ -102,7 +104,7 @@ The CLI automatically selects the priority scale for the target Workspace:
 | Fair-share Workspace | `1` (`LOW`, preemptible) or `4` (`HIGH`, non-preemptible) | `4` |
 | Standard Workspace | `1–10` (`≤ 3` treated as low priority) | `10` |
 
-Project-level policies may cap your effective priority below the requested value. Always check `status` and `events` after submission to confirm the effective priority.
+Project-level policies may cap your effective priority below the requested value. Check `status` and `events` after submission to confirm the effective priority.
 
 ### Per-Quota Priority Restrictions (`Priority` Column)
 
@@ -111,19 +113,19 @@ Individual quota rows can restrict which priorities they accept, shown in the `P
 | `Priority` Value | Meaning |
 | --- | --- |
 | `any` (`allowed_priority_levels: []`) | No row-level restriction; governed only by Workspace and Project policies |
-| `low` (`allowed_priority_levels: ["low"]`) | Only accepts low priority (`--priority 1` in fair-share Workspaces; preemptible) |
+| `low` (`allowed_priority_levels: ["low"]`) | Accepts only low priority (`--priority 1` in fair-share Workspaces; preemptible) |
 | `unknown` (`allowed_priority_levels: null`) | Schedule config could not be read; pre-flight check does not block submission |
 
 `job create`, `notebook create`, and `serving create` validate `--priority` against the selected quota row before sending the request. Restrictions apply per instance quota row (for multi-node Jobs, `--nodes n` requires an 8-GPU full-node quota row per instance).
 
 ### Point Cost (`Points/h`) & Project Budgets
 
-- **`Points/h`** (`points_per_hour` in `--json`) in `<workload> quota` shows the live hourly point cost **per instance** (multiply by `--nodes` or `--replicas` for total hourly rate). CPU-only rows currently report `0`; `-` (`null`) means the platform did not return a price (not guaranteed free).
+- **`Points/h`** (`points_per_hour` in `--json`) in `<workload> quota` shows the live hourly point cost **per instance** (multiply by `--nodes` or `--replicas` for total hourly burn). CPU-only rows report `0`; `-` (`null`) means the platform returned no price (not guaranteed free).
 - **`inspire project list`** reports two distinct budget columns:
-  - **`My Budget`** (`my_remaining_budget`): remaining points available to **your account** in that project (the limit that gates your next submission). Falls back to `Project Budget` when per-member quotas are not configured.
+  - **`My Budget`** (`my_remaining_budget`): remaining points available to **your account** in that project (the limit that gates your next submission; falls back to `Project Budget` when per-member caps are not configured).
   - **`Project Budget`** (`project_remaining_budget`): remaining points shared across the entire project.
-- **`inspire project detail <name>`** breaks down spending (`on training`, `on inference`, `on storage`, `on private workspace`).
-- **Project GPU running quota is separate from points.** The scheduler's `Parent&sub project total quota insufficient` event applies to the parent Project, all child Projects, and every member. Inspect their consumption with `resources usage --workspace <name> --details --all`; filtering to one Project does not include its children automatically. Usage reports consumption, not the configured GPU cap. Use the event's `used` and `quota` values to calculate the shared headroom and resize a rejected wave.
+- **`inspire project detail <name>`** breaks down spending across training, inference, storage, and private workspaces.
+- **Project GPU running quota is separate from points.** A `Parent&sub project total quota insufficient` scheduler event applies across the parent Project, all child Projects, and every member. Inspect active consumption with `inspire resources usage --workspace <name> --details --all` (filtering `--project` does not include child projects automatically), and use the event's `used` and `quota` numbers to calculate remaining headroom and resize your wave.
 
 ## 5. Scheduling & Node Diagnostics
 
@@ -144,4 +146,4 @@ Workload `events` only show controller and pod actions for that workload. To ins
 inspire resources node-events <node-name>...
 ```
 
-Get `<node-name>` from `<workload> instances` or `<workload> status`. You can pass multiple nodes at once. The command fetches the latest 1,000 events in reverse chronological order and restores chronological order; use `--from` (`kubelet`, `kernel-monitor`, `node-controller`) for server-side component filtering and `--type` / `--reason` for client-side filtering.
+Get `<node-name>` from `<workload> instances` or `<workload> status`. Multiple nodes can be queried together. The command fetches up to 1,000 latest events and prints them in chronological order; use `--from` (`kubelet`, `kernel-monitor`, `node-controller`) for server-side component filtering and `--type` / `--reason` for client-side filtering.

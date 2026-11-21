@@ -1,23 +1,23 @@
 # Repeated & Concurrent Workload Operations
 
-Use this guide when operating workloads across sessions or sharing a Project with other users. Query platform state before resuming work; keep durable assets in [`INSPIRE.md`](assets.md).
+Use this guide when operating workloads across sessions or sharing a Project with collaborators. Query live platform state before resuming work, and keep durable asset records in [`INSPIRE.md`](assets.md).
 
 ## Task Handoffs & Ownership
 
-- For a task that spans sessions, keep a temporary run plan with the account alias, Workspace, Project, workload names, purpose, output paths, and completion or release condition. Keep credentials and live status out of it, and discard completed entries once outputs are verified and temporary resources are cleaned up.
-- At handoff, compare the plan with live workload lists and inspect `status`, `events`, and outputs. A missing list entry alone does not establish completion: check the account, Workspace, filters, and pagination first.
-- Scope workload names with a run-specific suffix. Names are not unique; resolve ambiguous names using `--pick` before acting.
-- Confirm a workload belongs to the current task before stopping or deleting it. Other users and concurrent sessions may have valid work in the same Project. Investigate unexplained workloads without assuming they are disposable.
+- For multi-session work, maintain a temporary run plan listing the account alias, Workspace, Project, workload names, purpose, output paths, and completion or release criteria. Keep credentials and live status out of the plan, and remove completed entries once outputs are verified and temporary resources are deleted.
+- At handoff, reconcile the plan against live workload lists and inspect `status`, `events`, and shared-storage outputs. A missing list entry alone does not prove completion — verify the account, Workspace, status/keyword filters, and pagination first.
+- Scope workload names with a run-specific suffix. Job, HPC, Ray, Serving, and TensorBoard names are not unique (only `notebook create` enforces per-workspace uniqueness); resolve ambiguous names explicitly with `--pick` before acting.
+- Confirm that a workload belongs to the current task before stopping or deleting it. Collaborators and concurrent sessions often run valid workloads in the same Project.
 
 ## Compute Group Selection
 
-- Compare eligible Compute Groups using one fresh `resources availability --workspace <name> --all` snapshot. Match the GPU model, per-instance quota, and accepted priorities using `<workload> quota --workspace <name> --all`; use live policy data rather than inferring eligibility from a group's name.
-- For partial-node workloads, inspect the guaranteed balance and the capacity available at the requested priority. For full-node workloads, compare the requested node count with `Free Nodes` or `High Pri Nodes` as appropriate. In JSON, use `full_free_nodes` for idle 8-GPU nodes and `high_priority_free_nodes` when low-priority occupants can be preempted. **The latter already includes the former; do not add them.** General `free_nodes` counts other node sizes too, and `gpus_per_node` is the group's maximum size. See [`resources.md`](resources.md#resources-availability-quota-balance-vs-full-nodes).
-- Availability is a scheduling snapshot, not a reservation. If a workload remains unschedulable, inspect its events and refresh capacity before changing its specification or Compute Group. Stop the superseded workload and confirm its terminal state before submitting a replacement.
+- Compare candidate Compute Groups using a fresh `inspire resources availability --workspace <name> --all` snapshot. Match the GPU model, per-instance quota, and accepted priorities via `<workload> quota --workspace <name> --all`; rely on live policy data rather than inferring eligibility from a group's name.
+- For partial-node workloads, check both the guaranteed balance (`Available`) and capacity at the requested priority (`High Pri GPU`). For multi-node full-node workloads, compare the requested node count against `Free Nodes` (`full_free_nodes` in JSON) or `High Pri Nodes` (`high_priority_free_nodes` in JSON). **`high_priority_free_nodes` already includes `full_free_nodes` — never add them together.** General `free_nodes` counts idle nodes of any GPU count, and `gpus_per_node` reports the largest node size in the group. See [`resources.md`](resources.md#resources-availability-quota-balance-vs-full-nodes).
+- Availability is a point-in-time snapshot, not a reservation. If a workload stays unschedulable, inspect `events` and re-check capacity before changing its spec or Compute Group. Stop any superseded workload and confirm its terminal state before submitting a replacement.
 
 ## Shared Quota & Submission Waves
 
-- Check usage across the parent Project, child Projects, and all members, including other sessions of the same account. A personal workload list does not show the whole shared pool.
-- Use `resources usage --workspace <name> --details --all` to inspect the relevant Projects and users. This reports consumption, not the scheduler's configured project GPU cap. When a scheduler event reports `used` and `quota`, use that limit to resize the wave; do not infer headroom from idle GPUs or remaining points.
-- Submit useful work with a defined completion condition. Release temporary allocations promptly after their consumer finishes; idle quota-holding jobs consume the same pool as collaborators' work.
-- Follow the batch validation, pacing, and duplicate-name guidance in [`compute-workloads.md`](compute-workloads.md).
+- Check usage across the parent Project, child Projects, and all members — including other sessions under the same account. A personal workload list never shows the full shared pool.
+- Run `inspire resources usage --workspace <name> --details --all` to inspect active consumption across Projects and users. Usage shows current consumption rather than the configured project GPU cap; when a scheduler event reports `used` and `quota` (e.g., `Parent&sub project total quota insufficient`), resize the wave from those numbers instead of guessing headroom from idle GPUs or remaining points.
+- Every submitted workload should have a clear completion condition. Release temporary allocations promptly once their downstream consumer finishes so idle jobs do not block collaborators.
+- Follow the batch validation, wave sizing, and duplicate-name rules in [`compute-workloads.md`](compute-workloads.md).
