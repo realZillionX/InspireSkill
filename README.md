@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="https://pypi.org/project/inspire-skill/"><img src="https://img.shields.io/pypi/v/inspire-skill?style=flat-square&label=PyPI&color=4F52E8&labelColor=262522" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/inspire-skill/"><img src="https://img.shields.io/pypi/v/inspire-skill?style=flat-square&label=PyPI&color=4F52E8&labelColor=262522&cacheSeconds=300" alt="PyPI version"></a>
   <a href="cli/"><img src="https://img.shields.io/badge/Python-3.10%2B-3D3C37?style=flat-square&labelColor=262522" alt="Python 3.10+"></a>
   <a href="#-支持的-agent-客户端"><img src="https://img.shields.io/badge/Agent%20Clients-13%20Supported-4F52E8?style=flat-square&labelColor=262522" alt="13 Supported Agent Clients"></a>
   <img src="https://img.shields.io/badge/Platform-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-3D3C37?style=flat-square&labelColor=262522" alt="macOS · Linux · Windows">
