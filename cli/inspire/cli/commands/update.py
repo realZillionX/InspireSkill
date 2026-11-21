@@ -24,6 +24,7 @@ Design notes:
 from __future__ import annotations
 
 import contextlib
+import http.client
 import io
 import json
 import logging
@@ -31,10 +32,12 @@ import os
 import re
 import shutil
 import shlex
+import ssl
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -174,6 +177,8 @@ _UV_TOOL_LINE_RE = re.compile(
     r"(?:\s+\((?P<env_path>[^)]+)\))?"
 )
 _UV_TOOL_EXEC_RE = re.compile(r"^-\s+inspire(?:\s+\((?P<path>[^)]+)\))?")
+_POST_UPDATE_FAILURE_MARKER = "INSPIRE_POST_UPDATE_FAILURES="
+_FAILURE_MARKER_ENV = "INSPIRE_FAILURE_MARKER"
 _VERSION_OUTPUT_RE = re.compile(r"\bversion\s+([0-9][^\s]*)")
 GITHUB_RELEASES_API_URL = f"https://api.github.com/repos/{REPO_SLUG}/releases"
 _CHANGELOG_RELEASE_HEADING_RE = re.compile(
@@ -268,6 +273,40 @@ def _record_audit_failure(reason: str) -> None:
         context.meta.setdefault("update_audit_failures", []).append(reason)
 
 
+def _emit_post_update_failures(*, silent: bool) -> None:
+    """Report human-readable failures unless the parent requests internal diagnostics."""
+    context = click.get_current_context(silent=True)
+    reasons = context.meta.get("update_audit_failures", []) if context else []
+    if os.environ.get(_FAILURE_MARKER_ENV) == "1":
+        click.echo(_POST_UPDATE_FAILURE_MARKER + json.dumps(reasons), err=True)
+    elif not silent:
+        for reason in reasons:
+            click.echo(f"Error: {reason}", err=True)
+
+
+def _record_child_failures(proc: subprocess.CompletedProcess[str], *, fallback: str) -> None:
+    reasons: list[str] = []
+    for line in (proc.stderr or "").splitlines():
+        if len(line) > 64 * 1024 or not line.startswith(_POST_UPDATE_FAILURE_MARKER):
+            continue
+        try:
+            payload = json.loads(line[len(_POST_UPDATE_FAILURE_MARKER) :])
+        except (ValueError, RecursionError):
+            continue
+        if isinstance(payload, list) and all(isinstance(item, str) for item in payload):
+            for item in payload:
+                if item.strip():
+                    reason = _scrub_debug_text(item)[:300]
+                    if reason not in reasons:
+                        reasons.append(reason)
+                    if len(reasons) == 20:
+                        break
+        if len(reasons) == 20:
+            break
+    for reason in reasons or [fallback]:
+        _record_audit_failure(reason)
+
+
 def _emit_update_failure(
     *, silent: bool, check_only: bool = False, reason: str | None = None,
 ) -> None:
@@ -341,6 +380,9 @@ def _scrub_debug_text(value: str) -> str:
         lambda match: f"{match.group('prefix')}<redacted>",
         scrubbed,
     )
+    scrubbed = re.sub(r"(?i)\bAuthorization\s*:[^\r\n]+", "Authorization: <redacted>", scrubbed)
+    scrubbed = re.sub(r"(?i)\bBearer\s+\S+", "Bearer <redacted>", scrubbed)
+    scrubbed = re.sub(r"(?<![\w])[A-Za-z]:[\\/][^\r\n]*|\\\\[^\r\n]+", "<path>", scrubbed)
     return _DEBUG_ABSOLUTE_PATH_RE.sub("<path>", scrubbed)
 
 
@@ -634,14 +676,14 @@ def _ensure_playwright_runtime(silent: bool) -> bool:
     with _suppress_subprocess_output():
         installed = _install_playwright_chromium(include_system_deps=None)
     if not installed:
-        logger.debug("Playwright Chromium runtime installation failed")
+        _record_audit_failure("Browser runtime setup failed: Chromium installation failed.")
         return False
 
     if _playwright_chromium_available():
         logger.debug("Playwright Chromium runtime verified after installation")
         return True
 
-    logger.debug("Playwright Chromium installed but launch probe failed")
+    _record_audit_failure("Browser runtime setup failed: Chromium launch probe failed.")
     return False
 
 
@@ -655,7 +697,9 @@ def _global_inspire_executable() -> str | None:
 def _ensure_global_playwright_runtime(silent: bool) -> bool:
     executable = _global_inspire_executable()
     if not executable:
-        logger.debug("Global inspire executable is unavailable for runtime setup")
+        _record_audit_failure(
+            "Browser runtime setup failed: global inspire executable is unavailable."
+        )
         return False
 
     cmd = [executable, "_ensure-playwright-runtime"]
@@ -663,6 +707,7 @@ def _ensure_global_playwright_runtime(silent: bool) -> bool:
         cmd.append("--silent")
     env = os.environ.copy()
     env["INSPIRE_SKIP_UPDATE_CHECK"] = "1"
+    env[_FAILURE_MARKER_ENV] = "1"
     try:
         proc = subprocess.run(
             cmd,
@@ -676,11 +721,15 @@ def _ensure_global_playwright_runtime(silent: bool) -> bool:
         )
     except OSError as e:
         logger.debug("Runtime setup could not start: executable=%s error=%s", executable, e)
+        _record_audit_failure(f"Browser runtime setup failed ({type(e).__name__}).")
         return False
     _log_completed_process("global runtime setup", proc, cmd=cmd)
     if proc.returncode == 0:
         return True
 
+    _record_child_failures(
+        proc, fallback=f"Browser runtime setup failed: exited with code {proc.returncode}."
+    )
     return False
 
 
@@ -692,7 +741,7 @@ def _run_post_update_command(
 ) -> bool:
     executable = _global_inspire_executable()
     if not executable:
-        logger.debug("Global inspire executable is unavailable for post-update setup")
+        _record_audit_failure("Post-update setup failed: global inspire executable is unavailable.")
         return False
 
     cmd = [
@@ -708,6 +757,7 @@ def _run_post_update_command(
 
     env = os.environ.copy()
     env["INSPIRE_SKIP_UPDATE_CHECK"] = "1"
+    env[_FAILURE_MARKER_ENV] = "1"
     try:
         proc = subprocess.run(
             cmd,
@@ -721,22 +771,50 @@ def _run_post_update_command(
         )
     except OSError as e:
         logger.debug("Post-update setup could not start: executable=%s error=%s", executable, e)
+        _record_audit_failure(f"Post-update setup could not start ({type(e).__name__}).")
         return False
     _log_completed_process("post-update setup", proc, cmd=cmd)
+    if proc.returncode != 0:
+        _record_child_failures(
+            proc, fallback=f"post-update setup exited with code {proc.returncode}"
+        )
     return proc.returncode == 0
 
 
-def _download_tarball(timeout: int = 30) -> bytes | None:
+def _download_tarball(timeout: int = 30, *, report_failure: bool = True) -> bytes | None:
     req = urllib.request.Request(
         TARBALL_URL,
         headers={"User-Agent": f"inspire-skill/{__version__}"},
     )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.read()
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
-        logger.debug("Skill tarball fetch failed: %s", e, exc_info=True)
-        return None
+    # Two bounded attempts; permanent HTTP/local errors do not merit a retry.
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read()
+        except (OSError, http.client.HTTPException) as e:
+            detail = type(e).__name__
+            transient = isinstance(
+                e,
+                (
+                    urllib.error.URLError,
+                    TimeoutError,
+                    ConnectionError,
+                    ssl.SSLError,
+                    http.client.HTTPException,
+                ),
+            )
+            if isinstance(e, urllib.error.HTTPError):
+                detail = f"HTTP {e.code}"
+                transient = e.code in {408, 429} or 500 <= e.code < 600
+                e.close()
+            logger.debug("Skill tarball fetch failed: %s", detail)
+            if attempt == 0 and transient:
+                time.sleep(2)
+                continue
+            if report_failure:
+                _record_audit_failure(f"Could not download the skill bundle from GitHub ({detail}).")
+            return None
+    return None
 
 
 def _extract_assets(tarball: bytes, dest: Path) -> Path | None:
@@ -801,7 +879,7 @@ def _extract_assets(tarball: bytes, dest: Path) -> Path | None:
                     shutil.copyfileobj(source, output)
             extracted = dest / top
             return extracted if extracted.is_dir() else None
-    except (tarfile.TarError, OSError) as e:
+    except (tarfile.TarError, OSError, EOFError) as e:
         logger.debug("Skill tarball extraction failed: %s", e, exc_info=True)
         return None
 
@@ -833,6 +911,49 @@ def _verify_skill_target(source_root: Path, target: Path) -> list[str]:
     return errors
 
 
+def _install_skill_target(extracted: Path, harness: str) -> bool:
+    target = HARNESS_SKILL_DIRS[harness]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix=".inspire-update-", dir=target.parent))
+    staged = work / "new"
+    previous = work / "previous"
+    installed = False
+    try:
+        staged.mkdir()
+        shutil.copy2(extracted / "SKILL.md", staged / "SKILL.md")
+        if (extracted / "references").is_dir():
+            shutil.copytree(extracted / "references", staged / "references")
+        if harness == "codex":
+            agents_dir = staged / "agents"
+            agents_dir.mkdir(parents=True, exist_ok=True)
+            (agents_dir / "openai.yaml").write_text(
+                'interface:\n'
+                '  display_name: "Inspire"\n'
+                '  short_description: "Operate Inspire with focused references and live platform data."\n'
+                '  default_prompt: "Use $inspire to plan and execute this Inspire platform task safely."\n',
+                encoding="utf-8",
+            )
+
+        if _verify_skill_target(extracted, staged):
+            _record_audit_failure(f"Skill verification failed for {harness}.")
+            return False
+
+        if os.path.lexists(target):
+            target.replace(previous)
+        try:
+            staged.replace(target)
+        except OSError:
+            if os.path.lexists(previous):
+                previous.replace(target)
+            raise
+        installed = True
+        return True
+    finally:
+        # If rollback itself fails, keep the previous installation for recovery.
+        if installed or not os.path.lexists(previous):
+            shutil.rmtree(work)
+
+
 def _refresh_skill_files(silent: bool) -> bool:
     del silent
     harnesses = _detect_harnesses()
@@ -844,57 +965,29 @@ def _refresh_skill_files(silent: bool) -> bool:
     if tarball is None:
         return False
 
-    with tempfile.TemporaryDirectory(prefix="inspire-skill-") as tmp:
-        extracted = _extract_assets(tarball, Path(tmp))
-        if extracted is None:
-            logger.debug("Skill tarball has no usable top-level directory")
-            return False
-
-        src_skill = extracted / "SKILL.md"
-        src_refs = extracted / "references"
-        if not src_skill.is_file():
-            logger.debug("SKILL.md is missing from the skill tarball")
-            return False
-
-        for harness in harnesses:
-            target = HARNESS_SKILL_DIRS[harness]
-            # Wipe any previous install, including stale symlinks or files.
-            if target.exists() or target.is_symlink():
-                try:
-                    if target.is_symlink() or target.is_file():
-                        target.unlink()
-                    else:
-                        shutil.rmtree(target)
-                except OSError as e:
-                    logger.debug("Could not clean skill target %s: %s", target, e, exc_info=True)
-                    return False
-            target.mkdir(parents=True, exist_ok=True)
-
-            shutil.copy2(src_skill, target / "SKILL.md")
-            if src_refs.is_dir():
-                shutil.copytree(src_refs, target / "references", dirs_exist_ok=True)
-
-            verify_errors = _verify_skill_target(extracted, target)
-            if verify_errors:
-                logger.debug(
-                    "Skill verification failed for %s: %s",
-                    target,
-                    verify_errors,
-                )
+    harness: str | None = None
+    try:
+        with tempfile.TemporaryDirectory(prefix="inspire-skill-") as tmp:
+            extracted = _extract_assets(tarball, Path(tmp))
+            if extracted is None:
+                _record_audit_failure("Skill bundle is invalid or could not be extracted.")
                 return False
 
-            if harness == "codex":
-                agents_dir = target / "agents"
-                agents_dir.mkdir(parents=True, exist_ok=True)
-                (agents_dir / "openai.yaml").write_text(
-                    'interface:\n'
-                    '  display_name: "Inspire"\n'
-                    '  short_description: "Operate Inspire with focused references and live platform data."\n'
-                    '  default_prompt: "Use $inspire to plan and execute this Inspire platform task safely."\n',
-                    encoding="utf-8",
-                )
+            if not (extracted / "SKILL.md").is_file():
+                _record_audit_failure("SKILL.md is missing from the skill bundle.")
+                return False
 
-            logger.debug("Refreshed %s skill at %s", harness, target)
+            for harness in harnesses:
+                if not _install_skill_target(extracted, harness):
+                    return False
+    except OSError as e:
+        logger.debug("Skill refresh failed: %s", type(e).__name__)
+        _record_audit_failure(
+            f"Could not replace the {harness} skill directory."
+            if harness
+            else "Could not prepare the skill bundle."
+        )
+        return False
 
     return True
 
@@ -931,7 +1024,7 @@ def _fetch_release_entries_from_github(timeout: int = 10) -> list[ReleaseEntry]:
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 payload = json.loads(resp.read().decode("utf-8", errors="replace"))
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        except (OSError, http.client.HTTPException, json.JSONDecodeError):
             return entries
         if not isinstance(payload, list):
             return entries
@@ -980,13 +1073,13 @@ def _changelog_text_from_tarball(tarball: bytes) -> str | None:
                 if extracted is None:
                     return None
                 return extracted.read().decode("utf-8", errors="replace")
-    except (tarfile.TarError, OSError):
+    except (tarfile.TarError, OSError, EOFError):
         return None
     return None
 
 
 def _fetch_release_entries_from_changelog(timeout: int = 10) -> list[ReleaseEntry]:
-    tarball = _download_tarball(timeout=timeout)
+    tarball = _download_tarball(timeout=timeout, report_failure=False)
     if tarball is None:
         return []
     text = _changelog_text_from_tarball(tarball)
@@ -1172,6 +1265,7 @@ def _parse_version_output(output: str) -> str | None:
 
 
 def _read_inspire_version(executable: str | None = None) -> tuple[str | None, str | None, str]:
+    """Return the executable, parsed version, and a safe failure summary."""
     executable = executable or shutil.which("inspire")
     if not executable:
         return None, None, "not found on PATH"
@@ -1189,29 +1283,32 @@ def _read_inspire_version(executable: str | None = None) -> tuple[str | None, st
             stderr=subprocess.PIPE,
         )
     except OSError as e:
-        return executable, None, str(e)
+        logger.debug("Version probe could not run: %s", _scrub_debug_text(str(e)))
+        return executable, None, f"could not run ({type(e).__name__})"
+    _log_completed_process("version probe", proc)
     output = (proc.stdout or "") + (proc.stderr or "")
     if proc.returncode != 0:
-        return executable, None, output.strip() or f"exit {proc.returncode}"
-    return executable, _parse_version_output(output), output.strip()
+        return executable, None, f"exited with code {proc.returncode}"
+    version = _parse_version_output(output)
+    return executable, version, "" if version else "unrecognised version output"
 
 
 def _audit_global_cli(expected_version: str | None, silent: bool) -> tuple[bool, str | None]:
     del silent
     uv_info = _uv_tool_info()
     executable_hint = uv_info.executable_path if uv_info and uv_info.executable_path else None
-    executable, actual_version, detail = _read_inspire_version(executable_hint)
+    executable, actual_version, summary = _read_inspire_version(executable_hint)
     ok = True
     if executable is None:
         ok = False
         _record_audit_failure("Global inspire executable is not on PATH.")
     elif actual_version is None:
         ok = False
-        _record_audit_failure("Could not determine the installed CLI version: " + detail)
+        _record_audit_failure("Could not determine the installed CLI version: " + summary)
         logger.debug(
             "Could not parse updated InspireSkill version: executable=%s detail=%s",
-            executable,
-            detail,
+            _scrub_debug_text(executable),
+            summary,
         )
     elif expected_version and _is_newer(expected_version, actual_version):
         ok = False

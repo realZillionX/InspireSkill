@@ -242,7 +242,8 @@ def test_external_application_dispatch_renews_and_keeps_xsrf(monkeypatch, asynch
 
     def reply(url, cookie, timeout):
         assert url == target
-        assert timeout <= 3
+        # Subtracting monotonic timestamps can round just above the deadline budget.
+        assert 0 < timeout <= 3 + 1e-6
         seen.append(cookie)
         return 401 if len(seen) == 1 else 201
 
