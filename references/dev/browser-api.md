@@ -178,15 +178,22 @@ Reports contain field names and classifications, never source excerpts, matched
 values, or bundle filenames. Only scan sanitized bundles when sharing the
 existing Action/REST inventory.
 
-Offline tests use inline expectations to capture SDK and CLI create/batch
-payloads for Notebook, training, HPC, Ray and Serving. Issue #95 records rejection
-of `is_publicpath_readonly`; none of these create paths sends that field.
-Tests cover omitted and explicit mount modes, legacy boolean conversion,
-conflicting options, strict integer validation and detail response fallback.
-Batch JSON and TOML dry-run output shows the resolved mount mode and omits it
-when unset. Explicit legacy use emits one deprecation warning per entry; new
-or omitted parameters emit none. Scanner tests use small synthetic JavaScript
-snippets, including send/read swaps that leave token presence unchanged.
+### Comparing request contracts
+
+The [public-path mount snapshot](contracts/public-path-mount.json) records the console submit forms inspected on 2026-11-11. It covers two top-level fields across five create Actions. Issue #95 independently confirms the HPC gateway rejected the legacy field and accepted mode 0. Modes 1 and 2 have console evidence. Batched reads have a separate [contract inventory](#815-batch-reads--listjobs--listjobevents) because console forms do not exercise those request shapes.
+
+To review a platform change, take a copy of the snapshot and update it from a dated platform schema or a reviewed console submit handler. Record the source and list only the Actions with the same observed fields. Each field records its JSON type and, when known, its allowed enum literals. Use `"type": "absent"` for verified exclusion and leave unreviewed fields out. A missing key in a single request cannot establish exclusion or the full allowed enum.
+
+Run these commands from the repository root. The first compares snapshots. The second checks a local JSON request body against the tracked fields.
+
+```bash
+python3 scripts/compare_request_contracts.py references/dev/contracts/public-path-mount.json reviewed.json
+python3 scripts/compare_request_contracts.py references/dev/contracts/public-path-mount.json request.json --request hpc.CreateJobConsole
+```
+
+The diff reports additions, removals, type changes and changes in enum membership for Actions covered by both snapshots. A single addition paired with a single removal is a rename candidate. Missing coverage is reported separately. The request check exits 1 for an excluded field, wrong type or value outside the enum. Omitted optional fields pass. Both commands run offline and print field metadata only. Request values, untracked keys and source excerpts stay out of reports.
+
+The SDK and CLI tests check the actual outgoing create body against the same snapshot. Separate assertions cover omission, legacy booleans, the exact mode requested and the single write. For JSON and TOML batches, dry runs show the resolved mount mode when specified. Each explicit legacy boolean produces one deprecation warning.
 
 ### Optional maintainer write regression (manual only)
 

@@ -1,0 +1,15 @@
+{
+  "observed_on": "2026-11-11",
+  "source": "QZ console create forms inspected in https://github.com/realZillionX/InspireSkill/pull/103. HPC server rejection and a successful mode-0 request are recorded in https://github.com/realZillionX/InspireSkill/issues/95.",
+  "actions": [
+    "hpc.CreateJobConsole",
+    "inference_serving.CreateServingConsole",
+    "notebook.CreateNotebook",
+    "ray.CreateJob",
+    "train.CreateJobConsole"
+  ],
+  "fields": {
+    "is_publicpath_readonly": {"type": "absent"},
+    "publicpath_mount_mode": {"type": "integer", "enum": [0, 1, 2]}
+  }
+}
