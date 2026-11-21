@@ -102,9 +102,11 @@ inspire init
 inspire resources availability --workspace 分布式训练空间 --include-cpu
 ```
 
-设备登录仍请求 `offline_access`，但平台自 2026-11-18 起不再签发离线刷新令牌，登录得到的是普通会话刷新令牌（`refresh_kind: session`）。按服务端实测：访问令牌 1 小时；刷新令牌 12 小时内未使用即失效，每次刷新顺延 12 小时；同一次登录的会话最长 7 天，到期后必须重新设备授权。已登录 CAS（`inspire login --cas`）时，刷新失败或会话到期后 CLI 会用 CAS 会话静默完成新的设备授权；否则需要手动运行 `inspire login`。需要长时间无人值守时，可用 cron 或 systemd timer 每 6 小时运行一次 `inspire account check --account <name>`，避免会话因空闲失效（仍受 7 天上限约束）。刷新令牌保存在权限为 0600 的 `web_session.json`；`inspire logout` 在本地删除它，服务端会话可在 Keycloak 账号控制台（sessions）注销。平台恢复离线授权后，重新登录即可再次获得离线令牌（`refresh_kind: offline`），无需升级 CLI。
+设备登录请求 `offline_access`。2026-11-18 的实测中，平台签发了会话刷新令牌（`refresh_kind: session`）。访问令牌有效期为 1 小时，刷新令牌的空闲期限为 12 小时。每次成功刷新都会顺延空闲期限，登录会话最长持续 7 天。无人值守任务可每 6 小时运行一次 `inspire account check --account <name>`，让 CLI 在访问令牌过期后及时刷新。
 
-若账号仍持有离线令牌，请勿再用 <= 7.2.1 的旧版本操作该账号。v7.2.1 首次刷新离线令牌后会丢失离线标记，并将刷新到期时间写为当前时间；下一次跳过 OAuth 刷新，仅尝试 CAS，无有效 CAS 时即使离线令牌仍可用也会报告未登录。v7.2.2 起可根据刷新 JWT 的 `typ="Offline"` 恢复这类文件；若旧版本报告未登录，请运行 v7.2.2 及以上版本恢复，或在旧版本中重新登录。
+达到会话上限或刷新令牌失效后，CLI 可用仍有效的 CAS 登录状态静默完成新的设备授权。需要人工授权时，运行 `inspire login`。刷新令牌保存在账号的 `web_session.json` 中。`inspire logout` 会删除本地凭据，服务端会话可从 Keycloak 账号控制台注销。
+
+若账号仍持有离线刷新令牌，请使用 v7.2.2 及以上版本。v7.2.1 首次刷新后会丢失离线标记，下次可能误报未登录。v7.2.2 起可根据刷新令牌的 JWT 类型恢复这类缓存。
 
 `account check` 和 `account list` 会显示 OAuth 访问令牌到期时间、刷新令牌类型和 CAS（数据广场）登录状态；离线刷新令牌（如有）显示无固定有效期，JSON `oauth.refresh_kind` 为 `offline`，不将内部 30 天滑动估计显示为硬过期时间；`--offline` 不验证平台认证（JSON `authenticated: null`），有效或可自动刷新时退出 0，其余情况返回认证错误码。`inspire init` 用于校验并补全账号配置（未登录时会自动发起设备授权）。在校园网外访问平台时，请先参考下文[代理配置](#代理配置)完成网络设置。
 
