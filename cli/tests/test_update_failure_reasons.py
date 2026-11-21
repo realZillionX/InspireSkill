@@ -486,6 +486,7 @@ def test_runtime_specific_reason_crosses_process_boundary(
         "[" * 2000 + "]" * 2000,
         "[" + "9" * 5000 + "]",
     ],
+    ids=["oversized-line", "nested-array", "large-integer"],
 )
 @pytest.mark.parametrize("valid_after", [False, True])
 def test_malformed_marker_is_bounded_and_scanning_continues(
