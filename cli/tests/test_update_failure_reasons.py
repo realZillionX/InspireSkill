@@ -232,7 +232,7 @@ def test_invalid_bundle(monkeypatch: pytest.MonkeyPatch, data: bytes, reason: st
         assert reason in ctx.meta["update_audit_failures"][0]
 
 
-@pytest.mark.parametrize("failure", ["clean", "copy", "verify", "temp"])
+@pytest.mark.parametrize("failure", ["publish", "copy", "verify", "temp"])
 def test_filesystem_failure_reasons(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str
 ) -> None:
@@ -241,9 +241,18 @@ def test_filesystem_failure_reasons(
     def fail(*a: object, **kw: object) -> None:
         raise PermissionError("/private/home token=private")
 
-    if failure == "clean":
-        (tmp_path / "skill").write_text("old")
-        monkeypatch.setattr(Path, "unlink", fail)
+    target = tmp_path / "skill"
+    target.mkdir()
+    (target / "SKILL.md").write_bytes(b"previous install")
+    if failure == "publish":
+        replace = Path.replace
+
+        def publish(source: Path, dest: Path) -> Path:
+            if source.name == "new" and dest == target:
+                fail()
+            return replace(source, dest)
+
+        monkeypatch.setattr(Path, "replace", publish)
     elif failure == "copy":
         monkeypatch.setattr(update.shutil, "copy2", fail)
     elif failure == "temp":
@@ -255,6 +264,8 @@ def test_filesystem_failure_reasons(
         reasons = ctx.meta["update_audit_failures"]
     assert reasons
     assert "private" not in str(reasons)
+    assert (target / "SKILL.md").read_bytes() == b"previous install"
+    assert not list(tmp_path.glob(".inspire-update-*"))
 
 
 @pytest.mark.parametrize("failure", ["missing", "start", "exit"])
@@ -282,7 +293,7 @@ def test_runtime_failure_reason(monkeypatch: pytest.MonkeyPatch, failure: str) -
     [
         (TimeoutError(), 1),
         (ConnectionResetError(), 1),
-        (urllib.error.HTTPError("https://example.test", 503, "unavailable", {}, None), 1),
+        (urllib.error.HTTPError("https://example.test", 507, "unavailable", {}, None), 1),
         (urllib.error.HTTPError("https://example.test", 404, "missing", {}, None), 0),
         (PermissionError(), 0),
     ],
@@ -303,32 +314,24 @@ def test_download_retry_is_bounded_and_selective(
     monkeypatch.setattr(update.time, "sleep", sleeps.append)
     with click.Context(update.update) as ctx:
         assert update._download_tarball(timeout=7) is None
-        assert len(ctx.meta["update_audit_failures"]) == 1
+        reasons = ctx.meta["update_audit_failures"]
+        assert len(reasons) == 1
+        if isinstance(error, urllib.error.HTTPError):
+            assert f"HTTP {error.code}" in reasons[0]
     assert calls == [7] * (retries + 1)
     assert sleeps == [2] * retries
 
 
-@pytest.mark.parametrize("check_only", [False, True])
-@pytest.mark.parametrize("json_output", [False, True])
-def test_recorded_download_reason_precedes_audit_in_failure_formatter(
-    monkeypatch: pytest.MonkeyPatch,
-    check_only: bool,
-    json_output: bool,
-) -> None:
-    from inspire.cli.context import Context
+def test_partial_release_notes_do_not_fail_the_update(monkeypatch: pytest.MonkeyPatch) -> None:
+    def opener(req: urllib.request.Request, **kw: object) -> io.BytesIO:
+        if req.full_url == update.TARBALL_URL:
+            return io.BytesIO(bundle({"CHANGELOG.md": b"notes"})[:25])
+        raise http.client.IncompleteRead(b"", 100)
 
-    @click.command()
-    def command() -> None:
-        update._record_audit_failure("Could not download the skill bundle from GitHub (URLError).")
-        assert not update._audit_installed_skills(True)
-        update._emit_update_failure(silent=False, check_only=check_only)
-
-    context = Context()
-    context.json_output = json_output
-    result = CliRunner().invoke(command, obj=context)
-    assert result.exit_code == 0, result.output
-    assert result.output.index("Could not download") < result.output.index("SKILL.md is missing")
-    assert f"InspireSkill {'check' if check_only else 'update'} failed" in result.output
+    monkeypatch.setattr(update.urllib.request, "urlopen", opener)
+    with click.Context(update.update) as ctx:
+        assert update._fetch_release_entries() == []
+        assert not ctx.meta.get("update_audit_failures")
 
 
 def test_truncated_bundle_records_reason(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -2,12 +2,11 @@
 
 Browser API fills in everything the UI needs on the `/jobs/modelDeployment` page:
 listing, create / detail / stop / delete, configs per workspace, and the
-user+project pickers for the create dialog. The whole domain goes through
-`/api/v2/inference_serving`; that contract is in
-`references/dev/browser-api.md`. Every Action here was checked against a
-live serving before being wired up. Creation goes through the undocumented
-`CreateServingConsole`; see
-`create_serving`.
+user+project pickers for the create dialog. Lifecycle Actions go through
+`/api/v2/inference_serving`; the published-model selector uses `/api/v2/model_plaza`.
+Verified contracts and the limits of console-only evidence are recorded in
+`references/dev/browser-api.md`. Creation uses the undocumented
+`CreateServingConsole`; see `create_serving`.
 
 The list keys differ per Action and are spelled out at each call site:
 `inference_servings` for listing and versions, `groups` for instances,
@@ -22,9 +21,10 @@ were silently broken once already.
 from __future__ import annotations
 
 from inspire.services.public_path import public_path_mount_fields
+from inspire.services.serving.serving_contract import model_create_fields, normalize_port_configs
 
 from dataclasses import dataclass
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Sequence
 
 from inspire.platform.web.browser_api.core import (
     _get_base_url,
@@ -43,6 +43,7 @@ __all__ = [
     "get_serving_detail",
     "get_serving_terms",
     "create_serving",
+    "list_plaza_models",
     "list_serving_events",
     "list_serving_instances",
     "list_serving_logs",
@@ -577,6 +578,39 @@ def get_serving_terms(
     )
 
 
+def list_plaza_models(
+    *,
+    workspace_id: str,
+    page: int = 1,
+    page_size: int = 100,
+    session: Optional[WebSession] = None,
+) -> tuple[list[dict[str, Any]], int]:
+    """Read the model-plaza selector used by the serving creation dialog.
+
+    This is the model plaza, not the CAS-authenticated data plaza. The response
+    uses ``items`` / ``total_count`` and a singular ``filter`` object.
+    """
+    if not workspace_id or type(page) is not int or page < 1:
+        raise ValueError("workspace_id and a positive page are required.")
+    if type(page_size) is not int or not 1 <= page_size <= 100:
+        raise ValueError("page_size must be between 1 and 100.")
+    if session is None:
+        session = get_web_session()
+    data = _v2_result(_request_json(
+        session, "POST", "/api/v2/model_plaza?Action=GetModelListInPlaza",
+        referer=_referer(),
+        body={"page": page, "page_size": page_size, "filter": {"workspace_id": workspace_id}},
+    ))
+    rows = data.get("items")
+    total = data.get("total_count")
+    if isinstance(total, str) and total.isdecimal():
+        total = int(total)
+    if (not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows)
+            or type(total) is not int or total < 0):
+        raise ValueError("Incomplete model plaza response: expected items and total_count.")
+    return rows, total
+
+
 def create_serving(
     *,
     workspace_id: str,
@@ -584,10 +618,11 @@ def create_serving(
     name: str,
     logic_compute_group_id: str,
     model_id: str,
-    model_version: int | str,
+    model_version: int | str | None = None,
     mirror_id: str,
     command: str,
-    port: int,
+    port: int | None = None,
+    port_configs: Sequence[dict[str, Any]] | None = None,
     resource_spec_price: dict[str, Any],
     task_priority: int,
     description: str = "",
@@ -604,16 +639,22 @@ def create_serving(
 ) -> dict[str, Any]:
     """Create a custom model deployment via the Browser API.
 
-    The payload mirrors the current `/jobs/modelDeployment` form. In
+    The payload follows the current `/jobs/modelDeployment` creation form. In
     particular, images are sent by `mirror_id`, and resource specs are sent as
     a nested `resource_spec_price` proto-style object rather than a flat
     `spec_id`.
+
+    ``port`` remains an HTTP-port shorthand; only ``port_configs`` is sent.
+    Plaza creates omit ``model_version``. Supplying a plaza version is rejected
+    before sending rather than silently discarding the caller's version choice.
 
     `publicpath_mount_mode` and `enable_auto_scaling` are omitted unless the
     caller passes them, so a create that does not ask for them is byte-for-byte
     what it was before they existed. `queue_id`, `dataset_info`, `envs` and
     `scale_status` are **rejected** by this Action and have no counterpart.
     """
+    ports = normalize_port_configs(port, port_configs)
+    model_fields = model_create_fields(model_source, model_version)
     if session is None:
         session = get_web_session()
     body: dict[str, Any] = {
@@ -623,10 +664,10 @@ def create_serving(
         "name": name,
         "logic_compute_group_id": logic_compute_group_id,
         "model_id": model_id,
-        "model_version": int(model_version),
+        **model_fields,
         "mirror_id": mirror_id,
         "command": command,
-        "port": int(port),
+        "port_configs": ports,
         "description": description,
         "replicas": int(replicas),
         "node_num_per_replica": int(node_num_per_replica),
@@ -637,8 +678,6 @@ def create_serving(
         body["custom_domain"] = custom_domain
     if shm_gi is not None:
         body["shm_gi"] = int(shm_gi)
-    if model_source:
-        body["model_source"] = model_source
     body.update(public_path_mount_fields(publicpath_mount_mode, is_publicpath_readonly))
     if enable_auto_scaling is not None:
         body["enable_auto_scaling"] = bool(enable_auto_scaling)

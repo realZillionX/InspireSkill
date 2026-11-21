@@ -781,7 +781,7 @@ def _run_post_update_command(
     return proc.returncode == 0
 
 
-def _download_tarball(timeout: int = 30) -> bytes | None:
+def _download_tarball(timeout: int = 30, *, report_failure: bool = True) -> bytes | None:
     req = urllib.request.Request(
         TARBALL_URL,
         headers={"User-Agent": f"inspire-skill/{__version__}"},
@@ -791,8 +791,8 @@ def _download_tarball(timeout: int = 30) -> bytes | None:
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return resp.read()
-        except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as e:
-            logger.debug("Skill tarball fetch failed: %s", e, exc_info=True)
+        except (OSError, http.client.HTTPException) as e:
+            detail = type(e).__name__
             transient = isinstance(
                 e,
                 (
@@ -804,13 +804,15 @@ def _download_tarball(timeout: int = 30) -> bytes | None:
                 ),
             )
             if isinstance(e, urllib.error.HTTPError):
-                transient = e.code in {408, 429, 500, 502, 503, 504}
+                detail = f"HTTP {e.code}"
+                transient = e.code in {408, 429} or 500 <= e.code < 600
+                e.close()
+            logger.debug("Skill tarball fetch failed: %s", detail)
             if attempt == 0 and transient:
                 time.sleep(2)
                 continue
-            _record_audit_failure(
-                f"Could not download the skill bundle from GitHub ({type(e).__name__})."
-            )
+            if report_failure:
+                _record_audit_failure(f"Could not download the skill bundle from GitHub ({detail}).")
             return None
     return None
 
@@ -909,6 +911,49 @@ def _verify_skill_target(source_root: Path, target: Path) -> list[str]:
     return errors
 
 
+def _install_skill_target(extracted: Path, harness: str) -> bool:
+    target = HARNESS_SKILL_DIRS[harness]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix=".inspire-update-", dir=target.parent))
+    staged = work / "new"
+    previous = work / "previous"
+    installed = False
+    try:
+        staged.mkdir()
+        shutil.copy2(extracted / "SKILL.md", staged / "SKILL.md")
+        if (extracted / "references").is_dir():
+            shutil.copytree(extracted / "references", staged / "references")
+        if harness == "codex":
+            agents_dir = staged / "agents"
+            agents_dir.mkdir(parents=True, exist_ok=True)
+            (agents_dir / "openai.yaml").write_text(
+                'interface:\n'
+                '  display_name: "Inspire"\n'
+                '  short_description: "Operate Inspire with focused references and live platform data."\n'
+                '  default_prompt: "Use $inspire to plan and execute this Inspire platform task safely."\n',
+                encoding="utf-8",
+            )
+
+        if _verify_skill_target(extracted, staged):
+            _record_audit_failure(f"Skill verification failed for {harness}.")
+            return False
+
+        if os.path.lexists(target):
+            target.replace(previous)
+        try:
+            staged.replace(target)
+        except OSError:
+            if os.path.lexists(previous):
+                previous.replace(target)
+            raise
+        installed = True
+        return True
+    finally:
+        # If rollback itself fails, keep the previous installation for recovery.
+        if installed or not os.path.lexists(previous):
+            shutil.rmtree(work)
+
+
 def _refresh_skill_files(silent: bool) -> bool:
     del silent
     harnesses = _detect_harnesses()
@@ -928,55 +973,15 @@ def _refresh_skill_files(silent: bool) -> bool:
                 _record_audit_failure("Skill bundle is invalid or could not be extracted.")
                 return False
 
-            src_skill = extracted / "SKILL.md"
-            src_refs = extracted / "references"
-            if not src_skill.is_file():
+            if not (extracted / "SKILL.md").is_file():
                 _record_audit_failure("SKILL.md is missing from the skill bundle.")
                 return False
 
             for harness in harnesses:
-                target = HARNESS_SKILL_DIRS[harness]
-                # Wipe any previous install, including stale symlinks or files.
-                if target.exists() or target.is_symlink():
-                    try:
-                        if target.is_symlink() or target.is_file():
-                            target.unlink()
-                        else:
-                            shutil.rmtree(target)
-                    except OSError as e:
-                        logger.debug("Could not clean skill target %s: %s", target, e, exc_info=True)
-                        _record_audit_failure(f"Could not replace the {harness} skill directory.")
-                        return False
-                target.mkdir(parents=True, exist_ok=True)
-
-                shutil.copy2(src_skill, target / "SKILL.md")
-                if src_refs.is_dir():
-                    shutil.copytree(src_refs, target / "references", dirs_exist_ok=True)
-
-                verify_errors = _verify_skill_target(extracted, target)
-                if verify_errors:
-                    logger.debug(
-                        "Skill verification failed for %s: %s",
-                        target,
-                        verify_errors,
-                    )
-                    _record_audit_failure(f"Skill verification failed for {harness}.")
+                if not _install_skill_target(extracted, harness):
                     return False
-
-                if harness == "codex":
-                    agents_dir = target / "agents"
-                    agents_dir.mkdir(parents=True, exist_ok=True)
-                    (agents_dir / "openai.yaml").write_text(
-                        'interface:\n'
-                        '  display_name: "Inspire"\n'
-                        '  short_description: "Operate Inspire with focused references and live platform data."\n'
-                        '  default_prompt: "Use $inspire to plan and execute this Inspire platform task safely."\n',
-                        encoding="utf-8",
-                    )
-
-                logger.debug("Refreshed %s skill at %s", harness, target)
     except OSError as e:
-        logger.debug("Skill refresh failed: %s", e, exc_info=True)
+        logger.debug("Skill refresh failed: %s", type(e).__name__)
         _record_audit_failure(
             f"Could not replace the {harness} skill directory."
             if harness
@@ -1019,7 +1024,7 @@ def _fetch_release_entries_from_github(timeout: int = 10) -> list[ReleaseEntry]:
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 payload = json.loads(resp.read().decode("utf-8", errors="replace"))
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        except (OSError, http.client.HTTPException, json.JSONDecodeError):
             return entries
         if not isinstance(payload, list):
             return entries
@@ -1068,13 +1073,13 @@ def _changelog_text_from_tarball(tarball: bytes) -> str | None:
                 if extracted is None:
                     return None
                 return extracted.read().decode("utf-8", errors="replace")
-    except (tarfile.TarError, OSError):
+    except (tarfile.TarError, OSError, EOFError):
         return None
     return None
 
 
 def _fetch_release_entries_from_changelog(timeout: int = 10) -> list[ReleaseEntry]:
-    tarball = _download_tarball(timeout=timeout)
+    tarball = _download_tarball(timeout=timeout, report_failure=False)
     if tarball is None:
         return []
     text = _changelog_text_from_tarball(tarball)

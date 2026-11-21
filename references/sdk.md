@@ -88,7 +88,7 @@ with InspireClient(account="research") as client:
   - Clients load the named `account` (or the active account if `account=None`). Legacy `username` / `password` keyword arguments on `Accounts.add` and client construction, including `from_credentials`, are optional and ignored with `DeprecationWarning`; they never create an identity or rewrite config. Constructing a client never changes the active account. Create and authorize an account with `inspire login --account NAME`; `inspire account add NAME` remains a compatible CLI entry point. Device authorization stays CLI-driven.
   - `InspireClient` pins its account at construction time; `InspireAsyncClient` performs local config loading when entering `async with` or on its first method call (accessing `.account` or `.base_url` before initialization raises `ConfigurationError`).
 - **`login(*, force=False) -> AccountInfo`** (async: `await client.login(force=False)`):
-  - Run `inspire login --account <alias>` before using the SDK. Cached OAuth tokens refresh automatically under a per-account lock with a disk reread; rotated refresh tokens are persisted. The SDK never opens a device login implicitly. Old cookie caches require explicit login. Usernames and passwords are neither stored nor read; displayed identity comes from `WebSession.login_username`.
+  - Run `inspire login --account <alias>` before using the SDK. Cached OAuth tokens refresh automatically under a per-account lock with a disk reread; rotated refresh tokens are persisted. New logins request `offline_access`. On 2026-11-18 the platform issued session refresh tokens with a rolling 12-hour idle timeout and a seven-day session limit. At expiry, a valid CAS session can renew authorization silently. Otherwise run `inspire login`. When the platform grants them, offline refresh tokens are independent of the browser/CAS SSO session but subject to server-side idle timeout and revocation. `AccountCheck.oauth.refresh_kind` distinguishes `offline` from `session`; offline refresh expiry metadata is `None`, and the internal 30-day estimate never prevents refresh. The SDK never opens a device login implicitly. Old cookie caches require explicit login. Usernames and passwords are neither stored nor read; displayed identity comes from `WebSession.login_username`.
   - `allow_browser=True` enables browser-backed requests for non-login operations. Device authorization never needs Chromium, and missing tokens always require an explicit CLI login.
 - **`init(*, force=False) -> InitResult`** (async: `await client.init(force=False)`):
   - Uses an existing OAuth session, verifies at least one accessible Workspace, and atomically writes normalized account config (`force=False` removes `[auth]` username/password while preserving other existing TOML sections; `force=True` rebuilds from the template). Device login prompts and `ssh-keygen` remain CLI-only (`inspire init`); device login does not require Chromium.
@@ -259,10 +259,12 @@ The catalogue methods below (`applications`, `get`, `list`, `tags`) require a st
 
 | Method | Return Type | Equivalent CLI Command |
 | --- | --- | --- |
-| `account_info.check()` | `AccountCheck`（附带可选 `oauth`、本地 `cas`、`refreshed`；CAS 不联网探测） | `account check` |
+| `account_info.check()` | `AccountCheck`（附带可选 `oauth`、本地 `cas`、`refreshed`；实时刷新被拒绝时 `oauth.state="rejected"`、`oauth.refresh_error` 为安全错误码；网络或暂时性失败返回 `ok=false`，`oauth.refresh_retryable=true`、`oauth.refresh_status` 为 HTTP 状态或 `None`，不要求重新登录；CAS 不联网探测） | `account check` |
 | `account_info.context(*, limit=None)` | `AccountContext` | `account context` |
 | `account_info.current()` | `AccountInfo` | `account current` |
 | `account_info.permissions(workspace=None)` | `tuple[Permission, ...]` | `account permissions` |
+
+Transport 会话获取、刷新及 SDK 操作将网络和暂时性失败映射为 `TransportError`（`retryable=True`），保留错误元数据；当前网络错误优先于 CAS 失败 cause。`account_info.check()` 将这类失败返回为诊断结果，复用已有 `refresh_error`、`refresh_retryable`、`refresh_status` 字段；无 HTTP 响应时状态为 `None`。
 
 ### api_keys
 
@@ -417,6 +419,40 @@ Like `HPCJob`, `RayJob`, and `Serving`, `Job` exposes `.view` (the sanitized pub
 
 ### servings
 
+`ServingCreateSpec.port` remains the HTTP-port shorthand. Set `port=None` and
+provide `port_configs` to use the structured form without repeating the HTTP
+port, for example:
+
+```python
+ports = [
+    {"port": 30000, "type": "PORT_TYPE_HTTP", "path": "/"},
+    {"port": 30001, "type": "PORT_TYPE_METRICS", "path": "/metrics"},
+]
+```
+
+A required HTTP entry and optional metrics entry use the console paths shown
+above. If both `port` and `port_configs` are supplied, their HTTP ports must
+agree. The final request carries only `port_configs`.
+
+For a published model plaza name, pass `model_source="plaza"` (the compatible
+`"MODEL_PLAZA"` spelling also works) and leave `model_version=None`.
+`model_source="registered"` is equivalent to the default `None`. The SDK
+normalizes these aliases before planning; only `MODEL_PLAZA` reaches the wire.
+The SDK completes the live workspace catalogue and resolves a unique published
+name with the same case-sensitive exact matching as CLI/batch. Leading and
+trailing whitespace is ignored; differently capitalized names remain distinct.
+Registered-model matching retains each interface's existing rules. Plaza
+creation performs no model registration or file upload. Registry `ModelRef`
+values cannot be used as plaza references.
+`ServingPlan.model_version` is `None` for plaza models; registered models still
+resolve their latest version when none is supplied. An explicit plaza version
+is rejected before lookup, including in the low-level Browser API. Callers
+migrating from that API must remove the old plaza `model_version` argument.
+The async client uses the same spec and validation. Planning and offline
+payload validation do not establish that a real deployment is healthy.
+Serving detail and version history both prefer `port_configs` for HTTP and
+metrics ports, with a fallback for legacy HTTP `port` responses.
+
 | Method | Return Type | Equivalent CLI Command |
 | --- | --- | --- |
 | `servings.api(ref, *, affinity_key=None, workspace=None)` | `ServingInvocationInfo` | `serving api` |
@@ -541,7 +577,7 @@ finished = client.jobs.wait(handle.ref, raise_on_failure=True)
 | `NotebookCreateSpec` | `name`, `workspace`, `project`, `group`, `quota`, `image` | `shm_gib=None`, `auto_stop=False`, `auto_stop_after=None`, `datasets=[]`, `enable_notification=None`, `public_path_mount_mode=None`, `public_path_readonly=None`, `project_path_readonly=None`, `priority=None`, `node=None` |
 | `HPCJobCreateSpec` | `name`, `entrypoint`, `workspace`, `project`, `group`, `quota`, `image` | `image_type='SOURCE_PRIVATE'`, `instance_count=1`, `priority=None`, `number_of_tasks=1`, `cpus_per_task=None`, `memory_per_cpu=None`, `enable_hyper_threading=False`, `max_time_hours=None`, `keep_after_finish_hours=None`, `datasets=[]`, `description=None`, `enable_notification=False`, `public_path_mount_mode=None`, `public_path_readonly=None` |
 | `RayJobCreateSpec` | `name`, `command`, `workspace`, `project`, `group`, `quota`, `image` | `image_type='SOURCE_PUBLIC'`, `description=''`, `priority=None`, `shm_gib=None`, `workers=[]`, `public_path_mount_mode=None`, `public_path_readonly=None` |
-| `ServingCreateSpec` | `name`, `model`, `command`, `port`, `workspace`, `project`, `group`, `quota`, `image` | `model_version=None`, `replicas=1`, `nodes_per_replica=1`, `shm_gib=None`, `priority=None`, `custom_domain=None`, `description=''`, `auto_scaling=None`, `public_path_mount_mode=None`, `public_path_readonly=None` |
+| `ServingCreateSpec` | `name`, `model`, `command`, `port`, `workspace`, `project`, `group`, `quota`, `image` | `model_version=None`, `replicas=1`, `nodes_per_replica=1`, `shm_gib=None`, `priority=None`, `custom_domain=None`, `description=''`, `auto_scaling=None`, `public_path_mount_mode=None`, `public_path_readonly=None`, `port_configs=None`, `model_source=None` |
 | `TensorboardCreateSpec` | `name`, `workspace`, `project`, `group` | `summary_path=None` (required non-empty at creation), `job=None`, `auto_stop_hours=None` |
 
 ## 9. Write Semantics (`single_send`), Errors & Timeouts

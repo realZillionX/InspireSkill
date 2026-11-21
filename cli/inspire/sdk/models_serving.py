@@ -6,6 +6,7 @@ from inspire.services.public_path import PublicPathMountMode
 
 from ._sync_handle import SyncHandle
 from dataclasses import dataclass, field
+from typing import Any, Sequence
 from .models import (
     ResourceRef,
     WorkspaceRef,
@@ -39,7 +40,7 @@ class ServingCreateSpec:
     name: str
     model: str | ModelRef
     command: str = field(repr=False)
-    port: int
+    port: int | None
     workspace: str | WorkspaceRef
     project: str | ProjectRef
     group: str | ComputeGroupRef
@@ -55,12 +56,14 @@ class ServingCreateSpec:
     auto_scaling: bool | None = None
     public_path_readonly: bool | None = None
     public_path_mount_mode: PublicPathMountMode | int | None = None
+    port_configs: Sequence[dict[str, Any]] | None = None
+    model_source: str | None = None
 
 
 @dataclass(frozen=True)
 class ServingPlan(WorkloadPlan):
     model: str
-    model_version: int
+    model_version: int | None
 
 
 @dataclass(frozen=True)

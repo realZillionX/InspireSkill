@@ -5,6 +5,7 @@ from __future__ import annotations
 from inspire.platform.web.session.envelope import _v2_error_metadata
 
 from inspire.platform.errors import _error_metadata
+from inspire.platform.web.transport_policy import is_request_error
 
 import base64
 import json
@@ -60,13 +61,13 @@ def operation(fn: F) -> F:
 
                 if isinstance(error, (SessionAuthenticationError, SessionExpiredError)):
                     raise AuthenticationError(str(error), **_error_metadata(error)) from error
+                if isinstance(error, TransientAPIError) or is_request_error(error):
+                    raise TransportError(str(error), **_error_metadata(error)) from error
                 cause = error.__cause__
                 while cause is not None:
                     if isinstance(cause, InspireError):
                         raise cause from None
                     cause = cause.__cause__
-                if isinstance(error, TransientAPIError):
-                    raise TransportError(str(error), **_error_metadata(error)) from error
                 if isinstance(error, ValueError):
                     raise ValidationError(str(error), **_error_metadata(error)) from None
                 if type(error).__module__.startswith("inspire.platform"):

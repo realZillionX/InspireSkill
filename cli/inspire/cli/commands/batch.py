@@ -163,8 +163,10 @@ _PUBLIC_FIELDS_BY_KIND = {
     ),
     "serving": (
         ("model_version", "model_version"),
+        ("model_source", "model_source"),
         ("priority", "priority"),
         ("port", "port"),
+        ("metrics_port", "metrics_port"),
         ("replicas", "replicas"),
         ("nodes_per_replica", "nodes_per_replica"),
         ("shm_size", "shared_memory_gib"),
@@ -1275,6 +1277,24 @@ def _prepare_serving_item(
     config: Config,
     session: Any,
 ) -> dict[str, Any]:
+    from inspire.services.serving.serving_contract import normalize_port_configs
+
+    source_name = item.get("model_source", "registered")
+    if source_name not in ("registered", "plaza"):
+        raise ConfigError("Serving model_source must be registered or plaza.")
+    source = "MODEL_PLAZA" if source_name == "plaza" else None
+    requested_version = _optional_int(item, "model_version", min_value=1)
+    if source and requested_version is not None:
+        raise ConfigError("Omit model_version for a plaza serving.")
+    port = _require_int(item, "port", min_value=1)
+    metrics_port = _optional_int(item, "metrics_port", min_value=1)
+    ports = [{"port": port, "type": "PORT_TYPE_HTTP", "path": "/"}]
+    if metrics_port is not None:
+        ports.append({"port": metrics_port, "type": "PORT_TYPE_METRICS", "path": "/metrics"})
+    try:
+        ports = normalize_port_configs(port, ports)
+    except ValueError as error:
+        raise ConfigError(str(error)) from error
     from inspire.cli.commands.serving.serving_commands import (
         _build_resource_spec_price as _build_serving_resource_spec_price,
         _resolve_image_id as _resolve_serving_image_id,
@@ -1320,9 +1340,10 @@ def _prepare_serving_item(
         user_id=current_user_id,
         session=session,
         ctx=ctx,
+        model_source=source,
     )
-    final_model_version = _optional_int(item, "model_version", min_value=1) or latest_version
-    if final_model_version is None:
+    final_model_version = requested_version or latest_version
+    if final_model_version is None and source is None:
         raise ConfigError("Could not infer model version. Set model_version in the batch item.")
 
     payload: dict[str, Any] = {
@@ -1332,13 +1353,15 @@ def _prepare_serving_item(
         "logic_compute_group_id": resolved.logic_compute_group_id,
         "model_id": model_id,
         "model_version": final_model_version,
+        "model_source": source,
         "mirror_id": _resolve_serving_image_id(
             _require_condition_str(item, "image", kind="serving"),
             session=session,
             workspace_id=workspace_id,
         ),
         "command": _require_str(item, "command"),
-        "port": _require_int(item, "port", min_value=1),
+        "port": port,
+        "port_configs": ports,
         "description": _optional_str(item, "description") or "",
         "replicas": _optional_int(item, "replicas", min_value=1) or 1,
         "node_num_per_replica": _optional_int(item, "nodes_per_replica", min_value=1) or 1,
@@ -1956,7 +1979,8 @@ def serving_batch(
         name, model, workspace, project, group, quota, image, command, port
         Optional fields use create-command defaults: priority, description,
         replicas, nodes_per_replica, shm_size, custom_domain, auto_scaling,
-        public_path_mount_mode, public_path_readonly
+        public_path_mount_mode, public_path_readonly, metrics_port,
+        model_source (registered or plaza), model_version (registered only)
         Serving takes no dataset mounts: the platform rejects them.
 
     \b

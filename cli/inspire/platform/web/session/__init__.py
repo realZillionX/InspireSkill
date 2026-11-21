@@ -20,6 +20,8 @@ from inspire.platform.web.session.auth import (
 )
 from inspire.platform.web.session.models import (
     AuthenticationError,
+    RefreshRejectedError,
+    RefreshUnavailableError,
     DEFAULT_WORKSPACE_ID,
     SESSION_TTL,
     TRANSIENT_HTTP_STATUSES,
@@ -52,6 +54,8 @@ __all__ = [
     "get_browser_client",
     "create_browser_client",
     "AuthenticationError",
+    "RefreshRejectedError",
+    "RefreshUnavailableError",
     "DEFAULT_WORKSPACE_ID",
     "SESSION_TTL",
     "TRANSIENT_HTTP_STATUSES",
@@ -91,6 +95,7 @@ def refresh_session_in_place(current: "WebSession", refreshed: "WebSession") -> 
     current.refresh_token = refreshed.refresh_token
     current.access_expires_at = refreshed.access_expires_at
     current.refresh_expires_at = refreshed.refresh_expires_at
+    current.refresh_offline = refreshed.refresh_offline
     current.workspace_id = refreshed.workspace_id
     current.login_username = refreshed.login_username
     current.base_url = refreshed.base_url

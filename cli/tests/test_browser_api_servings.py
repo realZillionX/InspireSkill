@@ -454,7 +454,7 @@ def test_create_serving_posts_current_web_ui_payload(monkeypatch) -> None:
         "model_version": 1,
         "mirror_id": "image-1",
         "command": "python -m http.server 8000",
-        "port": 8000,
+        "port_configs": [{"port": 8000, "type": "PORT_TYPE_HTTP", "path": "/"}],
         "description": "demo",
         "replicas": 2,
         "node_num_per_replica": 1,

@@ -4,6 +4,7 @@ from typing import Any
 from inspire.services.utils.text import format_epoch
 from inspire.services.utils.identifiers import looks_like_platform_id
 from inspire.services.utils.raw_ids import scrub_raw_ids
+from inspire.services.serving.serving_output import public_serving_ports
 
 
 def _public_serving_instance_text(
@@ -114,7 +115,6 @@ def public_serving_version(item: dict[str, Any]) -> dict[str, Any]:
             view[key] = value
     for key, candidates in (
         ("replicas", ("replicas", "replica_count")),
-        ("port", ("port",)),
     ):
         for candidate in candidates:
             raw = item.get(candidate)
@@ -124,6 +124,7 @@ def public_serving_version(item: dict[str, Any]) -> dict[str, Any]:
                 except (TypeError, ValueError):
                     pass
                 break
+    view.update(public_serving_ports(item))
     resource = serving_resource_label(item)
     if resource:
         view["resource"] = resource
