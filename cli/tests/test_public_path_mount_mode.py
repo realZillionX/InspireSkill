@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import replace
 import importlib
 import json
+from pathlib import Path
 import warnings
 
 import pytest
@@ -19,6 +20,15 @@ from test_sdk_notebooks import catalog as notebook_catalog  # noqa: F401
 from test_sdk_hpc import catalog as base_catalog  # noqa: F401
 from test_sdk_servings import catalog as serving_catalog  # noqa: F401
 from test_dry_run_and_batch import _patch_submit_deps, FakeWebSession
+
+ROOT = Path(__file__).resolve().parents[2]
+_spec = importlib.util.spec_from_file_location(
+    "compare_request_contracts", ROOT / "scripts/compare_request_contracts.py"
+)
+assert _spec is not None and _spec.loader is not None
+contracts = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(contracts)
+MOUNT_CONTRACT = contracts.load_snapshot(ROOT / "references/dev/contracts/public-path-mount.json")
 
 CASES = [
     {"name": "omitted", "options": {}, "wire": {}},
@@ -57,10 +67,7 @@ FACADES = {
 
 
 def assert_wire(body, case):
-    assert "is_publicpath_readonly" not in body
-    assert {k: v for k, v in body.items() if k == "publicpath_mount_mode"} == case["wire"]
-    if "publicpath_mount_mode" in body:
-        assert type(body["publicpath_mount_mode"]) is int
+    assert {k: v for k, v in body.items() if k in MOUNT_CONTRACT["fields"]} == case["wire"]
 
 
 def capture_writes(monkeypatch, kind):
@@ -69,7 +76,9 @@ def capture_writes(monkeypatch, kind):
     def request(*args, **kwargs):
         body = kwargs.get("body")
         if "Action=Create" in args[2]:
-            assert "is_publicpath_readonly" not in body
+            action = args[2].removeprefix("/api/v2/").replace("?Action=", ".")
+            evidence = contracts.check_request(MOUNT_CONTRACT, action, body)
+            assert set(evidence.values()) <= {"matches", "omitted"}, evidence
             calls.append(body)
         return {
             "Result": {
